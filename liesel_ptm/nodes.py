@@ -2157,6 +2157,103 @@ class VarHalfCauchy(Var):
         return self.value_node.function(scale_samples)
 
 
+class VarHalfNormal(Var):
+    """
+    A variance parameter with a half Cauchy prior on its square root.
+
+    Parameters
+    ----------
+    value
+        Initial value of the variable.
+    scale
+        Scale parameter of the half Cauchy distribution.
+    name
+        Name of the variable.
+    bijector
+        A tensorflow bijector instance.\
+        If a bijector is supplied, the variable will be transformed using the bijector.\
+        This renders the variable itself weak, meaning that it is a deterministic\
+        function of the newly created transformed variable. The prior is transferred\
+        to this transformed variable and transformed according to the \
+        change-of-variables theorem.
+
+    Notes
+    -----
+    Note that the half Cauchy prior is placed not directly on the variance parameter,
+    but on the standard deviation, i.e. the square root of the variance.
+    Futher, the standard deviation is transformed to the positive real line for
+    MCMC sampling using a bijector, which defaults to softplus.
+    """
+
+    def __init__(
+        self,
+        value: Array,
+        scale: float | lsl.Var | lsl.Node,
+        name: str,
+        bijector: tfb.Bijector | None = tfb.Softplus(),
+    ) -> None:
+        if isinstance(scale, float):
+            scale = lsl.Data(scale, _name=f"{name}_scale")
+        else:
+            scale.name = f"{name}_scale"
+
+        loc = lsl.Data(0.0, _name=f"{name}_loc")
+
+        prior = lsl.Dist(
+            tfd.TruncatedNormal, loc=loc, scale=scale, low=0.0, high=jnp.inf
+        )
+
+        self.scale_param = Var(jnp.sqrt(value), prior, name=f"{name}_root")
+        """The scale parameter (if any)."""
+
+        self.scale_param.parameter = True
+
+        self.transformed = None
+        """The transformed variable (if any)."""
+
+        var_calc = lsl.Calc(jnp.square, self.scale_param)
+        super().__init__(var_calc, name=name)
+
+        self.update()
+
+        val = self.scale_param.value
+        log_prob = self.scale_param.log_prob
+
+        if bijector is not None:
+            self.transformed = self.scale_param.transform(bijector)
+            self.transformed.update()
+            self.scale_param.update()
+            self.update()
+            val = self.transformed.value
+            log_prob = self.transformed.log_prob
+
+        assert jnp.isfinite(val)
+        assert jnp.isfinite(log_prob)
+
+    def predict(self, samples: dict[str, Array]) -> Array:
+        """
+        Returns posterior samples of this variable. If the scale variable is transformed
+        using a bijector, this method automatically takes care of applying the
+        bijector to the transformed samples.
+
+        Parameters
+        ----------
+        samples
+            Dictionary with arrays of posterior samples.
+
+        Returns
+        -------
+        Array of posterior samples.
+        """
+        if self.transformed is not None:
+            samps = samples[self.transformed.name]
+            scale_samples = self.scale_param.value_node.function(samps)
+            return self.value_node.function(scale_samples)
+
+        scale_samples = samples[self.scale_param.name]
+        return self.value_node.function(scale_samples)
+
+
 class ScaleHalfCauchy(Var):
     """
     A scale parameter with a half Cauchy prior.
