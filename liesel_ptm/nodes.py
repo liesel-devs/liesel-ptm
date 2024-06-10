@@ -2159,7 +2159,7 @@ class VarHalfCauchy(Var):
 
 class VarHalfNormal(Var):
     """
-    A variance parameter with a half Cauchy prior on its square root.
+    A variance parameter with a half normal prior on its square root.
 
     Parameters
     ----------
@@ -2179,7 +2179,7 @@ class VarHalfNormal(Var):
 
     Notes
     -----
-    Note that the half Cauchy prior is placed not directly on the variance parameter,
+    Note that the half normal prior is placed not directly on the variance parameter,
     but on the standard deviation, i.e. the square root of the variance.
     Futher, the standard deviation is transformed to the positive real line for
     MCMC sampling using a bijector, which defaults to softplus.
@@ -2190,6 +2190,7 @@ class VarHalfNormal(Var):
         value: Array,
         scale: float | lsl.Var | lsl.Node,
         name: str,
+        low: float | lsl.Var | lsl.Node = 0.0,
         bijector: tfb.Bijector | None = tfb.Softplus(),
     ) -> None:
         if isinstance(scale, float):
@@ -2197,10 +2198,15 @@ class VarHalfNormal(Var):
         else:
             scale.name = f"{name}_scale"
 
+        if isinstance(low, float):
+            low = lsl.Data(low, _name=f"{name}_low")
+        else:
+            low.name = f"{name}_low"
+
         loc = lsl.Data(0.0, _name=f"{name}_loc")
 
         prior = lsl.Dist(
-            tfd.TruncatedNormal, loc=loc, scale=scale, low=0.0, high=jnp.inf
+            tfd.TruncatedNormal, loc=loc, scale=scale, low=low, high=jnp.inf
         )
 
         self.scale_param = Var(jnp.sqrt(value), prior, name=f"{name}_root")
@@ -2820,6 +2826,26 @@ class TruncatedNormalOmega(TransformedVar):
         high: Array = jnp.inf,
         name: str = "",
     ) -> None:
+        if isinstance(scale, float):
+            scale = lsl.Data(scale, _name=f"{name}_scale")
+        else:
+            scale.name = f"{name}_scale"
+
+        if isinstance(low, float):
+            low = lsl.Data(low, _name=f"{name}_low")
+        else:
+            low.name = f"{name}_low"
+
+        if isinstance(high, float):
+            high = lsl.Data(high, _name=f"{name}_high")
+        else:
+            high.name = f"{name}_high"
+
+        if isinstance(loc, float):
+            loc = lsl.Data(loc, _name=f"{name}_loc")
+        else:
+            loc.name = f"{name}_loc"
+
         prior = lsl.Dist(tfd.TruncatedNormal, loc=loc, scale=scale, low=low, high=high)
 
         super().__init__(value, prior, name=name, bijector=tfb.Softplus())
