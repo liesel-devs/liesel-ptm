@@ -329,7 +329,7 @@ class NormalizationFn:
         )
         return y_hi + right_shift
 
-    @partial(jnp.vectorize, excluded=[0, 1, 2, 4, 5, 6], signature="(p)->(n),(n)")
+    @partial(jnp.vectorize, excluded=[0, 1, 2, 6], signature="(p),(1),(1)->(n),(n)")
     def _find_grid(
         self,
         y_lo: float | Array,
