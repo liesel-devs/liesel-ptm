@@ -39,6 +39,7 @@ from .nodes import TransformationDist as TransformationDist
 from .nodes import TransformedVar as TransformedVar
 from .nodes import TruncatedNormalOmega as TruncatedNormalOmega
 from .nodes import VarHalfCauchy as VarHalfCauchy
+from .nodes import VarHalfNormal as VarHalfNormal
 from .nodes import VarInverseGamma as VarInverseGamma
 from .nodes import VarWeibull as VarWeibull
 from .nodes import bs as bs

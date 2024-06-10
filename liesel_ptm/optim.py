@@ -114,7 +114,7 @@ class Stopper:
         Includes loss at iterations *before* i, but excluding i itself.
         """
         p = self.patience
-        lower = jnp.max(jnp.array([i - p, 0]))
+        lower = jnp.max(jnp.array([(i - 1) - p, 0]))
         recent_history = jax.lax.dynamic_slice(
             loss_history, start_indices=(lower,), slice_sizes=(p,)
         )

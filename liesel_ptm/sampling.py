@@ -15,15 +15,18 @@ from .optim import OptimResult, Stopper, optim_flat
 def cache_results(
     engine_builder: gs.EngineBuilder, filename: str | Path, use_cache: bool = True
 ) -> gs.engine.SamplingResults:
-    fp = Path(filename)
-
-    if use_cache and fp.exists():
-        return gs.engine.SamplingResults.pkl_load(fp)
+    if use_cache:
+        fp = Path(filename)
+        if fp.exists():
+            return gs.engine.SamplingResults.pkl_load(fp)
 
     engine = engine_builder.build()
     engine.sample_all_epochs()
     results = engine.get_results()
-    results.pkl_save(fp)
+
+    if use_cache:
+        fp = Path(filename)
+        results.pkl_save(fp)
     return results
 
 

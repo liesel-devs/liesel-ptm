@@ -1911,15 +1911,15 @@ class VarInverseGamma(Var):
         name: str,
         bijector: tfb.Bijector | None = tfb.Softplus(),
     ) -> None:
-        if isinstance(scale, float):
+        try:
+            scale.name = f"{name}_scale"  # type: ignore
+        except AttributeError:
             scale = lsl.Data(scale, _name=f"{name}_scale")
-        else:
-            scale.name = f"{name}_scale"
 
-        if isinstance(concentration, float):
+        try:
+            concentration.name = f"{name}_concentration"  # type: ignore
+        except AttributeError:
             concentration = lsl.Data(concentration, _name=f"{name}_concentration")
-        else:
-            concentration.name = f"{name}_concentration"
 
         prior = lsl.Dist(tfd.InverseGamma, concentration=concentration, scale=scale)
         super().__init__(value, prior, name=name)
@@ -2105,6 +2105,109 @@ class VarHalfCauchy(Var):
         loc = lsl.Data(0.0, _name=f"{name}_loc")
 
         prior = lsl.Dist(tfd.HalfCauchy, loc=loc, scale=scale)
+
+        self.scale_param = Var(jnp.sqrt(value), prior, name=f"{name}_root")
+        """The scale parameter (if any)."""
+
+        self.scale_param.parameter = True
+
+        self.transformed = None
+        """The transformed variable (if any)."""
+
+        var_calc = lsl.Calc(jnp.square, self.scale_param)
+        super().__init__(var_calc, name=name)
+
+        self.update()
+
+        val = self.scale_param.value
+        log_prob = self.scale_param.log_prob
+
+        if bijector is not None:
+            self.transformed = self.scale_param.transform(bijector)
+            self.transformed.update()
+            self.scale_param.update()
+            self.update()
+            val = self.transformed.value
+            log_prob = self.transformed.log_prob
+
+        assert jnp.isfinite(val)
+        assert jnp.isfinite(log_prob)
+
+    def predict(self, samples: dict[str, Array]) -> Array:
+        """
+        Returns posterior samples of this variable. If the scale variable is transformed
+        using a bijector, this method automatically takes care of applying the
+        bijector to the transformed samples.
+
+        Parameters
+        ----------
+        samples
+            Dictionary with arrays of posterior samples.
+
+        Returns
+        -------
+        Array of posterior samples.
+        """
+        if self.transformed is not None:
+            samps = samples[self.transformed.name]
+            scale_samples = self.scale_param.value_node.function(samps)
+            return self.value_node.function(scale_samples)
+
+        scale_samples = samples[self.scale_param.name]
+        return self.value_node.function(scale_samples)
+
+
+class VarHalfNormal(Var):
+    """
+    A variance parameter with a half normal prior on its square root.
+
+    Parameters
+    ----------
+    value
+        Initial value of the variable.
+    scale
+        Scale parameter of the half Cauchy distribution.
+    name
+        Name of the variable.
+    bijector
+        A tensorflow bijector instance.\
+        If a bijector is supplied, the variable will be transformed using the bijector.\
+        This renders the variable itself weak, meaning that it is a deterministic\
+        function of the newly created transformed variable. The prior is transferred\
+        to this transformed variable and transformed according to the \
+        change-of-variables theorem.
+
+    Notes
+    -----
+    Note that the half normal prior is placed not directly on the variance parameter,
+    but on the standard deviation, i.e. the square root of the variance.
+    Futher, the standard deviation is transformed to the positive real line for
+    MCMC sampling using a bijector, which defaults to softplus.
+    """
+
+    def __init__(
+        self,
+        value: Array,
+        scale: float | lsl.Var | lsl.Node,
+        name: str,
+        low: float | lsl.Var | lsl.Node = 0.0,
+        bijector: tfb.Bijector | None = tfb.Softplus(),
+    ) -> None:
+        if isinstance(scale, float):
+            scale = lsl.Data(scale, _name=f"{name}_scale")
+        else:
+            scale.name = f"{name}_scale"
+
+        if isinstance(low, float):
+            low = lsl.Data(low, _name=f"{name}_low")
+        else:
+            low.name = f"{name}_low"
+
+        loc = lsl.Data(0.0, _name=f"{name}_loc")
+
+        prior = lsl.Dist(
+            tfd.TruncatedNormal, loc=loc, scale=scale, low=low, high=jnp.inf
+        )
 
         self.scale_param = Var(jnp.sqrt(value), prior, name=f"{name}_root")
         """The scale parameter (if any)."""
@@ -2479,7 +2582,9 @@ class PSplineCoef(lsl.Var):
         )
 
         self.shape_reparam = lsl.param(
-            np.zeros(nparam_reparameterized), prior, name=f"{name}_transformed"
+            np.zeros(nparam_reparameterized, dtype=np.float32),
+            prior,
+            name=f"{name}_transformed",
         )
         self.transformation_matrix = Z
 
@@ -2721,6 +2826,26 @@ class TruncatedNormalOmega(TransformedVar):
         high: Array = jnp.inf,
         name: str = "",
     ) -> None:
+        if isinstance(scale, float):
+            scale = lsl.Data(scale, _name=f"{name}_scale")
+        else:
+            scale.name = f"{name}_scale"
+
+        if isinstance(low, float):
+            low = lsl.Data(low, _name=f"{name}_low")
+        else:
+            low.name = f"{name}_low"
+
+        if isinstance(high, float):
+            high = lsl.Data(high, _name=f"{name}_high")
+        else:
+            high.name = f"{name}_high"
+
+        if isinstance(loc, float):
+            loc = lsl.Data(loc, _name=f"{name}_loc")
+        else:
+            loc.name = f"{name}_loc"
+
         prior = lsl.Dist(tfd.TruncatedNormal, loc=loc, scale=scale, low=low, high=high)
 
         super().__init__(value, prior, name=name, bijector=tfb.Softplus())

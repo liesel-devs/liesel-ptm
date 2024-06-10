@@ -1,11 +1,20 @@
+import hashlib
+import pickle
 from pathlib import Path
 
 import dill
 
 
 def cache_filename(cache_dir: Path | str, func_name: str, args, kwargs) -> Path:
-    cache_key = dill.dumps((func_name, args, kwargs))
-    return Path(cache_dir) / f"{func_name}_{hash(cache_key)}.pkl"
+    # Convert arguments to a string representation
+    args_key = pickle.dumps((args, kwargs))
+    # Create a hash of the arguments
+    args_hash = hashlib.sha256(args_key).hexdigest()
+
+    # Use the function name and arguments hash as the cache key
+    cache_key = f"{func_name}_{args_hash}"
+
+    return Path(cache_dir) / f"{cache_key}.pkl"
 
 
 def cache(directory):
