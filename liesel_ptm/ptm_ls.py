@@ -264,18 +264,13 @@ class NormalizationFn:
         _, deriv = self.basis_dot_and_deriv_fn(y, coef)
         return deriv / norm_sd
 
-    def _find_grid(
+    def _find_y_lo(
         self,
         min_z: float | Array,
-        max_z: float | Array,
         coef: Array,
         norm_mean: float,
         norm_sd: float,
-        ngrid: int = 200,
-    ) -> tuple[Array, Array]:
-        """
-        Finds a grid of y values such that h(y) covers the range of z values.
-        """
+    ) -> Array:
         y_lo = self.approx_bspline.min_knot
         left_shift = jnp.array(0.1)
         min_zgrid = jnp.min(
@@ -294,9 +289,21 @@ class NormalizationFn:
             )
             return left_shift, min_zgrid
 
-        while _cond_fun_l((left_shift, min_zgrid)):
-            left_shift, min_zgrid = _body_fun_l((left_shift, min_zgrid))
+        # while _cond_fun_l((left_shift, min_zgrid)):
+        #     left_shift, min_zgrid = _body_fun_l((left_shift, min_zgrid))
 
+        left_shift, _ = jax.lax.while_loop(
+            _cond_fun_l, _body_fun_l, (left_shift, min_zgrid)
+        )
+        return y_lo - left_shift
+
+    def _find_y_hi(
+        self,
+        max_z: float | Array,
+        coef: Array,
+        norm_mean: float,
+        norm_sd: float,
+    ) -> Array:
         y_hi = self.approx_bspline.max_knot
         right_shift = jnp.array(0.1)
         max_zgrid = jnp.max(
@@ -315,12 +322,27 @@ class NormalizationFn:
             )
             return right_shift, max_zgrid
 
-        while _cond_fun_r((right_shift, max_zgrid)):
-            right_shift, max_zgrid = _body_fun_r((right_shift, max_zgrid))
+        # while _cond_fun_r((right_shift, max_zgrid)):
+        #     right_shift, max_zgrid = _body_fun_r((right_shift, max_zgrid))
+        right_shift, _ = jax.lax.while_loop(
+            _cond_fun_r, _body_fun_r, (right_shift, max_zgrid)
+        )
+        return y_hi + right_shift
 
-        y_lo = y_lo - left_shift
-        y_hi = y_hi + right_shift
-        ngrid = (int(y_hi - y_lo) + 1) * ngrid
+    @partial(jnp.vectorize, excluded=[0, 1, 2, 4, 5, 6], signature="(p)->(n),(n)")
+    def _find_grid(
+        self,
+        y_lo: float | Array,
+        y_hi: float | Array,
+        coef: Array,
+        norm_mean: float,
+        norm_sd: float,
+        ngrid: int = 200,
+    ) -> tuple[Array, Array]:
+        """
+        Finds a grid of y values such that h(y) covers the range of z values.
+        """
+
         ygrid = jnp.linspace(y_lo, y_hi, ngrid)
         zgrid = self(ygrid, coef, norm_mean, norm_sd)
 
@@ -338,9 +360,10 @@ class NormalizationFn:
             ``ngrid * (int(max_z - min_z) + 1)``.
         """
         min_z, max_z = jnp.min(z), jnp.max(z)
-        ygrid, zgrid = self._find_grid(
-            min_z, max_z, coef, norm_mean, norm_sd, ngrid=ngrid
-        )
+        y_lo = self._find_y_lo(min_z, coef, norm_mean, norm_sd)
+        y_hi = self._find_y_hi(max_z, coef, norm_mean, norm_sd)
+        ngrid = int((jnp.array(y_hi - y_lo, int) + 1) * ngrid)
+        ygrid, zgrid = self._find_grid(y_lo, y_hi, coef, norm_mean, norm_sd, ngrid)
         y_approx = approximate_inverse(ygrid, zgrid, z)
         return y_approx
 
