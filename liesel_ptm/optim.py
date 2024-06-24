@@ -177,7 +177,7 @@ def optim_flat(
     model: Model,
     params: Sequence[str],
     optimizer: optax.GradientTransformation | None = None,
-    stopper: Stopper = Stopper(max_iter=10_000, patience=10),
+    stopper: Stopper | None = None,
     batch_size: int | None = None,
     batch_seed: int | None = None,
     save_position_history: bool = True,
@@ -205,7 +205,8 @@ def optim_flat(
         ``optax.adam(learning_rate=1e-1)`` is used.
     stopper
         A :class:`.Stopper` that carries information about the maximum number of\
-        iterations and early stopping.
+        iterations and early stopping. If ``None``, uses an arbitrary default of\
+        ``Stopper(max_iter=10_000, patience=10)``.
     batch_size
         The batch size. If ``None``, the whole dataset\
         is used for each optimization step.
@@ -299,7 +300,11 @@ def optim_flat(
         batch_seed if batch_seed is not None else np.random.randint(low=1, high=1000)
     )
 
+    if stopper is None:
+        stopper = Stopper(max_iter=10_000, patience=10)
+
     user_patience = stopper.patience
+
     if model_test is None:
         model_test = model_test if model_test is not None else model
         stopper.patience = stopper.max_iter
