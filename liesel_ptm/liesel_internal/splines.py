@@ -68,8 +68,10 @@ def create_equidistant_knots(x: Array, order: int = 3, n_params: int = 20) -> Ar
     a = jnp.min(x)
     b = jnp.max(x)
 
-    min_k = a - jnp.abs(a * epsilon)
-    max_k = b + jnp.abs(b * epsilon)
+    _range = b - a
+
+    min_k = a - _range * epsilon
+    max_k = b + _range * epsilon
 
     internal_knots = jnp.linspace(min_k, max_k, internal_k)
 
