@@ -2537,6 +2537,10 @@ def sfn(exp_shape):
 
 
 def normalization_coef(shape: Array, dknots: Array) -> Array:
+    """
+    Constructs the spline coefficients sucht that the average slope over the domain
+    is one.
+    """
     exp_shape = jnp.exp(shape)
     cumsum_exp_shape = cumsum_leading_zero(exp_shape)
     coef = (dknots / sfn(exp_shape)) * cumsum_exp_shape
