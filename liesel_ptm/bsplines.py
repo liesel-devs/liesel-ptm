@@ -102,7 +102,6 @@ class Knots:
 
 
 class IncreasingCoef:
-
     """
     Assuming that latent_coef[..., 0] is -Inf.
     """
@@ -236,55 +235,68 @@ class OnionCoef(IncreasingCoef):
     def __init__(
         self,
         knots: Knots,
+        weights: Array,
         enforce_slope1: EnforceSlope1 = EnforceSlope1.IN_AB,
         min_increment: float = 1e-4,
     ):
         super().__init__(knots=knots)
         self.enforce_slope1 = enforce_slope1
         self.min_increment = min_increment
+        self.weights = weights
 
-    def compute_coef(self, latent_params: Array, weights: Array) -> Array:
+    def _update_latent_coef_body_fun(self, j, val):
+        latent_coef, weights = val
+
+        coef = jnp.exp(latent_coef).cumsum(axis=-1) + self.intercept_coef
+        target = self.target_coef[j] + jnp.exp(self.target_log_increment)
+        diff_j = target - coef[..., j]
+
+        latent_target_j = jnp.log(
+            (diff_j > 0) * diff_j + (1 - (diff_j > 0)) * self.min_increment
+        )
+
+        updated_latent_coef_j = (
+            weights[j] * latent_target_j + (1 - weights[j]) * latent_coef[..., (j + 1)]
+        )
+        latent_coef = latent_coef.at[..., (j + 1)].set(updated_latent_coef_j)
+        return latent_coef, weights
+
+    def _update_latent_coef(
+        self, index_lo: int, index_hi: int, latent_coef: Array
+    ) -> Array:
+        latent_coef, _ = jax.lax.fori_loop(
+            lower=index_lo,
+            upper=index_hi,
+            body_fun=self._update_latent_coef_body_fun,
+            init_val=(latent_coef, self.weights),
+        )
+
+        return latent_coef
+
+    def compute_coef(self, latent_params: Array) -> Array:
         latent_coef = self.assemble_latent_coef(latent_params)
 
         latent_coef = self.normalize_right_of_a(latent_coef)
 
-        def body_fun(j, val):
-            latent_coef, weights = val
-
-            coef = jnp.exp(latent_coef).cumsum(axis=-1) + self.intercept_coef
-            target = self.target_coef[j] + jnp.exp(self.target_log_increment)
-            diff_j = target - coef[..., j]
-
-            latent_target_j = jnp.log(
-                (diff_j > 0) * diff_j + (1 - (diff_j > 0)) * self.min_increment
-            )
-
-            updated_latent_coef_j = (
-                weights[j] * latent_target_j
-                + (1 - weights[j]) * latent_coef[..., (j + 1)]
-            )
-            latent_coef = latent_coef.at[..., (j + 1)].set(updated_latent_coef_j)
-            return latent_coef, weights
-
-        latent_coef, _ = jax.lax.fori_loop(
-            lower=1,
-            upper=self.knots.nparam_full_domain,
-            body_fun=body_fun,
-            init_val=(latent_coef, weights),
+        latent_coef = self._update_latent_coef(
+            index_lo=1,
+            index_hi=self.knots.nparam_full_domain,
+            latent_coef=latent_coef,
         )
 
         if self.enforce_slope1 == EnforceSlope1.IN_AB:
             latent_coef = self.normalize_in_ab(latent_coef)
+
             latent_coef = latent_coef.at[..., -(self.knots.nfixed_right + 1) :].set(
                 self.target_log_increment
             )
 
-            latent_coef, _ = jax.lax.fori_loop(
-                lower=self.knots.nfixed_left + self.knots.nparam - 1,
-                upper=self.knots.nparam_full_domain,
-                body_fun=body_fun,
-                init_val=(latent_coef, weights),
+            latent_coef = self._update_latent_coef(
+                index_lo=self.knots.nfixed_left + self.knots.nparam - 1,
+                index_hi=self.knots.nparam_full_domain,
+                latent_coef=latent_coef,
             )
+
         elif self.enforce_slope1 == EnforceSlope1.RIGHT_OF_A:
             latent_coef = self.normalize_right_of_a(latent_coef)
         elif self.enforce_slope1 == EnforceSlope1.GLOBALLY:
@@ -299,18 +311,22 @@ class OnionCoef(IncreasingCoef):
 
 class StreamCoef(IncreasingCoef):
     def __init__(
-        self, knots: Knots, enforce_slope1: EnforceSlope1 = EnforceSlope1.IN_AB
+        self,
+        knots: Knots,
+        weights: Array,
+        enforce_slope1: EnforceSlope1 = EnforceSlope1.IN_AB,
     ):
         super().__init__(knots=knots)
         self.enforce_slope1 = enforce_slope1
+        self.weights = weights
 
-    def compute_coef(self, latent_params: Array, weights: Array) -> Array:
+    def compute_coef(self, latent_params: Array) -> Array:
         latent_coef = self.assemble_latent_coef(latent_params)
 
         latent_coef = self.normalize_right_of_a(latent_coef)
 
-        base = weights * self.target_log_increment
-        deviation = (1.0 - weights) * latent_coef
+        base = self.weights * self.target_log_increment
+        deviation = (1.0 - self.weights) * latent_coef
 
         latent_coef = latent_coef.at[..., (1 + self.knots.nfixed_left) :].set(
             (base + deviation)[..., (1 + self.knots.nfixed_left) :]
