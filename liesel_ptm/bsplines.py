@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from enum import StrEnum, auto
+from enum import Enum, auto
 from functools import partial
 
 import jax
@@ -196,7 +196,7 @@ class IncreasingCoef:
         return (latent_coef - jnp.log(avg_slope)).mean()
 
 
-class EnforceSlope1(StrEnum):
+class EnforceSlope1(Enum):
     NO = auto()
     IN_AB = auto()
     RIGHT_OF_A = auto()
