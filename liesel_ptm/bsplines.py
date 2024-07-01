@@ -346,6 +346,31 @@ class StreamCoef(IncreasingCoef):
         return coef
 
 
+class SimpleOnionCoef(OnionCoef):
+    def compute_coef(self, latent_params: Array) -> Array:
+        latent_coef = self.assemble_latent_coef(latent_params)
+        latent_coef = self.normalize_in_ab(latent_coef)
+        latent_coef = self._update_latent_coef(
+            index_lo=self.knots.nfixed_left + self.knots.nparam - 1,
+            index_hi=self.knots.nparam_full_domain,
+            latent_coef=latent_coef,
+        )
+
+        coef = jnp.exp(latent_coef).cumsum(axis=-1) + self.intercept_coef
+
+        return coef
+
+
+class SimpleStreamCoef(IncreasingCoef):
+    def compute_coef(self, latent_params: Array) -> Array:
+        latent_coef = self.assemble_latent_coef(latent_params)
+        latent_coef = self.normalize_in_ab(latent_coef)
+
+        coef = jnp.exp(latent_coef).cumsum(axis=-1) + self.intercept_coef
+
+        return coef
+
+
 @partial(jax.jit, static_argnums=2)
 @partial(jnp.vectorize, excluded=(1, 2), signature="(n)->(n,p)")
 def bspline_basis(x, knots, order):
