@@ -10,7 +10,15 @@ from plotnine import aes, geom_line, geom_vline, ggplot
 
 from liesel_ptm import bsplines as bs
 from liesel_ptm import nodes as nd
-from liesel_ptm.bsplines import IncreasingCoef, Knots, OnionCoef, StreamCoef, kn
+from liesel_ptm.bsplines import (
+    IncreasingCoef,
+    Knots,
+    Knots2,
+    OnionCoef,
+    OnionCoef2,
+    StreamCoef,
+    kn,
+)
 from liesel_ptm.custom_types import Array
 from liesel_ptm.datagen import sample_shape
 from liesel_ptm.liesel_internal import splines
@@ -704,3 +712,44 @@ class TestOnionCoef:
         coef_out = jax.jit(coef.compute_coef)(latent_params, weights=weights)
         assert jnp.allclose(coef_out[0, :], coef.target_coef)
         assert not jnp.allclose(coef_out[1, :], coef.target_coef)
+
+
+class TestOnionCoef2:
+    def test_compute_coef_runs(self):
+        knots = Knots2(-3.0, 3.0, nparam=20)
+        coef = OnionCoef2(knots)
+
+        latent_params = jnp.zeros(knots.nparam)
+
+        coef.compute_coef(latent_params)
+
+    def test_compute_coef_with_optimal_start(self):
+        knots = Knots2(-3.0, 3.0, nparam=20)
+        coef = OnionCoef2(knots)
+
+        latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
+
+        coef_out = coef.compute_coef(latent_params)
+        assert jnp.allclose(coef_out, coef.target_coef, atol=1e-6)
+
+    def test_broadcasting(self):
+        knots = Knots2(-3.0, 3.0, nparam=20)
+        coef = OnionCoef2(knots)
+
+        latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
+        latent_params = jnp.stack((latent_params, jnp.zeros(knots.nparam)))
+
+        coef_out = coef.compute_coef(latent_params)
+        assert jnp.allclose(coef_out[0, :], coef.target_coef, atol=1e-6)
+        assert jnp.allclose(coef_out[1, :], coef.target_coef, atol=1e-6)
+
+    def test_jit(self):
+        knots = Knots2(-3.0, 3.0, nparam=20)
+        coef = OnionCoef2(knots)
+
+        latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
+        latent_params = jnp.stack((latent_params, jnp.zeros(knots.nparam)))
+
+        coef_out = jax.jit(coef.compute_coef)(latent_params)
+        assert jnp.allclose(coef_out[0, :], coef.target_coef, atol=1e-6)
+        assert jnp.allclose(coef_out[1, :], coef.target_coef, atol=1e-6)

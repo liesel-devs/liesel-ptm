@@ -81,23 +81,94 @@ class Knots:
         return numerator / (self.step * (p - self.order))
 
     def average_slope_in_ab_latent(self, latent_coef: Array) -> float:
-        assert jnp.shape(latent_coef)[-1] == self.nparam
+        # assert jnp.shape(latent_coef)[-1] == self.nparam
         return self._average_slope_latent(latent_coef)
 
     def average_slope_right_of_a_latent(self, latent_coef: Array) -> float:
-        assert jnp.shape(latent_coef)[-1] == (self.nparam + self.nfixed_right)
+        # assert jnp.shape(latent_coef)[-1] == (self.nparam + self.nfixed_right)
         return self._average_slope_latent(latent_coef)
 
     def average_slope_in_full_domain_latent(self, latent_coef: Array) -> float:
-        assert jnp.shape(latent_coef)[-1] == (
-            self.nparam + self.nfixed_left + self.nfixed_right
-        )
+        # assert jnp.shape(latent_coef)[-1] == (
+        #     self.nparam + self.nfixed_left + self.nfixed_right
+        # )
         return self._average_slope_latent(latent_coef)
 
     def average_slope_in_full_domain(self, coef: Array) -> float:
-        assert jnp.shape(coef)[-1] == (
-            self.nparam + self.nfixed_left + self.nfixed_right + 1
+        # assert jnp.shape(coef)[-1] == (
+        #     self.nparam + self.nfixed_left + self.nfixed_right + 1
+        # )
+        return self._average_slope(coef)
+
+
+class Knots2:
+    def __init__(
+        self,
+        a: float,
+        b: float,
+        nparam: int,
+        order: int = 3,
+    ) -> None:
+        self.a = a
+        self.b = b
+        self.nparam = nparam
+        self.order = order
+        self.nfixed_left = 3
+        self.nfixed_right = 3
+
+        knots = splines.create_equidistant_knots(
+            jnp.array([a, b]), order=order, n_params=nparam + 1
         )
+        self.step = jnp.diff(knots).mean()
+
+        leftmost_knot = knots[0]
+        rightmost_knot = knots[-1]
+
+        left_additional_knots = jnp.linspace(
+            leftmost_knot - ((self.nfixed_left) * self.step),
+            (leftmost_knot - self.step),
+            self.nfixed_left,
+        )
+
+        right_additional_knots = jnp.linspace(
+            (rightmost_knot + self.step),
+            rightmost_knot + ((self.nfixed_right) * self.step),
+            self.nfixed_right,
+        )
+
+        self.knots = jnp.concatenate(
+            (left_additional_knots, knots, right_additional_knots)
+        )
+
+        self.nparam_full_domain = self.nparam + self.nfixed_left + self.nfixed_right + 1
+
+        self.left = self.knots[order + self.nfixed_left - 2]
+        self.right = self.knots[-(order + self.nfixed_right - 1)]
+
+    def _average_slope(self, coef: Array) -> Array:
+        dcoef = jnp.log(jnp.diff(coef))
+        return self._average_slope_latent(dcoef)
+
+    def _average_slope_latent(self, latent_coef: Array) -> Array:
+        p = jnp.shape(latent_coef)[-1] + 1
+        dcoef = jnp.exp(latent_coef)
+
+        outer_border = dcoef[..., jnp.array([0, -1])] / 6
+        inner_border = 5 * dcoef[..., jnp.array([1, -2])] / 6
+        middle = dcoef[..., 2:-2]
+
+        numerator = (
+            outer_border.sum(axis=-1, keepdims=True)
+            + inner_border.sum(axis=-1, keepdims=True)
+            + middle.sum(axis=-1, keepdims=True)
+        )
+
+        return numerator / (self.step * (p - self.order))
+
+    def average_slope_in_full_domain(self, coef: Array) -> float:
+        # assert jnp.shape(coef)[-1] == (
+        #     self.nparam + self.nfixed_left + self.nfixed_right + 1
+        # )
         return self._average_slope(coef)
 
 
@@ -149,12 +220,13 @@ class IncreasingCoef:
         il = self.knots.nfixed_left + 1
         ir = il + self.knots.nparam
 
-        latent_coef_in_ab = latent_coef[..., il:ir]
+        latent_coef_in_ab = latent_coef[..., (il - 2) : (ir + 2)]
 
         avg_slope = self.knots.average_slope_in_ab_latent(latent_coef_in_ab)
+        avg_slope = self.knots.average_slope_in_ab_latent(latent_coef_in_ab)
 
-        latent_coef = latent_coef.at[..., il:ir].set(
-            latent_coef_in_ab - jnp.log(avg_slope)
+        latent_coef = latent_coef.at[..., (il) : (ir + 2)].set(
+            latent_coef_in_ab[..., 2:] - jnp.log(avg_slope)
         )
         return latent_coef
 
@@ -163,11 +235,12 @@ class IncreasingCoef:
         return latent_coef - jnp.log(avg_slope)
 
     def normalize_right_of_a(self, latent_coef: Array) -> Array:
-        latent_coef_right_of_a = latent_coef[..., (self.knots.nfixed_left + 1) :]
+        latent_coef_right_of_a = latent_coef[..., (self.knots.nfixed_left + 1 - 2) :]
+
         avg_slope = self.knots.average_slope_right_of_a_latent(latent_coef_right_of_a)
 
         latent_coef = latent_coef.at[..., (self.knots.nfixed_left + 1) :].set(
-            latent_coef_right_of_a - jnp.log(avg_slope)
+            latent_coef_right_of_a[..., 2:] - jnp.log(avg_slope)
         )
         return latent_coef
 
@@ -309,6 +382,30 @@ class OnionCoef(IncreasingCoef):
         return coef
 
 
+class OnionCoef2(IncreasingCoef):
+    def __init__(self, knots: Knots2):
+        super().__init__(knots)  # type: ignore
+
+    def correction_shift(self, latent_params: Array) -> Array:
+        left = self.knots.left  # type: ignore
+        right = self.knots.right  # type: ignore
+
+        correction = jnp.log(
+            right - left - 2 * jnp.exp(self.target_log_increment)
+        ) - jax.scipy.special.logsumexp(latent_params, axis=-1)
+
+        return jnp.expand_dims(correction, -1)
+
+    def compute_coef(self, latent_params: Array) -> Array:
+        latent_coef = self.assemble_latent_coef(
+            latent_params + self.correction_shift(latent_params)
+        )
+
+        coef = jnp.exp(latent_coef).cumsum(axis=-1) + self.intercept_coef
+
+        return coef
+
+
 class StreamCoef(IncreasingCoef):
     def __init__(
         self,
@@ -350,6 +447,7 @@ class SimpleOnionCoef(OnionCoef):
     def compute_coef(self, latent_params: Array) -> Array:
         latent_coef = self.assemble_latent_coef(latent_params)
         latent_coef = self.normalize_in_ab(latent_coef)
+
         latent_coef = self._update_latent_coef(
             index_lo=self.knots.nfixed_left + self.knots.nparam - 1,
             index_hi=self.knots.nparam_full_domain,
