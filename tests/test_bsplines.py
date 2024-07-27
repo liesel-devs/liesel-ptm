@@ -10,15 +10,7 @@ from plotnine import aes, geom_line, geom_vline, ggplot
 
 from liesel_ptm import bsplines as bs
 from liesel_ptm import nodes as nd
-from liesel_ptm.bsplines import (
-    IncreasingCoef,
-    Knots,
-    Knots2,
-    OnionCoef,
-    OnionCoef2,
-    StreamCoef,
-    kn,
-)
+from liesel_ptm.bsplines import OnionCoef, OnionKnots, kn
 from liesel_ptm.custom_types import Array
 from liesel_ptm.datagen import sample_shape
 from liesel_ptm.liesel_internal import splines
@@ -546,41 +538,24 @@ def test_searchsorted():
     assert grid[i] <= x < grid[i + 1]
 
 
-class TestKnots:
+class TestOnionKnots:
     def test_default_nparam(self):
-        knotsa = Knots(-3.0, 3.0, nparam=10)
+        knotsa = OnionKnots(-3.0, 3.0, nparam=10)
         knotsb = kn(jnp.array([-3.0, 3.0]), n_params=10)
 
-        assert knotsa.knots.shape[0] == (knotsb.shape[0] + 1)
+        assert knotsa.knots.shape[0] == (knotsb.shape[0] + 6 + 1)
 
-    def test_length_left_extension(self):
-        knotsa = Knots(-3.0, 3.0, nparam=10)
-        knotsb = Knots(-3.0, 3.0, nparam=10, nfixed_left=3)
-
-        assert knotsa.knots.shape[0] == (knotsb.knots.shape[0] - 3)
-
-    def test_values_left_extension(self):
-        knots = Knots(-3.0, 3.0, nparam=10, nfixed_left=3)
-
-        assert jnp.allclose(jnp.diff(knots.knots), knots.step)
-
-    def test_length_right_extension(self):
-        knotsa = Knots(-3.0, 3.0, nparam=10)
-        knotsb = Knots(-3.0, 3.0, nparam=10, nfixed_right=3)
-
-        assert knotsa.knots.shape[0] == (knotsb.knots.shape[0] - 3)
-
-    def test_values_right_extension(self):
-        knots = Knots(-3.0, 3.0, nparam=10, nfixed_right=3)
+    def test_values_extension(self):
+        knots = OnionKnots(-3.0, 3.0, nparam=10)
 
         assert jnp.allclose(jnp.diff(knots.knots), knots.step)
 
     def test_length(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
+        knots = OnionKnots(-3.0, 3.0, nparam=20)
 
         nparam = 20
         nleft = 3
-        nright = 14
+        nright = 3
         order = 3
         boundary_knots = order + 1
         intercept = 1
@@ -588,168 +563,57 @@ class TestKnots:
         length_knots = nparam + nleft + nright + boundary_knots + intercept
         assert knots.knots.shape[0] == length_knots
 
-    def test_average_slope(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
+    def test_ab(self):
+        knots = OnionKnots(-3.0, 3.0, nparam=10)
+        assert knots.left == pytest.approx(-3.0 - 2 * knots.step, abs=1e-4)
+        assert knots.right == pytest.approx(3.0 + 2 * knots.step, abs=1e-4)
 
-        latent_coef = jnp.zeros(knots.nparam_full_domain)
-        exp_coef = jnp.exp(latent_coef[1:])
-        coef = latent_coef[0] + exp_coef.cumsum()
-
-        avg_slope_a = knots._average_slope(coef)
-        avg_slope_b = bs._average_slope_in_segment(coef, knots.knots)
-
-        assert avg_slope_a == pytest.approx(avg_slope_b)
-
-
-class TestIncreasingCoef:
-    def test_setup_target_log_increment(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
-        coef = IncreasingCoef(knots)
-        assert coef.target_coef == pytest.approx(knots.knots[2:-2])
-
-
-class TestStreamCoef:
-    def test_compute_coef_runs(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
-        coef = StreamCoef(knots, enforce_slope1="in_ab")
-
-        latent_params = jnp.zeros(knots.nparam)
-
-        weights = jnp.full(
-            shape=(knots.nparam + knots.nfixed_right + 1,), fill_value=0.5
-        )
-        coef.compute_coef(latent_params, weights=weights)
-
-    def test_compute_coef_with_optimal_start(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
-        coef = StreamCoef(knots, enforce_slope1="in_ab")
-
-        latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
-
-        weights = jnp.full(
-            shape=(knots.nparam + knots.nfixed_right + 1,), fill_value=0.5
-        )
-        coef_out = coef.compute_coef(latent_params, weights=weights)
-        assert jnp.allclose(coef_out, coef.target_coef)
-
-    def test_broadcasting(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
-        coef = StreamCoef(knots, enforce_slope1="in_ab")
-
-        latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
-        latent_params = jnp.stack((latent_params, jnp.zeros(knots.nparam)))
-
-        weights = jnp.full(
-            shape=(knots.nparam + knots.nfixed_right + 1,), fill_value=0.5
-        )
-        coef_out = coef.compute_coef(latent_params, weights=weights)
-        assert jnp.allclose(coef_out[0, :], coef.target_coef)
-        assert not jnp.allclose(coef_out[1, :], coef.target_coef)
-
-    def test_jit(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
-        coef = StreamCoef(knots, enforce_slope1="in_ab")
-
-        latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
-        latent_params = jnp.stack((latent_params, jnp.zeros(knots.nparam)))
-
-        weights = jnp.full(
-            shape=(knots.nparam + knots.nfixed_right + 1,), fill_value=0.5
-        )
-        coef_out = jax.jit(coef.compute_coef)(latent_params, weights=weights)
-        assert jnp.allclose(coef_out[0, :], coef.target_coef)
-        assert not jnp.allclose(coef_out[1, :], coef.target_coef)
+    @pytest.mark.parametrize(
+        "left,right,nparam",
+        [(-4.0, 4.0, 10), (-4.0, 4.0, 15), (-4.0, 5.0, 10), (-5.0, 4.0, 20)],
+    )
+    def test_new_from_lr(self, left, right, nparam):
+        knots = OnionKnots.new_from_lr(left, right, nparam=nparam)
+        assert knots.left == pytest.approx(left, abs=1e-4)
+        assert knots.right == pytest.approx(right, abs=1e-4)
 
 
 class TestOnionCoef:
     def test_compute_coef_runs(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
-        coef = OnionCoef(knots, enforce_slope1="in_ab")
+        knots = OnionKnots(-3.0, 3.0, nparam=20)
+        coef = OnionCoef(knots)
 
         latent_params = jnp.zeros(knots.nparam)
 
-        weights = jnp.full(
-            shape=(knots.nparam + knots.nfixed_right + 1,), fill_value=0.5
-        )
-        coef.compute_coef(latent_params, weights=weights)
+        coef(latent_params)
 
     def test_compute_coef_with_optimal_start(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
-        coef = OnionCoef(knots, enforce_slope1="in_ab")
+        knots = OnionKnots(-3.0, 3.0, nparam=20)
+        coef = OnionCoef(knots)
 
         latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
 
-        weights = jnp.full(
-            shape=(knots.nparam + knots.nfixed_right + 1,), fill_value=0.5
-        )
-        coef_out = coef.compute_coef(latent_params, weights=weights)
-        assert jnp.allclose(coef_out, coef.target_coef)
+        coef_out = coef(latent_params)
+        assert jnp.allclose(coef_out, coef.target_coef, atol=1e-5)
 
     def test_broadcasting(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
-        coef = OnionCoef(knots, enforce_slope1="in_ab")
+        knots = OnionKnots(-3.0, 3.0, nparam=20)
+        coef = OnionCoef(knots)
 
         latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
         latent_params = jnp.stack((latent_params, jnp.zeros(knots.nparam)))
 
-        weights = jnp.full(
-            shape=(knots.nparam + knots.nfixed_right + 1,), fill_value=0.5
-        )
-        coef_out = coef.compute_coef(latent_params, weights=weights)
-        assert jnp.allclose(coef_out[0, :], coef.target_coef)
-        assert not jnp.allclose(coef_out[1, :], coef.target_coef)
+        coef_out = coef(latent_params)
+        assert jnp.allclose(coef_out[0, :], coef.target_coef, atol=1e-5)
+        assert jnp.allclose(coef_out[1, :], coef.target_coef, atol=1e-5)
 
     def test_jit(self):
-        knots = Knots(-3.0, 3.0, nparam=20, nfixed_left=3, nfixed_right=14)
-        coef = OnionCoef(knots, enforce_slope1="in_ab")
+        knots = OnionKnots(-3.0, 3.0, nparam=20)
+        coef = OnionCoef(knots)
 
         latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
         latent_params = jnp.stack((latent_params, jnp.zeros(knots.nparam)))
 
-        weights = jnp.full(
-            shape=(knots.nparam + knots.nfixed_right + 1,), fill_value=0.5
-        )
-        coef_out = jax.jit(coef.compute_coef)(latent_params, weights=weights)
-        assert jnp.allclose(coef_out[0, :], coef.target_coef)
-        assert not jnp.allclose(coef_out[1, :], coef.target_coef)
-
-
-class TestOnionCoef2:
-    def test_compute_coef_runs(self):
-        knots = Knots2(-3.0, 3.0, nparam=20)
-        coef = OnionCoef2(knots)
-
-        latent_params = jnp.zeros(knots.nparam)
-
-        coef.compute_coef(latent_params)
-
-    def test_compute_coef_with_optimal_start(self):
-        knots = Knots2(-3.0, 3.0, nparam=20)
-        coef = OnionCoef2(knots)
-
-        latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
-
-        coef_out = coef.compute_coef(latent_params)
-        assert jnp.allclose(coef_out, coef.target_coef, atol=1e-6)
-
-    def test_broadcasting(self):
-        knots = Knots2(-3.0, 3.0, nparam=20)
-        coef = OnionCoef2(knots)
-
-        latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
-        latent_params = jnp.stack((latent_params, jnp.zeros(knots.nparam)))
-
-        coef_out = coef.compute_coef(latent_params)
-        assert jnp.allclose(coef_out[0, :], coef.target_coef, atol=1e-6)
-        assert jnp.allclose(coef_out[1, :], coef.target_coef, atol=1e-6)
-
-    def test_jit(self):
-        knots = Knots2(-3.0, 3.0, nparam=20)
-        coef = OnionCoef2(knots)
-
-        latent_params = jnp.full((knots.nparam,), fill_value=coef.target_log_increment)
-        latent_params = jnp.stack((latent_params, jnp.zeros(knots.nparam)))
-
-        coef_out = jax.jit(coef.compute_coef)(latent_params)
-        assert jnp.allclose(coef_out[0, :], coef.target_coef, atol=1e-6)
-        assert jnp.allclose(coef_out[1, :], coef.target_coef, atol=1e-6)
+        coef_out = jax.jit(coef)(latent_params)
+        assert jnp.allclose(coef_out[0, :], coef.target_coef, atol=1e-5)
+        assert jnp.allclose(coef_out[1, :], coef.target_coef, atol=1e-5)
