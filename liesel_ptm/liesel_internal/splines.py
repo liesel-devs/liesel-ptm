@@ -41,7 +41,9 @@ def _check_b_spline_inputs(x: Array, knots: Array, order: int) -> None:
 
 # @jit
 # @partial(jit, static_argnums=(1, 2))
-def create_equidistant_knots(x: Array, order: int = 3, n_params: int = 20) -> Array:
+def create_equidistant_knots(
+    x: Array, order: int = 3, n_params: int = 20, epsilon: float = 0.01
+) -> Array:
     """
     Create equidistant knots for B-Spline of the specified order.
 
@@ -61,8 +63,6 @@ def create_equidistant_knots(x: Array, order: int = 3, n_params: int = 20) -> Ar
         Number of parameters of the B-spline.
 
     """
-    epsilon = 0.01
-
     internal_k = n_params - order + 1
 
     a = jnp.min(x)
