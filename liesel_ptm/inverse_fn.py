@@ -1,6 +1,7 @@
 from collections.abc import Callable
 from functools import partial
 
+import jax
 import jax.numpy as jnp
 import scipy
 
@@ -57,3 +58,32 @@ def invert_fn(
         )
 
     return inverse
+
+
+def numerical_inverse_jax(
+    fn: Callable, tol: float = 1e-6, max_iter: int = 100
+) -> Callable:
+    fn_grad = jax.grad(fn)
+
+    @jax.jit
+    @partial(jnp.vectorize, signature="(),()->()")
+    def inverse_fn(y, initial_guess):
+        def newton_step(x, y):
+            return x - (fn(x) - y) / fn_grad(x)
+
+        def cond_fn(state):
+            x, x_new, iter_count = state
+            return jnp.logical_and(jnp.abs(x_new - x) >= tol, iter_count < max_iter)
+
+        def body_fn(state):
+            _, x, iter_count = state
+            x_new = newton_step(x, y)
+            return x, x_new, iter_count + 1
+
+        # Initial state: (current x, new x, iteration count)
+        state = (initial_guess, initial_guess + 2 * tol, 0)
+        _, x_new, _ = jax.lax.while_loop(cond_fn, body_fn, state)
+
+        return x_new
+
+    return inverse_fn

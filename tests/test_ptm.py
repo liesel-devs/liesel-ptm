@@ -1005,6 +1005,24 @@ class TestNormalizationFn:
 
         assert np.allclose(z, zt, atol=1e-4)
 
+    def test_inverse_identity_newton(self) -> None:
+        knots = kn(np.array([-2.0, 2.0]), order=3, n_params=10)
+        dknots = np.diff(knots).mean()
+        key = jax.random.PRNGKey(4)
+        key, subkey = jax.random.split(key)
+        shape = np.zeros(9)
+        coef = nd.normalization_coef(shape, dknots)
+
+        z = jax.random.normal(subkey, shape=(20,))
+        z = z - z.mean()
+
+        normalization = ptm_ls.NormalizationFn(knots)
+
+        zt = normalization.inverse_newton(z, coef, np.zeros(1), np.ones(1), max_iter=30)
+        zt = zt - zt.mean()
+
+        assert np.allclose(z, zt, atol=1e-4)
+
     def test_inverse(self) -> None:
         knots = kn(np.array([-2.0, 2.0]), order=3, n_params=10)
         dknots = np.diff(knots).mean()
@@ -1020,6 +1038,28 @@ class TestNormalizationFn:
         z = normalization(y, coef, np.zeros(1), np.ones(1))
 
         zt = normalization.inverse(z, coef, np.zeros(1), np.ones(1))
+
+        # ggplot() + aes(y, z) + geom_point()
+        # ggplot() + geom_point(aes(zt, z)) + geom_point(aes(y, z), color="red")
+
+        assert not np.allclose(z, zt, atol=1e-4)
+        assert np.allclose(y, zt, atol=1e-4)
+
+    def test_inverse_newton(self) -> None:
+        knots = kn(np.array([-2.0, 2.0]), order=3, n_params=10)
+        dknots = np.diff(knots).mean()
+        key = jax.random.PRNGKey(4)
+        key, subkey = jax.random.split(key)
+        shape = sample_shape(key, 9)
+        coef = nd.normalization_coef(shape.sample, dknots)
+
+        y = np.linspace(-2.0, 2.0, 20)
+
+        normalization = ptm_ls.NormalizationFn(knots)
+
+        z = normalization(y, coef, np.zeros(1), np.ones(1))
+
+        zt = normalization.inverse_newton(z, coef, np.zeros(1), np.ones(1), max_iter=30)
 
         # ggplot() + aes(y, z) + geom_point()
         # ggplot() + geom_point(aes(zt, z)) + geom_point(aes(y, z), color="red")

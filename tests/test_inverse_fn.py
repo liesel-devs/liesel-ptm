@@ -1,7 +1,13 @@
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from liesel_ptm.inverse_fn import approximate_inverse, initial_inverse_guess, invert_fn
+from liesel_ptm.inverse_fn import (
+    approximate_inverse,
+    initial_inverse_guess,
+    invert_fn,
+    numerical_inverse_jax,
+)
 
 
 def test_initial_inverse_guess() -> None:
@@ -26,6 +32,20 @@ def test_inverse() -> None:
 
     znew = np.random.uniform(0.1, 1, 10)
     yhat = iexp(znew, None).x
+    assert yhat == pytest.approx(np.log(znew), abs=1e-3)
+
+
+def test_inverse_jax() -> None:
+    y = np.linspace(-5, 2, 200)
+    z = jnp.exp(y)
+
+    iexp = numerical_inverse_jax(jnp.exp)
+    yhat = iexp(z, jnp.ones_like(y))
+
+    assert yhat == pytest.approx(y, abs=1e-3)
+
+    znew = np.random.uniform(0.1, 1, 10)
+    yhat = iexp(znew, jnp.ones_like(znew))
     assert yhat == pytest.approx(np.log(znew), abs=1e-3)
 
 

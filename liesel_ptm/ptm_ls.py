@@ -367,6 +367,45 @@ class NormalizationFn:
         y_approx = approximate_inverse(ygrid, zgrid, z)
         return y_approx
 
+    def inverse_newton(
+        self,
+        z: Array,
+        coef: Array,
+        norm_mean: Array,
+        norm_sd: Array,
+        tol=1e-6,
+        max_iter=100,
+    ) -> Array:
+        @jax.jit
+        @partial(jnp.vectorize, signature="(n),(n),(p),(1),(1)->(n)")
+        def inverse_fn(z, initial_guess, coef, norm_mean, norm_sd):
+            def newton_step(y, z):
+                h = self(y, coef, norm_mean, norm_sd)
+                h_deriv = self.deriv(y, coef, norm_sd)
+                return y - (h - z) / h_deriv
+
+            def cond_fn(state):
+                y, iter_count, z = state
+                h = self(y, coef, norm_mean, norm_sd)
+                return jnp.logical_and(
+                    jnp.any(jnp.abs(h - z) >= tol), iter_count < max_iter
+                )
+
+            def body_fn(state):
+                y, iter_count, z = state
+                y_new = newton_step(y, z)
+                return y_new, iter_count + 1, z
+
+            # Initial state: (current x, new x, iteration count)
+            state = (initial_guess, 0, z)
+            y_new, i, _ = jax.lax.while_loop(cond_fn, body_fn, state)
+
+            return y_new
+
+        initial_guess = self.inverse(z, coef, norm_mean, norm_sd, 10)
+
+        return inverse_fn(z, initial_guess, coef, norm_mean, norm_sd)
+
 
 def _extract_position(
     position_keys: list[str], graph: lsl.Model, state: gs.ModelState
@@ -1184,7 +1223,7 @@ class PTMLocScalePredictions:
             norm_sd = jnp.ones_like(norm_mean)
 
         normalization = NormalizationFn(self.model.knots, order=3)
-        zt = normalization.inverse(z, coef, norm_mean, norm_sd)
+        zt = normalization.inverse_newton(z, coef, norm_mean, norm_sd)
         return zt
 
     def predict_transformation_inverse(self, z: Array) -> Array:
