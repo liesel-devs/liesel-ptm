@@ -2836,14 +2836,19 @@ class TransformedVar(Var):
         name: str = "",
         bijector: tfb.Bijector | None = tfb.Softplus(),
     ) -> None:
-        super().__init__(value, prior, name=name)
-        self.parameter = True
-
         self.transformed = None
         """The transformed variable (if any)."""
 
-        if bijector is not None:
+        if bijector is not None and prior is not None:
+            super().__init__(value, prior, name=name)
+            self.parameter = True
             self.transformed = self.transform(bijector)
+            self.update()
+        elif bijector is not None and prior is None:
+            self.transformed = lsl.param(
+                value=bijector.inverse(value), name=f"{name}_transformed"
+            )
+            super().__init__(lsl.Calc(bijector.forward, self.transformed), name=name)
             self.update()
 
     def predict(self, samples: dict[str, Array]) -> Array:

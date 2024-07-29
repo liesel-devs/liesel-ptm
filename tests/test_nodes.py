@@ -713,3 +713,9 @@ class TestVarParams:
             ptm.ScaleWeibull(1.0, scale=0.003, name="tau")
 
         ptm.ScaleWeibull(0.5, scale=0.003, name="tau")
+
+
+class TestTransformedVar:
+    def test_value_no_dist(self):
+        var = ptm.TransformedVar(value=1.0, name="test")
+        assert var.value == pytest.approx(1.0)
