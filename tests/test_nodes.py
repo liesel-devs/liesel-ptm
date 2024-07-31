@@ -719,3 +719,17 @@ class TestTransformedVar:
     def test_value_no_dist(self):
         var = ptm.TransformedVar(value=1.0, name="test")
         assert var.value == pytest.approx(1.0)
+
+
+class TestOnionCoefParam:
+    def test_nparam(self):
+        knots = nd.OnionKnots(a=-3.0, b=3.0, nparam=10)
+        coef = nd.OnionCoefParam(knots=knots, name="coef")
+
+        assert coef.value.shape == (knots.nparam + 7,)
+
+    def test_values(self):
+        knots = nd.OnionKnots(a=-3.0, b=3.0, nparam=10)
+        coef = nd.OnionCoefParam(knots=knots, name="coef")
+
+        assert np.allclose(knots.knots[2:-2], coef.value)

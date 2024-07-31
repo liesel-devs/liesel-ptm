@@ -21,6 +21,7 @@ from liesel.goose.kernel import Kernel
 from liesel.model.nodes import no_model_setter
 from sklearn.preprocessing import LabelBinarizer
 
+from .bsplines import OnionCoef, OnionKnots
 from .custom_types import Array, KeyArray, TFPDistribution
 from .liesel_internal import splines
 from .sampling import summarise_by_quantiles, summarise_by_samples
@@ -2930,3 +2931,51 @@ class ConstantPriorScalingFactor(Var):
 
     def __str__(self) -> str:
         return f"{type(self).__name__}()"
+
+
+def brownian_motion_mat(nrows: int, ncols: int):
+    r = jnp.arange(nrows)[:, None] + 1
+    c = jnp.arange(ncols)[None, :] + 1
+    return jnp.minimum(r, c)
+
+
+def rw_weight_matrix(nparam: int, center: bool = False):
+    B = brownian_motion_mat(nparam, nparam)
+    L = jnp.linalg.cholesky(B, upper=False)
+
+    if not center:
+        return L
+
+    C = jnp.eye(nparam) - jnp.ones(nparam) / (nparam)
+    W = C @ L
+    return W
+
+
+class OnionCoefLatent(lsl.Var):
+    def __init__(self, nparam: int, name: str = "") -> None:
+        W = rw_weight_matrix(nparam=nparam)
+
+        latent_var = lsl.param(
+            jnp.zeros(nparam),
+            distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
+            name=f"{name}_latent",
+        )
+
+        super().__init__(
+            lsl.Calc(jnp.dot, W, latent_var),
+            name=name,
+        )
+        self.update()
+
+
+class OnionCoefParam(lsl.Var):
+    def __init__(self, knots: OnionKnots, name: str = "") -> None:
+        latent_coef = OnionCoefLatent(nparam=knots.nparam, name=f"{name}_latent")
+        coef_spec = OnionCoef(knots)
+
+        super().__init__(
+            lsl.Calc(coef_spec, latent_coef).update(),
+            name=name,
+        )
+
+        self.latent_coef = latent_coef
