@@ -739,4 +739,4 @@ class TestOnionCoefParam:
         coef = nd.OnionCoefParam(knots=knots, name="coef")
         param = nd.find_param(coef)
 
-        assert param.name == f"{coef.latent_coef.name}_param"
+        assert param.name == coef.log_increments.latent_var.name

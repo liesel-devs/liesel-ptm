@@ -2951,18 +2951,18 @@ def rw_weight_matrix(nparam: int, center: bool = False):
     return W
 
 
-class OnionCoefLatent(lsl.Var):
+class OnionCoefLogIncrements(lsl.Var):
     def __init__(self, nparam: int, name: str = "") -> None:
         W = rw_weight_matrix(nparam=nparam)
 
-        latent_var = lsl.param(
+        self.latent_var = lsl.param(
             jnp.zeros(nparam),
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name=f"{name}_param",
         )
 
         super().__init__(
-            lsl.Calc(lambda latent: jnp.dot(W, latent), latent_var),
+            lsl.Calc(lambda latent: jnp.dot(W, latent), self.latent_var),
             name=name,
         )
         self.update()
@@ -2970,12 +2970,14 @@ class OnionCoefLatent(lsl.Var):
 
 class OnionCoefParam(lsl.Var):
     def __init__(self, knots: OnionKnots, name: str = "") -> None:
-        latent_coef = OnionCoefLatent(nparam=knots.nparam, name=f"{name}_latent")
+        log_increments = OnionCoefLogIncrements(
+            nparam=knots.nparam, name=f"{name}_latent"
+        )
         coef_spec = OnionCoef(knots)
 
         super().__init__(
-            lsl.Calc(coef_spec, latent_coef).update(),
+            lsl.Calc(coef_spec, log_increments).update(),
             name=name,
         )
 
-        self.latent_coef = latent_coef
+        self.log_increments = log_increments
