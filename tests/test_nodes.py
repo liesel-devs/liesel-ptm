@@ -733,3 +733,10 @@ class TestOnionCoefParam:
         coef = nd.OnionCoefParam(knots=knots, name="coef")
 
         assert np.allclose(knots.knots[2:-2], coef.value)
+
+    def test_param_name(self):
+        knots = nd.OnionKnots(a=-3.0, b=3.0, nparam=10)
+        coef = nd.OnionCoefParam(knots=knots, name="coef")
+        param = nd.find_param(coef)
+
+        assert param.name == f"{coef.latent_coef.name}_param"

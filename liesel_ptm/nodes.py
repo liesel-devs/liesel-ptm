@@ -2958,11 +2958,11 @@ class OnionCoefLatent(lsl.Var):
         latent_var = lsl.param(
             jnp.zeros(nparam),
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
-            name=f"{name}_latent",
+            name=f"{name}_param",
         )
 
         super().__init__(
-            lsl.Calc(jnp.dot, W, latent_var),
+            lsl.Calc(lambda latent: jnp.dot(W, latent), latent_var),
             name=name,
         )
         self.update()
