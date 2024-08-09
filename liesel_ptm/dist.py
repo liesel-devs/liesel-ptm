@@ -48,6 +48,7 @@ class TransformationDist(tfd.Distribution):
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "TransformationDist",
+        standardized: bool = True,
         **apriori_distribution_kwargs,
     ):
         parameters = dict(locals())
@@ -55,6 +56,7 @@ class TransformationDist(tfd.Distribution):
         self.knots = knots
         self.coef = coef
         self.apriori_distribution_kwargs = apriori_distribution_kwargs
+        self.standardized = standardized
 
         if basis_dot_and_deriv_fn is None:
             bspline = ExtrapBSplineApprox(knots=knots, order=3)
@@ -193,6 +195,9 @@ class TransformationDist(tfd.Distribution):
         return x
 
     def _transformation_spline_mean(self) -> Array:
+        if not self.standardized:
+            return 0.0
+
         def fn(x):
             z, logdet = self._transformation_and_logdet_spline(x)
             return x * self.reference_distribution.prob(z) * jnp.exp(logdet)
@@ -202,6 +207,9 @@ class TransformationDist(tfd.Distribution):
         return mom
 
     def _transformation_spline_variance(self, mean: Array) -> Array:
+        if not self.standardized:
+            return 1.0
+
         def fn(x):
             z, logdet = self._transformation_and_logdet_spline(x)
             return (
@@ -272,6 +280,7 @@ class LocScaleTransformationDist(TransformationDist):
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "LocScaleTransformationDist",
+        standardized: bool = True,
     ) -> None:
         super().__init__(
             knots=knots,
@@ -284,6 +293,7 @@ class LocScaleTransformationDist(TransformationDist):
             name=name,
             loc=jnp.atleast_1d(loc),
             scale=jnp.atleast_1d(scale),
+            standardized=standardized,
         )
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:

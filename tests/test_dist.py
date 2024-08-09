@@ -151,3 +151,15 @@ class TestTransformationDist:
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
         assert dist.variance() == pytest.approx(1.0)
+
+    def test_jit(self) -> None:
+        knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
+        coef = OnionCoefParam(knots)
+
+        def log_prob(y, coef):
+            dist = TransformationDist(knots=knots.knots, coef=coef)
+            return dist.log_prob(y)
+
+        y = jnp.linspace(-2.0, 2.0, 50)
+        lp = jax.jit(log_prob)(y, coef.value)
+        assert lp is not None
