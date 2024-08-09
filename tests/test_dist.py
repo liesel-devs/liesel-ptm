@@ -174,3 +174,83 @@ class TestTransformationDist:
         y = jnp.linspace(-2.0, 2.0, 50)
         lp = jax.jit(log_prob)(y, coef.value)
         assert lp is not None
+
+    @pytest.mark.parametrize("seed", (1, 2, 3, 4, 5, 6))
+    def test_inverse_transformation(self, seed) -> None:
+        knots = bsplines.OnionKnots(-1.0, 1.0, nparam=10)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
+        shape = coef.log_increments.transformed.value.shape
+        coef.log_increments.transformed.value = jrd.normal(jrd.PRNGKey(seed), shape)
+        coef.log_increments.update()
+        coef.update()
+
+        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+
+        ygrid = jnp.linspace(-5.0, 5.0, 300)
+        zgrid, _ = dist.transformation_and_logdet(ygrid)
+
+        ygrid_initial_guess = dist._inverse_transformation_initial_guess(zgrid)
+        ygrid_inverted = dist.inverse_transformation(zgrid)
+
+        assert not jnp.allclose(ygrid, zgrid, atol=0.2)
+
+        initial_deviations = jnp.abs(ygrid_initial_guess - ygrid)
+        deviations = jnp.abs(ygrid_inverted - ygrid)
+
+        assert initial_deviations.sum() > deviations.sum()
+        assert (initial_deviations >= 1e-5).sum() > (deviations >= 1e-5).sum()
+        assert jnp.allclose(ygrid, ygrid_inverted, atol=1e-2)
+
+    def test_inverse_transformation_initial_guess(self) -> None:
+        knots = bsplines.OnionKnots(-1.0, 1.0, nparam=10)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
+        shape = coef.log_increments.transformed.value.shape
+        coef.log_increments.transformed.value = jrd.normal(key, shape)
+        coef.log_increments.update()
+        coef.update()
+
+        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+
+        ygrid = jnp.linspace(-5, 5, 300)
+        zgrid, _ = dist.transformation_and_logdet(ygrid)
+
+        ygrid_inverted = dist._inverse_transformation_initial_guess(zgrid)
+
+        assert not jnp.allclose(ygrid, zgrid, atol=0.2)
+        assert jnp.allclose(ygrid, ygrid_inverted, atol=1e-2)
+
+    def test_transformation_stability(self) -> None:
+        knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
+        shape = coef.log_increments.transformed.value.shape
+        coef.log_increments.transformed.value = jrd.normal(key, shape)
+
+        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+
+        ygrid = jnp.linspace(-20, 20, 300)
+
+        zgrid, logdet = dist.transformation_and_logdet(ygrid)
+
+        assert not jnp.any(jnp.isinf(zgrid))
+        assert not jnp.any(jnp.isinf(logdet))
+        assert not jnp.any(jnp.isnan(zgrid))
+        assert not jnp.any(jnp.isnan(logdet))
+
+    def test_transformation_inverse_stability(self) -> None:
+        knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
+        shape = coef.log_increments.transformed.value.shape
+        coef.log_increments.transformed.value = jrd.normal(key, shape)
+
+        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+
+        zgrid = jnp.linspace(-20, 20, 300)
+
+        ygrid = dist.inverse_transformation(zgrid)
+
+        assert not jnp.any(jnp.isinf(ygrid))
+        assert not jnp.any(jnp.isnan(ygrid))
