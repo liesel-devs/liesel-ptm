@@ -724,19 +724,48 @@ class TestTransformedVar:
 class TestOnionCoefParam:
     def test_nparam(self):
         knots = nd.OnionKnots(a=-3.0, b=3.0, nparam=10)
-        coef = nd.OnionCoefParam(knots=knots, name="coef")
+        tau2 = nd.VarWeibull(value=1.0, scale=0.05, name="tau2")
+        coef = nd.OnionCoefParam(knots=knots, tau2=tau2, name="coef")
 
         assert coef.value.shape == (knots.nparam + 7,)
 
     def test_values(self):
         knots = nd.OnionKnots(a=-3.0, b=3.0, nparam=10)
-        coef = nd.OnionCoefParam(knots=knots, name="coef")
+        tau2 = nd.VarWeibull(value=1.0, scale=0.05, name="tau2")
+        coef = nd.OnionCoefParam(knots=knots, tau2=tau2, name="coef")
 
         assert np.allclose(knots.knots[2:-2], coef.value)
 
     def test_param_name(self):
         knots = nd.OnionKnots(a=-3.0, b=3.0, nparam=10)
-        coef = nd.OnionCoefParam(knots=knots, name="coef")
+        tau2 = nd.VarWeibull(value=1.0, scale=0.05, name="tau2")
+        coef = nd.OnionCoefParam(knots=knots, tau2=tau2, name="coef")
         param = nd.find_param(coef)
 
-        assert param.name == coef.log_increments.latent_var.name
+        assert param.name == coef.log_increments.transformed.name
+
+    def test_predict(self):
+        knots = nd.OnionKnots(a=-3.0, b=3.0, nparam=10)
+        tau2 = nd.VarWeibull(value=1.0, scale=0.05, name="tau2")
+        coef = nd.OnionCoefParam(knots=knots, tau2=tau2, name="coef")
+
+        samples = dict()
+
+        key = jax.random.PRNGKey(42)
+        samples[tau2.transformed.name] = jax.random.normal(key, (3, 20))
+        samples[coef.log_increments.transformed.name] = jax.random.normal(
+            key, (3, 20, knots.nparam)
+        )
+
+        new_coef = coef.predict(samples)
+
+        assert new_coef.shape == (3, 20, knots.nparam_full_domain)
+
+        samples[tau2.transformed.name] = jax.random.normal(key, (3,))
+        samples[coef.log_increments.transformed.name] = jax.random.normal(
+            key, (3, knots.nparam)
+        )
+
+        new_coef = coef.predict(samples)
+
+        assert new_coef.shape == (3, knots.nparam_full_domain)

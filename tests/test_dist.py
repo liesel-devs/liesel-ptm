@@ -7,7 +7,7 @@ from tensorflow_probability.substrates.jax import tf2jax as tf
 
 from liesel_ptm import bsplines
 from liesel_ptm.dist import TransformationDist
-from liesel_ptm.nodes import OnionCoefParam
+from liesel_ptm.nodes import OnionCoefParam, VarWeibull
 
 key = jrd.PRNGKey(42)
 
@@ -15,7 +15,8 @@ key = jrd.PRNGKey(42)
 class TestTransformationDist:
     def test_init(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
 
@@ -32,7 +33,8 @@ class TestTransformationDist:
 
     def test_transformation_and_logdet_spline(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
 
@@ -44,7 +46,8 @@ class TestTransformationDist:
 
     def test_transformation_and_logdet_parametric(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
 
@@ -70,7 +73,8 @@ class TestTransformationDist:
 
     def test_transformation_and_logdet(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
 
@@ -82,7 +86,8 @@ class TestTransformationDist:
 
     def test_log_prob(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
 
@@ -94,7 +99,8 @@ class TestTransformationDist:
 
     def test_cdf(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
 
@@ -106,7 +112,8 @@ class TestTransformationDist:
 
     def test_quantile(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
 
@@ -119,7 +126,8 @@ class TestTransformationDist:
 
     def test_sample(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
 
@@ -140,21 +148,24 @@ class TestTransformationDist:
 
     def test_mean(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
         assert dist.mean() == pytest.approx(0.0)
 
     def test_variance(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
         assert dist.variance() == pytest.approx(1.0)
 
     def test_jit(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
-        coef = OnionCoefParam(knots)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
 
         def log_prob(y, coef):
             dist = TransformationDist(knots=knots.knots, coef=coef)

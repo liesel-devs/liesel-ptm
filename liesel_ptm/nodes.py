@@ -2952,32 +2952,44 @@ def rw_weight_matrix(nparam: int, center: bool = False):
 
 
 class OnionCoefLogIncrements(lsl.Var):
-    def __init__(self, nparam: int, name: str = "") -> None:
-        W = rw_weight_matrix(nparam=nparam)
+    def __init__(self, nparam: int, tau2: TransformedVar, name: str = "") -> None:
+        self.W = rw_weight_matrix(nparam=nparam)
+        self.tau2 = tau2
 
-        self.latent_var = lsl.param(
+        self.transformed = lsl.param(
             jnp.zeros(nparam),
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name=f"{name}_param",
         )
 
         super().__init__(
-            lsl.Calc(lambda latent: jnp.dot(W, latent), self.latent_var),
+            lsl.Calc(
+                lambda latent, tau2: jnp.sqrt(tau2) * jnp.dot(self.W, latent),
+                self.transformed,
+                self.tau2,
+            ),
             name=name,
         )
         self.update()
 
+    def predict(self, samples: dict[str, Array]) -> Array:
+        transformed_samples = samples[self.transformed.name]
+        tau2_samples = self.tau2.predict(samples)
+        tau_samples = jnp.expand_dims(jnp.sqrt(tau2_samples), -1)
+        return tau_samples * jnp.einsum("pp,...p->...p", self.W, transformed_samples)
+
 
 class OnionCoefParam(lsl.Var):
-    def __init__(self, knots: OnionKnots, name: str = "") -> None:
-        log_increments = OnionCoefLogIncrements(
-            nparam=knots.nparam, name=f"{name}_latent"
+    def __init__(self, knots: OnionKnots, tau2: TransformedVar, name: str = "") -> None:
+        self.log_increments = OnionCoefLogIncrements(
+            nparam=knots.nparam, tau2=tau2, name=f"{name}_latent"
         )
-        coef_spec = OnionCoef(knots)
+        self.coef_spec = OnionCoef(knots)
 
         super().__init__(
-            lsl.Calc(coef_spec, log_increments).update(),
+            lsl.Calc(self.coef_spec, self.log_increments).update(),
             name=name,
         )
 
-        self.log_increments = log_increments
+    def predict(self, samples: dict[str, Array]) -> Array:
+        return self.coef_spec(self.log_increments.predict(samples))
