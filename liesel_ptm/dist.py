@@ -162,7 +162,7 @@ class TransformationDist(tfd.Distribution):
         return transf, jnp.log(jnp.clip(deriv, min=1e-32))
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
-        ymean = self._transformation_spline_moment(1)  # intercept / expected val.
+        ymean = self._transformation_spline_mean()  # intercept / expected val.
         ystd = jnp.sqrt(self._transformation_spline_variance(ymean))
 
         value = value * ystd + ymean
@@ -191,14 +191,12 @@ class TransformationDist(tfd.Distribution):
         x = jnp.concatenate((xleft, xmid, xright))
         return x
 
-    def _transformation_spline_moment(self, moment: int = 1) -> Array:
+    def _transformation_spline_mean(self) -> Array:
         def fn(x):
             z, logdet = self._transformation_and_logdet_spline(x)
-            return x**moment * self.reference_distribution.prob(z) * jnp.exp(logdet)
+            return x * self.reference_distribution.prob(z) * jnp.exp(logdet)
 
-        mom = integrate_simpson(
-            fn, a=self.knots[0] * 1.5, b=self.knots[-1] * 1.5, N=1024
-        )
+        mom = integrate_simpson(fn, a=self.knots[0], b=self.knots[-1], N=1024)
 
         return mom
 
@@ -209,9 +207,7 @@ class TransformationDist(tfd.Distribution):
                 (x - mean) ** 2 * self.reference_distribution.prob(z) * jnp.exp(logdet)
             )
 
-        var = integrate_simpson(
-            fn, a=self.knots[0] * 1.5, b=self.knots[-1] * 1.5, N=1024
-        )
+        var = integrate_simpson(fn, a=self.knots[0], b=self.knots[-1], N=1024)
 
         return var
 
