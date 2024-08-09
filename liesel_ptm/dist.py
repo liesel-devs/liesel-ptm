@@ -159,7 +159,8 @@ class TransformationDist(tfd.Distribution):
 
     def _transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         transf, deriv = self.bdot_and_deriv_fn(value, self.coef)
-        return transf, jnp.log(jnp.clip(deriv, min=1e-32))
+        deriv = jnp.clip(deriv, min=1e-16)  # safeguard against numerical issues
+        return transf, jnp.log(deriv)
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         ymean = self._transformation_spline_mean()  # intercept / expected val.
