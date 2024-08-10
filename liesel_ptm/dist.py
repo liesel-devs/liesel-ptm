@@ -79,7 +79,7 @@ class TransformationDist(tfd.Distribution):
             )
 
         if apriori_distribution is None:
-            self.apriori_distribution = tfd.Normal(loc=0.0, scale=1.0)
+            self.apriori_distribution = None
         else:
             self.apriori_distribution = apriori_distribution(
                 **apriori_distribution_kwargs
@@ -95,17 +95,24 @@ class TransformationDist(tfd.Distribution):
         )
 
     def _mean(self) -> Array:
-        apriori_mean = self.apriori_distribution._mean()
+        if self.apriori_distribution is None:
+            apriori_mean = 0.0
+        else:
+            apriori_mean = self.apriori_distribution._mean()
+
         if self.centered:
             return apriori_mean
 
         return apriori_mean + self._transformation_spline_mean()
 
     def _stddev(self) -> Array:
-        try:
-            apriori_stddev = self.apriori_distribution._stddev()
-        except NotImplementedError:
-            apriori_stddev = jnp.sqrt(self.apriori_distribution._variance())
+        if self.apriori_distribution is None:
+            apriori_stddev: float | Array = 1.0
+        else:
+            try:
+                apriori_stddev = self.apriori_distribution._stddev()
+            except NotImplementedError:
+                apriori_stddev = jnp.sqrt(self.apriori_distribution._variance())
 
         if self.scaled:
             return apriori_stddev
@@ -158,6 +165,9 @@ class TransformationDist(tfd.Distribution):
         return jnp.array(shape, dtype=jnp.int32)
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
+        if self.apriori_distribution is None:
+            return value, jnp.zeros_like(value)
+
         F_apriori = self.apriori_distribution
         Fz = self.reference_distribution
 
@@ -278,11 +288,9 @@ class TransformationDist(tfd.Distribution):
 
         return initial_guess
 
-    def inverse_transformation(
-        self, value: Array, tol: float = 1e-6, max_iter: int = 100
+    def inverse_transformation_spline(
+        self, value: Array, tol: float = 1e-5, max_iter: int = 100
     ) -> Array:
-        value = jnp.moveaxis(value, 0, -1)
-
         initial_guess = self._inverse_transformation_initial_guess(value)
 
         y_tilde = self._inverse_fn_newton(
@@ -291,13 +299,28 @@ class TransformationDist(tfd.Distribution):
             tol,
             max_iter,
         )
+        return y_tilde
 
-        y_tilde = jnp.moveaxis(y_tilde, -1, 0)
+    def inverse_transformation_parametric(self, value: Array) -> Array:
+        if self.apriori_distribution is None:
+            return value
 
-        u = self.reference_distribution.cdf(y_tilde)
+        u = self.reference_distribution.cdf(value)
         u = jnp.where(u >= 1.0, 1 - 1e-7, u)  # safeguard against numerical issues
         u = jnp.where(u <= 0.0, 1e-30, u)  # safeguard against numerical issues
         y = self.apriori_distribution.quantile(u)
+
+        return y
+
+    def inverse_transformation(
+        self, value: Array, tol: float = 1e-6, max_iter: int = 100
+    ) -> Array:
+        value = jnp.moveaxis(value, 0, -1)
+        y_tilde = self.inverse_transformation_spline(value, tol, max_iter)
+        y_tilde = jnp.moveaxis(y_tilde, -1, 0)
+
+        y = self.inverse_transformation_parametric(y_tilde)
+
         return y
 
 
@@ -314,8 +337,8 @@ class LocScaleTransformationDist(TransformationDist):
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "LocScaleTransformationDist",
-        centered: bool = True,
-        scaled: bool = True,
+        centered: bool = False,
+        scaled: bool = False,
     ) -> None:
         super().__init__(
             knots=knots,
@@ -333,6 +356,9 @@ class LocScaleTransformationDist(TransformationDist):
         )
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
+        if self.apriori_distribution is None:
+            raise RuntimeError
+
         sd = self.apriori_distribution.stddev()
         transf = (value - self.apriori_distribution.mean()) / sd
 
@@ -340,26 +366,12 @@ class LocScaleTransformationDist(TransformationDist):
 
         return transf, logdet
 
-    def inverse_transformation(
-        self, value: Array, tol: float = 1e-6, max_iter: int = 100
-    ) -> Array:
-        y_tilde_grid = self._grid()
-        zgrid, _ = self.transformation_and_logdet_spline(y_tilde_grid)
-        value = jnp.moveaxis(value, 0, -1)
-        initial_guess = approximate_inverse(y_tilde_grid, zgrid, value)
+    def inverse_transformation_parametric(self, value: Array) -> Array:
+        if self.apriori_distribution is None:
+            raise RuntimeError
 
-        y_tilde = self._inverse_fn_newton(
-            value,
-            initial_guess,
-            tol,
-            max_iter,
-        )
-
-        y_tilde = jnp.moveaxis(y_tilde, -1, 0)
-
-        y = (
-            y_tilde * self.apriori_distribution.stddev()
-            + self.apriori_distribution.mean()
-        )
+        sd = self.apriori_distribution.stddev()
+        m = self.apriori_distribution.mean()
+        y = value * sd + m
 
         return y

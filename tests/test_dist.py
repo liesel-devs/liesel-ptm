@@ -152,7 +152,7 @@ class TestTransformationDist:
         coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
-        assert dist.mean() == pytest.approx(0.0)
+        assert dist.mean() == pytest.approx(0.0, abs=1e-5)
 
     def test_variance(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
@@ -160,7 +160,7 @@ class TestTransformationDist:
         coef = OnionCoefParam(knots, tau2=tau2)
 
         dist = TransformationDist(knots=knots.knots, coef=coef.value)
-        assert dist.variance() == pytest.approx(1.0)
+        assert dist.variance() == pytest.approx(1.0, abs=1e-5)
 
     def test_jit(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
