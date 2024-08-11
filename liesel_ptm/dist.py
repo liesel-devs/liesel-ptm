@@ -137,7 +137,7 @@ class TransformationDist(tfd.Distribution):
     def _sample_n(self, n: int | Array, seed: KeyArray | None = None) -> Array:
         shape = [n] + self.batch_shape + self.event_shape
         u = jax.random.uniform(seed, shape=shape)  # type: ignore
-        return self._quantile(u)
+        return jnp.moveaxis(self._quantile(jnp.moveaxis(u, 0, -1)), -1, 0)
 
     def _quantile(self, value: Array) -> Array:
         z = self.reference_distribution.quantile(value)
@@ -315,10 +315,7 @@ class TransformationDist(tfd.Distribution):
     def inverse_transformation(
         self, value: Array, tol: float = 1e-6, max_iter: int = 100
     ) -> Array:
-        value = jnp.moveaxis(value, 0, -1)
         y_tilde = self.inverse_transformation_spline(value, tol, max_iter)
-        y_tilde = jnp.moveaxis(y_tilde, -1, 0)
-
         y = self.inverse_transformation_parametric(y_tilde)
 
         return y
