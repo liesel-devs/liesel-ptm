@@ -6,6 +6,7 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 from tensorflow_probability.substrates.jax import tf2jax as tf
 
 from liesel_ptm import bsplines
+from liesel_ptm.bsplines import ExtrapBSplineApprox
 from liesel_ptm.dist import TransformationDist
 from liesel_ptm.nodes import OnionCoefParam, VarWeibull
 
@@ -18,7 +19,12 @@ class TestTransformationDist:
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         assert dist is not None
 
@@ -27,7 +33,12 @@ class TestTransformationDist:
         log_increments = jrd.uniform(key, shape=(30, 4, knots.nparam_full_domain))
         coef = jnp.cumsum(jnp.exp(log_increments), axis=0)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef, basis_dot_and_deriv_fn=fn
+        )
 
         assert dist.batch_shape == tf.TensorShape([30, 4])
 
@@ -36,7 +47,12 @@ class TestTransformationDist:
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         y = jnp.linspace(-2.0, 2.0, 50)
         z, logdet = dist.transformation_and_logdet_spline(y)
@@ -49,7 +65,12 @@ class TestTransformationDist:
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         y = jnp.linspace(-2.0, 2.0, 50)
         z, logdet = dist.transformation_and_logdet_parametric(y)
@@ -63,6 +84,7 @@ class TestTransformationDist:
             apriori_distribution=tfd.Normal,
             loc=2.0,
             scale=2.0,
+            basis_dot_and_deriv_fn=fn,
         )
 
         y = jnp.linspace(-2.0, 2.0, 50)
@@ -76,7 +98,12 @@ class TestTransformationDist:
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         y = jnp.linspace(-2.0, 2.0, 50)
         z, logdet = dist.transformation_and_logdet(y)
@@ -89,7 +116,12 @@ class TestTransformationDist:
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         y = jnp.linspace(-2.0, 2.0, 50)
         lp = dist.log_prob(y)
@@ -102,7 +134,12 @@ class TestTransformationDist:
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         y = jnp.linspace(-2.0, 2.0, 50)
         p = dist.cdf(y)
@@ -115,7 +152,12 @@ class TestTransformationDist:
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         u = jnp.linspace(0.01, 0.99, 10)
 
@@ -129,7 +171,12 @@ class TestTransformationDist:
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         y = dist.sample(10, seed=key)
         y2 = tfd.Normal(loc=0.0, scale=1.0).sample(10, seed=key)
@@ -140,7 +187,13 @@ class TestTransformationDist:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
         log_increments = 0.1 * jrd.uniform(key, shape=(4, 30, knots.nparam_full_domain))
         coef = jnp.cumsum(jnp.exp(log_increments), axis=0)
-        dist = TransformationDist(knots=knots.knots, coef=coef)
+
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef, basis_dot_and_deriv_fn=fn
+        )
         with jax.disable_jit(disable=False):
             y = dist.sample(12, seed=key)
 
@@ -151,7 +204,12 @@ class TestTransformationDist:
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
         assert dist.mean() == pytest.approx(0.0, abs=1e-5)
 
     def test_variance(self) -> None:
@@ -159,20 +217,47 @@ class TestTransformationDist:
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
         assert dist.variance() == pytest.approx(1.0, abs=1e-5)
 
     def test_jit(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
 
         def log_prob(y, coef):
-            dist = TransformationDist(knots=knots.knots, coef=coef)
+            dist = TransformationDist(
+                knots=knots.knots, coef=coef, basis_dot_and_deriv_fn=fn
+            )
             return dist.log_prob(y)
 
         y = jnp.linspace(-2.0, 2.0, 50)
         lp = jax.jit(log_prob)(y, coef.value)
+        assert lp is not None
+
+    def test_jit_grad(self) -> None:
+        knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
+
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        def log_prob(y, coef):
+            dist = TransformationDist(
+                knots=jnp.asarray(knots.knots), coef=coef, basis_dot_and_deriv_fn=fn
+            )
+            return dist.log_prob(y).sum()
+
+        y = jnp.linspace(-2.0, 2.0, 50)
+        lp = jax.jit(jax.grad(log_prob, argnums=1))(y, coef.value)
         assert lp is not None
 
     @pytest.mark.parametrize("seed", (1, 2, 3, 4, 5, 6))
@@ -185,7 +270,12 @@ class TestTransformationDist:
         coef.log_increments.update()
         coef.update()
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         ygrid = jnp.linspace(-5.0, 5.0, 300)
         zgrid, _ = dist.transformation_and_logdet(ygrid)
@@ -211,7 +301,12 @@ class TestTransformationDist:
         coef.log_increments.update()
         coef.update()
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         ygrid = jnp.linspace(-5, 5, 300)
         zgrid, _ = dist.transformation_and_logdet(ygrid)
@@ -228,7 +323,12 @@ class TestTransformationDist:
         shape = coef.log_increments.transformed.value.shape
         coef.log_increments.transformed.value = jrd.normal(key, shape)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         ygrid = jnp.linspace(-20, 20, 300)
 
@@ -246,7 +346,12 @@ class TestTransformationDist:
         shape = coef.log_increments.transformed.value.shape
         coef.log_increments.transformed.value = jrd.normal(key, shape)
 
-        dist = TransformationDist(knots=knots.knots, coef=coef.value)
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
 
         zgrid = jnp.linspace(-20, 20, 300)
 

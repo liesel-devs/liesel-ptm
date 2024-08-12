@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from functools import partial
 
 import jax
 import jax.numpy as jnp
+
+# from functools import partial
+from jax.tree_util import Partial as partial
 
 from .custom_types import Array
 from .liesel_internal import splines

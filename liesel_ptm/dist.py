@@ -8,7 +8,6 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 from tensorflow_probability.python.internal import reparameterization
 from tensorflow_probability.substrates.jax import tf2jax as tf
 
-from .bsplines import ExtrapBSplineApprox
 from .custom_types import Array, KeyArray
 from .inverse_fn import approximate_inverse
 
@@ -40,11 +39,9 @@ class TransformationDist(tfd.Distribution):
         self,
         knots: Array,
         coef: Array,
+        basis_dot_and_deriv_fn: Callable[[Array, Array], tuple[Array, Array]],
         apriori_distribution: type[tfd.Distribution] | None = None,
         reference_distribution: tfd.Distribution | None = None,
-        basis_dot_and_deriv_fn: (
-            Callable[[Array, Array], tuple[Array, Array]] | None
-        ) = None,
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "TransformationDist",
@@ -60,12 +57,7 @@ class TransformationDist(tfd.Distribution):
         self.centered = centered
         self.scaled = scaled
 
-        if basis_dot_and_deriv_fn is None:
-            bspline = ExtrapBSplineApprox(knots=knots, order=3)
-            fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
-            self.bdot_and_deriv_fn = fn
-        else:
-            self.bdot_and_deriv_fn = basis_dot_and_deriv_fn
+        self.bdot_and_deriv_fn = basis_dot_and_deriv_fn
 
         if reference_distribution is None:
             self.reference_distribution = tfd.Normal(loc=0.0, scale=1.0)
@@ -328,9 +320,7 @@ class LocScaleTransformationDist(TransformationDist):
         coef: Array,
         loc: Array,
         scale: Array,
-        basis_dot_and_deriv_fn: (
-            Callable[[Array, Array], tuple[Array, Array]] | None
-        ) = None,
+        basis_dot_and_deriv_fn: Callable[[Array, Array], tuple[Array, Array]],
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "LocScaleTransformationDist",
