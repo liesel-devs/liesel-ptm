@@ -12,6 +12,7 @@ from liesel.model import Dist
 import liesel_ptm as ptm
 from liesel_ptm.sim.sim_bctm import one_run as run_bctm
 from liesel_ptm.sim.sim_ptm import one_run as run_ptm
+from liesel_ptm.sim.sim_ptm_onion import one_run as run_ptm_onion
 
 
 def emit(self, record):
@@ -492,6 +493,52 @@ def _run_simulation(seed: int, part: str, data: str, n: int):
                 scaling_factor=ptm.TransformedVar(
                     value=1.0, name="scaling_factor", prior=scaling_prior
                 ),
+            )
+        if part == "ptm-wb05-onion-centered":
+            logger.warning(
+                "STARTING NEW RUN: Onion PTMs with SD Prior, centered, scale = 0.05."
+            )
+            # PTM SDPrior scale 0.01
+            run_ptm_onion(
+                seed=seed,
+                data_path=data_path,
+                out_path=out_path,
+                warmup=WARMUP,
+                posterior=POSTERIOR,
+                n=n,
+                scale_terms=True,
+                sample_transformation=True,
+                identifier=f"ptm-onion-wb05-centered-{data}-N{n}",  # noqa
+                prior_tau2_covariates=IGPRIOR,
+                prior_tau2_normalization=SDPRIOR_05,
+                cache_path=cache_path,
+                skip_if_results_exist=True,
+                id_data={"model": "ptm", "data": data},
+                centered=True,
+                scaled=True,
+            )
+        if part == "ptm-wb05-onion-uncentered":
+            logger.warning(
+                "STARTING NEW RUN: Onion PTMs with SD Prior, centered, scale = 0.05."
+            )
+            # PTM SDPrior scale 0.01
+            run_ptm_onion(
+                seed=seed,
+                data_path=data_path,
+                out_path=out_path,
+                warmup=WARMUP,
+                posterior=POSTERIOR,
+                n=n,
+                scale_terms=True,
+                sample_transformation=True,
+                identifier=f"ptm-onion-wb05-uncentered-{data}-N{n}",  # noqa
+                prior_tau2_covariates=IGPRIOR,
+                prior_tau2_normalization=SDPRIOR_05,
+                cache_path=cache_path,
+                skip_if_results_exist=True,
+                id_data={"model": "ptm", "data": data},
+                centered=False,
+                scaled=False,
             )
 
         logger.info(f"Finished iteration with {part=}, {n=}, {data=}, {seed=}.")
