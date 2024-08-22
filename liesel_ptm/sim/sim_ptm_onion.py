@@ -302,6 +302,7 @@ def model_quantile_score(
     alphas = jnp.reshape(alphas, shape=(25, 1, 1, 1))
     quantiles = dist.quantile(alphas)
     quantiles = jnp.swapaxes(quantiles, 0, -1)
+    quantiles = jnp.moveaxis(quantiles, 0, 2)
 
     deviation = quantiles - y_reshaped
     weight = 2 * (jnp.heaviside(deviation, 0.0) - alphas)
