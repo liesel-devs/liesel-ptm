@@ -7,7 +7,7 @@ from tensorflow_probability.substrates.jax import tf2jax as tf
 
 from liesel_ptm import bsplines
 from liesel_ptm.bsplines import ExtrapBSplineApprox
-from liesel_ptm.dist import TransformationDist
+from liesel_ptm.dist import LocScaleTransformationDist, TransformationDist
 from liesel_ptm.nodes import OnionCoefParam, VarWeibull
 
 key = jrd.PRNGKey(42)
@@ -359,3 +359,27 @@ class TestTransformationDist:
 
         assert not jnp.any(jnp.isinf(ygrid))
         assert not jnp.any(jnp.isnan(ygrid))
+
+
+class TestLocScaleTransformationDist:
+    def test_quantile_batched(self) -> None:
+        knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
+
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = LocScaleTransformationDist(
+            knots=knots.knots,
+            coef=coef.value,
+            basis_dot_and_deriv_fn=fn,
+            loc=jax.random.normal(key, shape=(4, 8, 32)),
+            scale=jnp.exp(jax.random.normal(key, shape=(4, 8, 32))),
+        )
+
+        u = jnp.linspace(0.01, 0.99, 10)
+        u = jnp.reshape(u, shape=(10, 1, 1, 1))
+
+        y = dist.quantile(u)
+        assert y.shape == (10, 4, 8, 32)

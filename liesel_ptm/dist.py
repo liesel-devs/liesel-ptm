@@ -240,14 +240,14 @@ class TransformationDist(tfd.Distribution):
 
     def _inverse_fn_newton(self, z, initial_guess, tol, max_iter):
         def newton_step(y, z):
-            h, logdet = self.transformation_and_logdet(y)
+            h, logdet = self.transformation_and_logdet_spline(y)
             h_deriv = jnp.exp(logdet)
             h_deriv = jnp.clip(h_deriv, min=1e-30)  # safeguard against numerical issues
             return y - (h - z) / h_deriv
 
         def cond_fn(state):
             y, iter_count, z = state
-            h, _ = self.transformation_and_logdet(y)
+            h, _ = self.transformation_and_logdet_spline(y)
             return jnp.logical_and(
                 jnp.any(jnp.abs(h - z) >= tol), iter_count < max_iter
             )
