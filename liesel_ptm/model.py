@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import liesel.goose as gs
 import liesel.model as lsl
 import numpy as np
+import optax
 import pandas as pd
 
 from . import nodes as nd
@@ -170,11 +171,32 @@ class OnionPTMLocScale:
             return self._graph
 
     def optimize_locscale(
-        self, max_iter: int = 1000, patience: int = 10, atol: float = 0.01, **kwargs
+        self,
+        max_iter: int = 1000,
+        patience: int = 10,
+        atol: float = 0.01,
+        include_loc: bool = True,
+        include_scale: bool = True,
+        include_hyperparameters: bool = False,
+        **kwargs,
     ) -> gs.OptimResult:
         params = []  # type: ignore
 
-        params = self.loc_model.parameters + self.log_scale_model.parameters
+        if include_loc:
+            params += self.loc_model.parameters
+            if include_hyperparameters:
+                params += self.loc_model.hyper_parameters
+        if include_scale:
+            params += self.log_scale_model.parameters
+            if include_hyperparameters:
+                params += self.log_scale_model.hyper_parameters
+
+        if "optimizer" not in kwargs:
+            scheduler = optax.cosine_decay_schedule(
+                init_value=0.01, decay_steps=max_iter
+            )
+            optimizer = optax.adam(learning_rate=scheduler)
+            kwargs["optimizer"] = optimizer
 
         logger.info("Optimizing location and scale parameters.")
         stopper = gs.Stopper(max_iter=max_iter, patience=patience, atol=atol)
@@ -195,12 +217,28 @@ class OnionPTMLocScale:
         return result_loc_scale
 
     def optimize_transformation(
-        self, max_iter: int = 1000, patience: int = 10, atol: float = 0.01, **kwargs
+        self,
+        max_iter: int = 1000,
+        patience: int = 10,
+        atol: float = 0.01,
+        include_hyperparameters: bool = False,
+        **kwargs,
     ) -> gs.OptimResult:
         params = [self.coef.log_increments.transformed.name]  # type: ignore
+        if include_hyperparameters:
+            tau2_param = nd.find_param(self.tau2)
+            if tau2_param is not None:
+                params.append(tau2_param.name)
 
         logger.info("Optimizing transformation parameters.")
         stopper = gs.Stopper(max_iter=max_iter, patience=patience, atol=atol)
+
+        if "optimizer" not in kwargs:
+            scheduler = optax.cosine_decay_schedule(
+                init_value=0.01, decay_steps=max_iter
+            )
+            optimizer = optax.adam(learning_rate=scheduler)
+            kwargs["optimizer"] = optimizer
 
         model_validation = kwargs.get("model_validation", self.graph)
         result_trafo = gs.optim_flat(
