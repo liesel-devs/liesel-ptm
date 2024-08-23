@@ -301,8 +301,12 @@ def model_quantile_score(
     alphas = jnp.linspace(0.005, 0.995, 25)
     alphas = jnp.reshape(alphas, shape=(25, 1, 1, 1))
     quantiles = dist.quantile(alphas)
+
     quantiles = jnp.swapaxes(quantiles, 0, -1)
     quantiles = jnp.moveaxis(quantiles, 0, 2)
+
+    alphas = jnp.swapaxes(alphas, 0, -1)
+    alphas = jnp.moveaxis(alphas, 0, 2)
 
     deviation = quantiles - y_reshaped
     weight = 2 * (jnp.heaviside(deviation, 0.0) - alphas)
@@ -310,7 +314,7 @@ def model_quantile_score(
     mean_quantile_score = jnp.mean(quantile_score, axis=(0, 1, 2))  # mean over samples
 
     quantile_score_df = pd.DataFrame(
-        {"quantile_score": mean_quantile_score, "alpha": alphas}
+        {"quantile_score": mean_quantile_score, "alpha": alphas.squeeze()}
     )
 
     logger.info("Returning decomposed CRPS dataframe.")
