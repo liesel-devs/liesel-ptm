@@ -42,20 +42,20 @@ class TransformationDist(tfd.Distribution):
         coef: Array,
         basis_dot_and_deriv_fn: Callable[[Array, Array], tuple[Array, Array]]
         | None = None,
-        apriori_distribution: type[tfd.Distribution] | None = None,
+        parametric_distribution: type[tfd.Distribution] | None = None,
         reference_distribution: tfd.Distribution | None = None,
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "TransformationDist",
         centered: bool = False,
         scaled: bool = False,
-        **apriori_distribution_kwargs,
+        **parametric_distribution_kwargs,
     ):
         parameters = dict(locals())
 
         self.knots = knots
         self.coef = coef
-        self.apriori_distribution_kwargs = apriori_distribution_kwargs
+        self.parametric_distribution_kwargs = parametric_distribution_kwargs
         self.centered = centered
         self.scaled = scaled
 
@@ -72,17 +72,17 @@ class TransformationDist(tfd.Distribution):
         else:
             self.reference_distribution = reference_distribution
 
-        if apriori_distribution is None and apriori_distribution_kwargs:
+        if parametric_distribution is None and parametric_distribution_kwargs:
             raise ValueError(
-                "Provided 'apriori_distribution_kwargs', but no value for"
-                " 'apriori_distribution'."
+                "Provided 'parametric_distribution_kwargs', but no value for"
+                " 'parametric_distribution'."
             )
 
-        if apriori_distribution is None:
-            self.apriori_distribution = None
+        if parametric_distribution is None:
+            self.parametric_distribution = None
         else:
-            self.apriori_distribution = apriori_distribution(
-                **apriori_distribution_kwargs
+            self.parametric_distribution = parametric_distribution(
+                **parametric_distribution_kwargs
             )
 
         super().__init__(
@@ -95,30 +95,30 @@ class TransformationDist(tfd.Distribution):
         )
 
     def _mean(self) -> Array:
-        if self.apriori_distribution is None:
-            apriori_mean = 0.0
+        if self.parametric_distribution is None:
+            parametric_mean = 0.0
         else:
-            apriori_mean = self.apriori_distribution._mean()
+            parametric_mean = self.parametric_distribution._mean()
 
         if self.centered:
-            return apriori_mean
+            return parametric_mean
 
-        return apriori_mean + self._transformation_spline_mean()
+        return parametric_mean + self._transformation_spline_mean()
 
     def _stddev(self) -> Array:
-        if self.apriori_distribution is None:
-            apriori_stddev: float | Array = 1.0
+        if self.parametric_distribution is None:
+            parametric_stddev: float | Array = 1.0
         else:
             try:
-                apriori_stddev = self.apriori_distribution._stddev()
+                parametric_stddev = self.parametric_distribution._stddev()
             except NotImplementedError:
-                apriori_stddev = jnp.sqrt(self.apriori_distribution._variance())
+                parametric_stddev = jnp.sqrt(self.parametric_distribution._variance())
 
         if self.scaled:
-            return apriori_stddev
+            return parametric_stddev
 
         mean = self._transformation_spline_mean()
-        return apriori_stddev * jnp.sqrt(self._transformation_spline_variance(mean))
+        return parametric_stddev * jnp.sqrt(self._transformation_spline_variance(mean))
 
     def _cdf(self, value: Array) -> Array | float:
         z, _ = self.transformation_and_logdet(value)
@@ -152,23 +152,23 @@ class TransformationDist(tfd.Distribution):
 
     def _batch_shape(self):
         kwargs_shapes = [
-            param.shape for param in self.apriori_distribution_kwargs.values()
+            param.shape for param in self.parametric_distribution_kwargs.values()
         ]
         shape = jnp.broadcast_shapes(self.coef.shape[:-1], *kwargs_shapes)
         return tf.TensorShape(shape)
 
     def _batch_shape_tensor(self):
         kwargs_shapes = [
-            param.shape for param in self.apriori_distribution_kwargs.values()
+            param.shape for param in self.parametric_distribution_kwargs.values()
         ]
         shape = jnp.broadcast_shapes(self.coef.shape[:-1], *kwargs_shapes)
         return jnp.array(shape, dtype=jnp.int32)
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
-        if self.apriori_distribution is None:
+        if self.parametric_distribution is None:
             return value, jnp.zeros_like(value)
 
-        F_apriori = self.apriori_distribution
+        F_apriori = self.parametric_distribution
         Fz = self.reference_distribution
 
         u = F_apriori.cdf(value)
@@ -302,13 +302,13 @@ class TransformationDist(tfd.Distribution):
         return y_tilde
 
     def inverse_transformation_parametric(self, value: Array) -> Array:
-        if self.apriori_distribution is None:
+        if self.parametric_distribution is None:
             return value
 
         u = self.reference_distribution.cdf(value)
         u = jnp.where(u >= 1.0, 1 - 1e-7, u)  # safeguard against numerical issues
         u = jnp.where(u <= 0.0, 1e-30, u)  # safeguard against numerical issues
-        y = self.apriori_distribution.quantile(u)
+        y = self.parametric_distribution.quantile(u)
 
         return y
 
@@ -339,7 +339,7 @@ class LocScaleTransformationDist(TransformationDist):
         super().__init__(
             knots=knots,
             coef=coef,
-            apriori_distribution=tfd.Normal,
+            parametric_distribution=tfd.Normal,
             reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
             basis_dot_and_deriv_fn=basis_dot_and_deriv_fn,
             validate_args=validate_args,
@@ -352,22 +352,22 @@ class LocScaleTransformationDist(TransformationDist):
         )
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
-        if self.apriori_distribution is None:
+        if self.parametric_distribution is None:
             raise RuntimeError
 
-        sd = self.apriori_distribution.stddev()
-        transf = (value - self.apriori_distribution.mean()) / sd
+        sd = self.parametric_distribution.stddev()
+        transf = (value - self.parametric_distribution.mean()) / sd
 
         logdet = -jnp.log(sd)
 
         return transf, logdet
 
     def inverse_transformation_parametric(self, value: Array) -> Array:
-        if self.apriori_distribution is None:
+        if self.parametric_distribution is None:
             raise RuntimeError
 
-        sd = self.apriori_distribution.stddev()
-        m = self.apriori_distribution.mean()
+        sd = self.parametric_distribution.stddev()
+        m = self.parametric_distribution.mean()
         y = value * sd + m
 
         return y
