@@ -159,7 +159,7 @@ class TestOnionPTMLocScale:
         assert dist.coef.shape == model.coef.value.shape
 
         n = model.response.value.shape[0]
-        assert dist.apriori_distribution_kwargs["loc"].shape == (4, 20, n)
+        assert dist.parametric_distribution_kwargs["loc"].shape == (4, 20, n)
 
         assert dist.log_prob(model.response.value).shape == (4, 20, n)
 
