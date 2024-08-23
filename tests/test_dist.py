@@ -81,7 +81,7 @@ class TestTransformationDist:
         dist = TransformationDist(
             knots=knots.knots,
             coef=coef.value,
-            apriori_distribution=tfd.Normal,
+            parametric_distribution=tfd.Normal,
             loc=2.0,
             scale=2.0,
             basis_dot_and_deriv_fn=fn,
