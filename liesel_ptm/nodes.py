@@ -952,7 +952,7 @@ class StructuredAdditiveTerm(Term):
         self.basis_fn = jnp.vectorize(basis_fn, signature="(n)->(n,p)")
         """Basis function."""
 
-        self.basis = lsl.Data(basis_fn(x), _name=f"{name}_basis")
+        self.basis = lsl.obs(basis_fn(x), name=f"{name}_basis")
         """Basis matrix node."""
 
         self.K = lsl.Data(K, _name=f"{name}_K")
