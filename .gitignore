@@ -169,3 +169,4 @@ cython_debug/
 .Rproj.user
 .Rhistory
 .jupyter_cache/
+tests/notebooks/cache/
