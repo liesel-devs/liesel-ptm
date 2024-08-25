@@ -310,9 +310,14 @@ class TransformationDist(tfd.Distribution):
         if self.parametric_distribution is None:
             return value
 
+        # Use jnp.finfo to get machine epsilon and min/max float values
+        eps = jnp.finfo(value.dtype).eps
+        tiny = jnp.finfo(value.dtype).tiny
+        max_float = 1.0 - eps
+
         u = self.reference_distribution.cdf(value)
-        u = jnp.where(u >= 1.0, 1 - 1e-7, u)  # safeguard against numerical issues
-        u = jnp.where(u <= 0.0, 1e-30, u)  # safeguard against numerical issues
+        u = jnp.where(u >= 1.0, max_float, u)  # safeguard against numerical issues
+        u = jnp.where(u <= 0.0, tiny, u)  # safeguard against numerical issues
         y = self.parametric_distribution.quantile(u)
 
         return y
