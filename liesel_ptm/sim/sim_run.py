@@ -517,6 +517,30 @@ def _run_simulation(seed: int, part: str, data: str, n: int):
                 centered=True,
                 scaled=True,
             )
+        if part == "ptm-ig-onion-centered":
+            logger.warning(
+                "STARTING NEW RUN: Onion PTMs with SD Prior, centered, scale = 0.05."
+            )
+            # PTM SDPrior scale 0.01
+            run_ptm_onion(
+                seed=seed,
+                data_path=data_path,
+                out_path=out_path,
+                warmup=WARMUP,
+                posterior=POSTERIOR,
+                n=n,
+                scale_terms=True,
+                sample_transformation=True,
+                identifier=f"ptm-onion-ig-centered-{data}-N{n}",  # noqa
+                prior_tau2_covariates=IGPRIOR,
+                prior_tau2_normalization=IGPRIOR,
+                cache_path=cache_path,
+                skip_if_results_exist=True,
+                id_data={"model": "ptm", "data": data},
+                centered=True,
+                scaled=True,
+            )
+
         if part == "ptm-wb05-onion-uncentered":
             logger.warning(
                 "STARTING NEW RUN: Onion PTMs with SD Prior, centered, scale = 0.05."
@@ -534,6 +558,30 @@ def _run_simulation(seed: int, part: str, data: str, n: int):
                 identifier=f"ptm-onion-wb05-uncentered-{data}-N{n}",  # noqa
                 prior_tau2_covariates=IGPRIOR,
                 prior_tau2_normalization=SDPRIOR_05,
+                cache_path=cache_path,
+                skip_if_results_exist=True,
+                id_data={"model": "ptm", "data": data},
+                centered=False,
+                scaled=False,
+            )
+
+        if part == "ptm-ig-onion-uncentered":
+            logger.warning(
+                "STARTING NEW RUN: Onion PTMs with SD Prior, centered, scale = 0.05."
+            )
+            # PTM SDPrior scale 0.01
+            run_ptm_onion(
+                seed=seed,
+                data_path=data_path,
+                out_path=out_path,
+                warmup=WARMUP,
+                posterior=POSTERIOR,
+                n=n,
+                scale_terms=True,
+                sample_transformation=True,
+                identifier=f"ptm-onion-og-uncentered-{data}-N{n}",  # noqa
+                prior_tau2_covariates=IGPRIOR,
+                prior_tau2_normalization=IGPRIOR,
                 cache_path=cache_path,
                 skip_if_results_exist=True,
                 id_data={"model": "ptm", "data": data},
