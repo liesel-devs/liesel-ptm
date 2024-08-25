@@ -316,7 +316,7 @@ class TestTransformationDist:
         assert not jnp.allclose(ygrid, zgrid, atol=0.2)
         assert jnp.allclose(ygrid, ygrid_inverted, atol=1e-2)
 
-    def test_transformation_stability(self) -> None:
+    def test_transformation_stability_no_parametric(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
         coef = OnionCoefParam(knots, tau2=tau2)
@@ -328,6 +328,34 @@ class TestTransformationDist:
 
         dist = TransformationDist(
             knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
+
+        ygrid = jnp.linspace(-20, 20, 300)
+
+        zgrid, logdet = dist.transformation_and_logdet(ygrid)
+
+        assert not jnp.any(jnp.isinf(zgrid))
+        assert not jnp.any(jnp.isinf(logdet))
+        assert not jnp.any(jnp.isnan(zgrid))
+        assert not jnp.any(jnp.isnan(logdet))
+
+    def test_transformation_stability_normal(self) -> None:
+        knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
+        shape = coef.log_increments.transformed.value.shape
+        coef.log_increments.transformed.value = jrd.normal(key, shape)
+
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots,
+            coef=coef.value,
+            basis_dot_and_deriv_fn=fn,
+            parametric_distribution=tfd.Normal,
+            loc=0.0,
+            scale=1.0,
         )
 
         ygrid = jnp.linspace(-20, 20, 300)

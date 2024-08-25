@@ -171,9 +171,14 @@ class TransformationDist(tfd.Distribution):
         F_apriori = self.parametric_distribution
         Fz = self.reference_distribution
 
+        # Use jnp.finfo to get machine epsilon and min/max float values
+        eps = jnp.finfo(value.dtype).eps
+        tiny = jnp.finfo(value.dtype).tiny
+        max_float = 1.0 - eps
+
         u = F_apriori.cdf(value)
-        u = jnp.where(u >= 1.0, 1 - 1e-7, u)  # safeguard against numerical issues
-        u = jnp.where(u <= 0.0, 1e-30, u)  # safeguard against numerical issues
+        u = jnp.where(u >= 1.0, max_float, u)  # safeguard using max float
+        u = jnp.where(u <= 0.0, tiny, u)  # safeguard using smallest positive float
 
         transf = Fz.quantile(u)
         logdet = F_apriori.log_prob(value) - Fz.log_prob(transf)
