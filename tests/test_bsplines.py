@@ -578,6 +578,19 @@ class TestExtrapBSplineApprox:
         assert jnp.allclose(bspline.get_basis(x), b1a)
         assert not jnp.allclose(bspline.get_basis(x), b1b)
 
+    def test_target_slope_zero(self) -> None:
+        x = np.linspace(-3.0, 3.0, 1000)
+        knots = kn(np.array([-2.0, 2.0]), order=3, n_params=20)
+        shape = sample_shape(jax.random.PRNGKey(42), 19).sample
+        dknots = np.diff(knots).mean()
+        coef = nd.normalization_coef(shape, dknots)
+
+        bspline = bs.BSpline(knots, order=3, target_slope=0.0, eps=0.05)
+        fx = bspline(x, coef)
+
+        assert jnp.allclose(jnp.diff(fx[:100]), 0.0)
+        assert jnp.allclose(jnp.diff(fx[-100:]), 0.0)
+
 
 def test_searchsorted():
     grid = jnp.array([0.0, 0.1, 0.2, 0.3, 0.4])
