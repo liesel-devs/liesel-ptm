@@ -279,7 +279,7 @@ def test_basis_dot_and_grad():
     dknots = np.diff(knots).mean()
     coef = nd.normalization_coef(shape, dknots)
 
-    bdot_and_grad_fn = basis.get_basis_dot_and_deriv_fn()
+    bdot_and_grad_fn = basis._get_basis_dot_and_deriv_fn()
 
     bdot, grad = bdot_and_grad_fn(x, coef)
 
@@ -332,8 +332,8 @@ def test_single_basis_dot() -> None:
     coef = nd.normalization_coef(shape, dknots)
 
     basis = bs.BSplineApprox(knots, 3)
-    basis_dot_and_grad_fn = basis.get_basis_dot_and_deriv_fn()
-    basis_dot_fn = basis.get_basis_dot_fn()
+    basis_dot_and_grad_fn = basis._get_basis_dot_and_deriv_fn()
+    basis_dot_fn = basis._get_basis_dot_fn()
 
     smooth, _ = basis_dot_and_grad_fn(x, coef)
     smooth2 = basis_dot_fn(x, coef)
@@ -512,7 +512,7 @@ class TestExtrapBSplineApprox:
         )
 
         basis = bs.BSplineApprox(knots, 3)
-        basis_dot_and_grad_fn = basis.get_basis_dot_and_deriv_fn()
+        basis_dot_and_grad_fn = basis._get_basis_dot_and_deriv_fn()
 
         def extrap():
             return basis_dot_and_grad_fn_extrap(x, coef)
@@ -526,6 +526,57 @@ class TestExtrapBSplineApprox:
         time_extrap = timeit.timeit(extrap, number=1000)  # noqa
         time_extrap_avg = timeit.timeit(extrap, number=1000)  # noqa
         time_no_extrap = timeit.timeit(no_extrap, number=1000)  # noqa
+
+    def test_approximation(self) -> None:
+        x = np.linspace(-3.0, 3.0, 1000)
+        knots = kn(np.array([-2.0, 2.0]), order=3, n_params=20)
+
+        bspline = bs.BSpline(knots, 3)
+        b1a = bspline._compute_basis(x)
+        b1b = bspline._approx_basis(x)
+        assert jnp.allclose(b1a, b1b, atol=1e-4)
+
+        bspline = bs.BSpline(knots, 3, ngrid=10)
+        assert jnp.allclose(bspline._compute_basis(x), b1a)
+        assert not jnp.allclose(bspline._approx_basis(x), b1a, atol=1e-1)
+        assert not jnp.allclose(bspline._approx_basis(x), b1b, atol=1e-1)
+
+    def test_call(self) -> None:
+        x = np.linspace(-3.0, 3.0, 1000)
+        knots = kn(np.array([-2.0, 2.0]), order=3, n_params=20)
+        shape = sample_shape(jax.random.PRNGKey(42), 19).sample
+        dknots = np.diff(knots).mean()
+        coef = nd.normalization_coef(shape, dknots)
+
+        bspline = bs.BSpline(knots, 3)
+        assert jnp.allclose(bspline(x, coef), bspline.dot(x, coef))
+
+    def test_extrapolation(self) -> None:
+        x = np.linspace(-3.0, 3.0, 1000)
+        knots = kn(np.array([-2.0, 2.0]), order=3, n_params=20)
+        shape = sample_shape(jax.random.PRNGKey(42), 19).sample
+        dknots = np.diff(knots).mean()
+        coef = nd.normalization_coef(shape, dknots)
+
+        bspline = bs.BSpline(knots, 3)
+        bspline_noextrap = bs.BSpline(knots, 3, extrapolate=False)
+
+        assert not jnp.allclose(bspline(x, coef), bspline_noextrap(x, coef))
+
+        mask = jnp.logical_or(x < bspline.min_knot, x > bspline.max_knot)
+
+        assert jnp.allclose(bspline_noextrap(x[mask], coef), 0.0)
+        assert not jnp.allclose(bspline(x[mask], coef), 0.0)
+
+    def test_no_approximation(self) -> None:
+        x = np.linspace(-3.0, 3.0, 1000)
+        knots = kn(np.array([-2.0, 2.0]), order=3, n_params=20)
+
+        bspline = bs.BSpline(knots, 3, approx=False, ngrid=10)
+        b1a = bspline._compute_basis(x)
+        b1b = bspline._approx_basis(x)
+        assert jnp.allclose(bspline.get_basis(x), b1a)
+        assert not jnp.allclose(bspline.get_basis(x), b1b)
 
 
 def test_searchsorted():
