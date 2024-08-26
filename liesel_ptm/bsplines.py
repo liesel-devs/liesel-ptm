@@ -357,9 +357,12 @@ class BSplineApprox:
         return jax.jit(_basis_dot_and_deriv)
 
 
-class ExtrapBSplineApprox(BSplineApprox):
+class BSpline(BSplineApprox):
     """
-    Extrapolating B-Spline approximation.
+    Computationally efficient B-Spline with linear extrapolation.
+
+    Beyond the range of interior knots, this B-Spline will smoothly transition to
+    a linear function.
 
     Params
     ------
@@ -374,10 +377,20 @@ class ExtrapBSplineApprox(BSplineApprox):
         extrapolation. This is a factor applied to the range of the knots. \
         The default of ``0.1`` means that the transition interval width is \
         ``0.1 * (max_knot - min_knot)``.
+    target_slope
+        Target slope for the linear extrapolation of the spline beyond the range \
+        of interior knots. If ``None`` (default), the target slope is set to the \
+        average slope of the spline over the range of the interior knots.
+
     """
 
     def __init__(
-        self, knots: Array, order: Array, ngrid: int = 1000, eps: float = 0.3
+        self,
+        knots: Array,
+        order: Array,
+        ngrid: int = 1000,
+        eps: float = 0.3,
+        target_slope: float | None = None,
     ) -> None:
         super().__init__(knots, order, ngrid)
         self.basis_min, self.basis_grad_min = self.get_basis_and_deriv(
@@ -391,7 +404,12 @@ class ExtrapBSplineApprox(BSplineApprox):
         self.min_eps = self.min_knot - self.eps
         self.max_eps = self.max_knot + self.eps
 
-    def get_extrap_basis_dot_fn(
+        self._basis_dot = self._get_extrap_basis_dot_fn(target_slope)
+        self._basis_dot_and_deriv = self._get_extrap_basis_dot_and_deriv_fn(
+            target_slope
+        )
+
+    def _get_extrap_basis_dot_fn(
         self, target_slope: float | None = None
     ) -> Callable[[Array, Array], Array]:
         basis_dot_and_deriv_fn = self.get_basis_dot_and_deriv_fn()
@@ -480,7 +498,7 @@ class ExtrapBSplineApprox(BSplineApprox):
         # Return jitted function
         return jax.jit(basis_dot)
 
-    def get_extrap_basis_dot_and_deriv_fn(
+    def _get_extrap_basis_dot_and_deriv_fn(
         self, target_slope: float | None = None
     ) -> Callable[[Array, Array], tuple[Array, Array]]:
         basis_dot_and_deriv_fn = self.get_basis_dot_and_deriv_fn()
@@ -586,6 +604,63 @@ class ExtrapBSplineApprox(BSplineApprox):
 
         # Return jitted function
         return jax.jit(basis_dot_and_deriv)
+
+    def dot(self, x: Array, coef: Array) -> Array:
+        """
+        Evaluates the B-Spline for given input and coefficient arrays.
+
+        Essentially, this computes ``basis_matrix(x) @ coef``, albeit with linear
+        extrapolation.
+
+        Parameters
+        ----------
+        x
+            Input array.
+        coef
+            Coefficient array.
+        """
+        return self._basis_dot(x, coef)
+
+    def dot_and_deriv(self, x: Array, coef: Array) -> tuple[Array, Array]:
+        """
+        Evaluates the B-Spline and its derivative for given input and coefficient
+        arrays.
+
+        Essentially, this computes:
+
+        .. code-block:: python
+
+            def dot_and_deriv(x, coef):
+                dot = basis_matrix(x) @ coef
+                deriv = basis_matrix_deriv(x) @ coef
+                return dot, deriv
+
+        The derivative is taken with respect to ``x``.
+
+        Parameters
+        ----------
+        x
+            Input array.
+        coef
+            Coefficient array.
+        """
+        return self._basis_dot_and_deriv(x, coef)
+
+
+class ExtrapBSplineApprox(BSpline):
+    """
+    Alias for :class:`.BSpline` for compatibility.
+    """
+
+    def get_extrap_basis_dot_fn(
+        self, target_slope: float | None = None
+    ) -> Callable[[Array, Array], Array]:
+        return self._get_extrap_basis_dot_fn(target_slope)
+
+    def get_extrap_basis_dot_and_deriv_fn(
+        self, target_slope: float | None = None
+    ) -> Callable[[Array, Array], tuple[Array, Array]]:
+        return self._get_extrap_basis_dot_and_deriv_fn(target_slope)
 
 
 def avg_slope_bspline(knots: Array, coef: Array, order: int):

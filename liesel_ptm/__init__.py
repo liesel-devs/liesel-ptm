@@ -1,5 +1,6 @@
 import logging
 
+from .bsplines import BSpline as BSpline
 from .bsplines import BSplineApprox as BSplineApprox
 from .bsplines import ExtrapBSplineApprox as ExtrapBSplineApprox
 from .bsplines import avg_slope_bspline as avg_slope_bspline
