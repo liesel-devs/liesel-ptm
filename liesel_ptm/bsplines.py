@@ -76,11 +76,17 @@ def bspline_basis_deriv2(x, knots, order):
 
 class BSplineApprox:
     def __init__(
-        self, knots: Array, order: Array, approx: bool = True, ngrid: int = 1000
+        self,
+        knots: Array,
+        order: int,
+        approx: bool = True,
+        ngrid: int = 1000,
+        postmultiply_by: Array | None = None,
     ) -> None:
         self.knots = knots
         self.dknots = jnp.mean(jnp.diff(knots))
         self.order = order
+        self.nparam = jnp.shape(knots)[0] - order - 1
 
         self.min_knot = self.knots[order]
         self.max_knot = self.knots[-(order + 1)]
@@ -91,9 +97,14 @@ class BSplineApprox:
         append = jnp.array([self.max_knot + self.step])
         self.grid = jnp.concatenate((prepend, grid, append))
 
-        self.basis = bspline_basis(self.grid, self.knots, self.order)
-        self.basis_deriv = bspline_basis_deriv(self.grid, self.knots, self.order)
-        self.basis_deriv2 = bspline_basis_deriv2(self.grid, self.knots, self.order)
+        Z = jnp.eye(self.nparam) if postmultiply_by is None else postmultiply_by
+        self.postmultiply_by = Z
+
+        basis_grids = self._compute_basis_and_deriv2(self.grid)
+        self.basis = basis_grids[0]
+        self.basis_deriv = basis_grids[1]
+        self.basis_deriv2 = basis_grids[2]
+
         self.approx = approx
 
         if self.approx:
@@ -108,17 +119,17 @@ class BSplineApprox:
             )
 
     def _compute_basis(self, x: Array) -> Array:
-        return bspline_basis(x, self.knots, self.order)
+        return bspline_basis(x, self.knots, self.order) @ self.postmultiply_by
 
     def _compute_basis_and_deriv(self, x: Array) -> tuple[Array, Array]:
-        basis = bspline_basis(x, self.knots, self.order)
-        deriv = bspline_basis_deriv(x, self.knots, self.order)
+        basis = bspline_basis(x, self.knots, self.order) @ self.postmultiply_by
+        deriv = bspline_basis_deriv(x, self.knots, self.order) @ self.postmultiply_by
         return basis, deriv
 
     def _compute_basis_and_deriv2(self, x: Array) -> tuple[Array, Array, Array]:
-        basis = bspline_basis(x, self.knots, self.order)
-        deriv = bspline_basis_deriv(x, self.knots, self.order)
-        deriv2 = bspline_basis_deriv2(x, self.knots, self.order)
+        basis = bspline_basis(x, self.knots, self.order) @ self.postmultiply_by
+        deriv = bspline_basis_deriv(x, self.knots, self.order) @ self.postmultiply_by
+        deriv2 = bspline_basis_deriv2(x, self.knots, self.order) @ self.postmultiply_by
         return basis, deriv, deriv2
 
     @partial(jax.jit, static_argnums=0)
@@ -281,20 +292,32 @@ class BSpline(BSplineApprox):
         Target slope for the linear extrapolation of the spline beyond the range \
         of interior knots. If ``None`` (default), the target slope is set to the \
         average slope of the spline over the range of the interior knots.
+    postmultiply_by
+        An array to be post-multiplied to the basis matrix, such that :meth:`.dot` \
+        effectively evaluates ``basis_matrix(x) @ Z @ coef``, where ``Z`` is the \
+        value of ``postmultiply_by``. If ``None`` (default), the identity matrix is \
+        used for ``Z``.
 
     """
 
     def __init__(
         self,
         knots: Array,
-        order: Array,
+        order: int = 3,
         approx: bool = True,
         ngrid: int = 1000,
+        postmultiply_by: Array | None = None,
         extrapolate: bool = True,
         eps: float = 0.3,
         target_slope: float | None = None,
     ) -> None:
-        super().__init__(knots=knots, order=order, approx=approx, ngrid=ngrid)
+        super().__init__(
+            knots=knots,
+            order=order,
+            approx=approx,
+            ngrid=ngrid,
+            postmultiply_by=postmultiply_by,
+        )
         self.basis_min, self.basis_grad_min = self.get_basis_and_deriv(
             jnp.atleast_1d(self.knots[order])
         )
