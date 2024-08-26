@@ -75,7 +75,9 @@ def bspline_basis_deriv2(x, knots, order):
 
 
 class BSplineApprox:
-    def __init__(self, knots: Array, order: Array, ngrid: int = 1000) -> None:
+    def __init__(
+        self, knots: Array, order: Array, approx: bool = True, ngrid: int = 1000
+    ) -> None:
         self.knots = knots
         self.dknots = jnp.mean(jnp.diff(knots))
         self.order = order
@@ -92,19 +94,48 @@ class BSplineApprox:
         self.basis = bspline_basis(self.grid, self.knots, self.order)
         self.basis_deriv = bspline_basis_deriv(self.grid, self.knots, self.order)
         self.basis_deriv2 = bspline_basis_deriv2(self.grid, self.knots, self.order)
+        self.approx = approx
+
+        if self.approx:
+            self.get_basis = self._approx_basis
+            self.get_basis_and_deriv = self._approx_basis_and_deriv
+            self.get_basis_deriv_and_deriv2 = self._approx_basis_deriv_and_deriv2
+        else:
+            self.get_basis = self._compute_basis  # type: ignore
+            self.get_basis_and_deriv = self._compute_basis_and_deriv  # type: ignore
+            self.get_basis_deriv_and_deriv2 = (
+                self._compute_basis_and_deriv2  # type: ignore
+            )
+
+    def _compute_basis(self, x: Array) -> Array:
+        return bspline_basis(x, self.knots, self.order)
+
+    def _compute_basis_and_deriv(self, x: Array) -> tuple[Array, Array]:
+        basis = bspline_basis(x, self.knots, self.order)
+        deriv = bspline_basis_deriv(x, self.knots, self.order)
+        return basis, deriv
+
+    def _compute_basis_and_deriv2(self, x: Array) -> tuple[Array, Array, Array]:
+        basis = bspline_basis(x, self.knots, self.order)
+        deriv = bspline_basis_deriv(x, self.knots, self.order)
+        deriv2 = bspline_basis_deriv2(x, self.knots, self.order)
+        return basis, deriv, deriv2
 
     @partial(jax.jit, static_argnums=0)
     @partial(jnp.vectorize, excluded=[0], signature="(n)->(n,p)")
-    def get_basis(self, x: Array) -> Array:
+    def _approx_basis(self, x: Array) -> Array:
         i = jnp.searchsorted(self.grid, x, side="right") - 1
         lo = self.grid[i]
         k = jnp.expand_dims((x - lo) / self.step, -1)
         basis = (1.0 - k) * self.basis[i, :] + (k * self.basis[i + 1, :])
-        return basis
+
+        mask = jnp.logical_or(x < self.min_knot, x > self.max_knot)
+        mask = jnp.expand_dims(mask, -1)
+        return jnp.where(mask, 0.0, basis)
 
     @partial(jax.jit, static_argnums=0)
     @partial(jnp.vectorize, excluded=[0], signature="(n)->(n,p),(n,p)")
-    def get_basis_and_deriv(self, x: Array) -> tuple[Array, Array]:
+    def _approx_basis_and_deriv(self, x: Array) -> tuple[Array, Array]:
         """
         Returns the basis matrix approximation and its gradient with
         respect to the data.
@@ -116,11 +147,14 @@ class BSplineApprox:
         basis_deriv = (1.0 - k) * self.basis_deriv[i, :] + (
             k * self.basis_deriv[i + 1, :]
         )
-        return basis, basis_deriv
+        mask = jnp.logical_or(x < self.min_knot, x > self.max_knot)
+        mask = jnp.expand_dims(mask, -1)
+
+        return jnp.where(mask, 0.0, basis), jnp.where(mask, 0.0, basis_deriv)
 
     @partial(jax.jit, static_argnums=0)
     @partial(jnp.vectorize, excluded=[0], signature="(n)->(n,p),(n,p),(n,p)")
-    def get_basis_deriv_and_deriv2(self, x: Array) -> tuple[Array, Array, Array]:
+    def _approx_basis_deriv_and_deriv2(self, x: Array) -> tuple[Array, Array, Array]:
         """
         Returns the basis matrix approximation and its first and second
         derivative with respect to the data.
@@ -135,9 +169,17 @@ class BSplineApprox:
         basis_deriv2 = (1.0 - k) * self.basis_deriv2[i, :] + (
             k * self.basis_deriv2[i + 1, :]
         )
+
+        mask = jnp.logical_or(x < self.min_knot, x > self.max_knot)
+        mask = jnp.expand_dims(mask, -1)
+
+        basis = jnp.where(mask, 0.0, basis)
+        basis_deriv = jnp.where(mask, 0.0, basis_deriv)
+        basis_deriv2 = jnp.where(mask, 0.0, basis_deriv2)
+
         return basis, basis_deriv, basis_deriv2
 
-    def get_basis_dot_fn(self) -> Callable[[Array, Array], Array]:
+    def _get_basis_dot_fn(self) -> Callable[[Array, Array], Array]:
         @jax.custom_jvp
         def _basis_dot(
             x: Array,
@@ -165,7 +207,7 @@ class BSplineApprox:
 
         return jax.jit(_basis_dot)
 
-    def get_basis_dot_and_deriv_fn(
+    def _get_basis_dot_and_deriv_fn(
         self,
     ) -> Callable[[Array, Array], tuple[Array, Array]]:
         @jax.custom_jvp
@@ -209,9 +251,9 @@ class BSplineApprox:
 
 class BSpline(BSplineApprox):
     """
-    Computationally efficient B-Spline with linear extrapolation.
+    B-Spline with linear extrapolation.
 
-    Beyond the range of interior knots, this B-Spline will smoothly transition to
+    Beyond the range of interior knots, this B-Spline can smoothly transition to
     a linear function.
 
     Params
@@ -220,8 +262,16 @@ class BSpline(BSplineApprox):
         The knots of the B-Spline. Assumed to be equidistant.
     order
         The order of the B-Spline. A cubic B-Spline is given by ``order=3``.
+    approx
+        If ``True`` (default), the B-Spline will be evaluated with an approximated \
+        basis matrix.
     ngrid
         The number of grid points used for the approximation.
+    extrapolate
+        If ``True`` (default), the B-Spline will smoothly transition to a linear \
+        function beyond the ranger of interior knots. The parameter ``eps`` controls \
+        the width of the transition segment, and ``target_slope`` defines the slope of
+        the linear extrapolation.
     eps
         Controls the width of the transition from the B-Spline to linear \
         extrapolation. This is a factor applied to the range of the knots. \
@@ -238,11 +288,13 @@ class BSpline(BSplineApprox):
         self,
         knots: Array,
         order: Array,
+        approx: bool = True,
         ngrid: int = 1000,
+        extrapolate: bool = True,
         eps: float = 0.3,
         target_slope: float | None = None,
     ) -> None:
-        super().__init__(knots, order, ngrid)
+        super().__init__(knots=knots, order=order, approx=approx, ngrid=ngrid)
         self.basis_min, self.basis_grad_min = self.get_basis_and_deriv(
             jnp.atleast_1d(self.knots[order])
         )
@@ -253,17 +305,23 @@ class BSpline(BSplineApprox):
         self.eps = eps * (self.max_knot - self.min_knot)
         self.min_eps = self.min_knot - self.eps
         self.max_eps = self.max_knot + self.eps
+        self.extrapolate = extrapolate
+        self.target_slope = target_slope
 
-        self._basis_dot = self._get_extrap_basis_dot_fn(target_slope)
-        self._basis_dot_and_deriv = self._get_extrap_basis_dot_and_deriv_fn(
-            target_slope
-        )
+        if extrapolate:
+            self._basis_dot = self._get_extrap_basis_dot_fn(target_slope)
+            self._basis_dot_and_deriv = self._get_extrap_basis_dot_and_deriv_fn(
+                target_slope
+            )
+        else:
+            self._basis_dot = self._get_basis_dot_fn()
+            self._basis_dot_and_deriv = self._get_basis_dot_and_deriv_fn()
 
     def _get_extrap_basis_dot_fn(
         self, target_slope: float | None = None
     ) -> Callable[[Array, Array], Array]:
-        basis_dot_and_deriv_fn = self.get_basis_dot_and_deriv_fn()
-        basis_dot_fn = self.get_basis_dot_fn()
+        basis_dot_and_deriv_fn = self._get_basis_dot_and_deriv_fn()
+        basis_dot_fn = self._get_basis_dot_fn()
 
         target_slope_fn = (
             (lambda knots, coef, order: target_slope)
@@ -351,7 +409,7 @@ class BSpline(BSplineApprox):
     def _get_extrap_basis_dot_and_deriv_fn(
         self, target_slope: float | None = None
     ) -> Callable[[Array, Array], tuple[Array, Array]]:
-        basis_dot_and_deriv_fn = self.get_basis_dot_and_deriv_fn()
+        basis_dot_and_deriv_fn = self._get_basis_dot_and_deriv_fn()
         minmax = jnp.array([self.min_knot, self.max_knot])
 
         target_slope_fn = (
@@ -454,6 +512,9 @@ class BSpline(BSplineApprox):
 
         # Return jitted function
         return jax.jit(basis_dot_and_deriv)
+
+    def __call__(self, x: Array, coef: Array) -> Array:
+        return self.dot(x, coef)
 
     def dot(self, x: Array, coef: Array) -> Array:
         """
