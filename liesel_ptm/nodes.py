@@ -21,6 +21,7 @@ from liesel.goose.kernel import Kernel
 from liesel.model.nodes import no_model_setter
 from sklearn.preprocessing import LabelBinarizer
 
+from .bsplines import BSpline
 from .custom_types import Array, KeyArray, TFPDistribution
 from .liesel_internal import splines
 from .sampling import summarise_by_quantiles, summarise_by_samples
@@ -642,13 +643,10 @@ class NonlinearPSpline(Term):
         Z = nullspace_remover(pen)
         Ltinv = cholesky_ltinv(Z.T @ pen @ Z)
 
-        def basis_fn(x):
-            basis = bspline_basis(x, knots=knots, order=3)
-            return basis @ Z @ Ltinv
+        self.bspline = BSpline(knots=knots, postmultiply_by=(Z @ Ltinv))
+        basis = self.bspline.get_basis(x)
 
-        basis = basis_fn(x)
         X = np.c_[np.ones_like(x), x]
-
         P = np.eye(X.shape[0]) - (X @ np.linalg.inv(X.T @ X) @ X.T)
         basis_p = P @ basis
 
@@ -661,11 +659,9 @@ class NonlinearPSpline(Term):
         )
 
         self.smooth = Var(
-            ScaledBasisDot(
-                x=self.basis, coef=self.coef, scale=self.scale, basis_fn=basis_fn
-            ),
+            lsl.Calc(scaled_dot, self.basis, self.coef, self.scale),
             name=f"{name}_smooth",
-        )
+        ).update()
 
         scale_param = find_param(self.scale)
 
@@ -708,7 +704,14 @@ class NonlinearPSpline(Term):
         center: bool = False,
         scale: bool = False,
     ) -> Array:
-        fx = self.smooth.predict(samples=samples, x=x)
+        x = x if x is not None else self.observed_value
+        x = np.atleast_1d(x)
+        coef_samples = samples[self.coef.name]
+        scale_samples = self.scale.predict(samples)
+
+        prod = jnp.vectorize(lambda a, b: a * b, signature="(),(p)->(p)")
+
+        fx = self.bspline(x, prod(scale_samples, coef_samples))
 
         if center:
             fx = fx - fx.mean(axis=-1, keepdims=True)
@@ -717,8 +720,14 @@ class NonlinearPSpline(Term):
         return fx
 
     def posterior_coef(self, samples: dict[str, Array]) -> Array:
-        calc = ScaledDot(self.basis.reparam_matrix, self.coef, self.scale)
-        return calc.predict(samples)
+        Z = self.bspline.postmultiply_by
+
+        coef = samples[self.coef.name]
+        scale = self.scale.predict(samples)
+        prod = jnp.vectorize(lambda a, b: a * b, signature="(),(p)->(p)")
+
+        coef_samples = prod(scale, coef)
+        return np.einsum("...pj,...j->...p", Z, coef_samples)
 
     @property
     def observed_value(self) -> Array:
