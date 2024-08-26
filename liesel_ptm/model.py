@@ -12,7 +12,7 @@ import optax
 import pandas as pd
 
 from . import nodes as nd
-from .bsplines import ExtrapBSplineApprox
+from .bsplines import BSpline
 from .custom_types import Array, KeyArray
 from .dist import LocScaleTransformationDist
 from .ptm_ls import (
@@ -85,12 +85,17 @@ class OnionPTMLocScale:
         self._dist_centered = centered
         self._dist_scaled = scaled
 
-        bspline = ExtrapBSplineApprox(knots=self.knots.knots, order=3)
-        _bdot_fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+        bspline = BSpline(
+            knots=self.knots.knots,
+            order=3,
+            approx=True,
+            extrapolate=True,
+            target_slope=1.0,
+        )
 
         self.dist_class = partial(
             LocScaleTransformationDist,
-            basis_dot_and_deriv_fn=_bdot_fn,
+            basis_dot_and_deriv_fn=bspline.dot_and_deriv,
             centered=self._dist_centered,
             scaled=self._dist_scaled,
         )
