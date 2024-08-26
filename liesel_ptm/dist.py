@@ -186,7 +186,10 @@ class TransformationDist(tfd.Distribution):
         return transf, logdet
 
     def _transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
+        nan_mask = jnp.isnan(value)
         transf, deriv = self.bdot_and_deriv_fn(value, self.coef)
+        transf = jnp.where(nan_mask, jnp.nan, transf)
+        deriv = jnp.where(nan_mask, jnp.nan, deriv)
         tiny = jnp.finfo(value.dtype).tiny
         deriv = jnp.clip(deriv, min=tiny)  # safeguard against numerical issues
         return transf, jnp.log(deriv)
