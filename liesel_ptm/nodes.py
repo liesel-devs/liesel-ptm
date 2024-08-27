@@ -2976,7 +2976,7 @@ class OnionCoefLogIncrements(lsl.Var):
         transformed_samples = samples[self.transformed.name]
         tau2_samples = self.tau2.predict(samples)
         tau_samples = jnp.expand_dims(jnp.sqrt(tau2_samples), -1)
-        return tau_samples * jnp.einsum("pp,...p->...p", self.W, transformed_samples)
+        return tau_samples * jnp.einsum("jp,...p->...j", self.W, transformed_samples)
 
 
 class OnionCoefParam(lsl.Var):
