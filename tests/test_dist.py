@@ -42,6 +42,25 @@ class TestTransformationDist:
 
         assert dist.batch_shape == tf.TensorShape([30, 4])
 
+    def test_batch_shape2(self) -> None:
+        knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
+        log_increments = jrd.uniform(key, shape=(30, 4, knots.nparam_full_domain))
+        coef = jnp.cumsum(jnp.exp(log_increments), axis=0)
+
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots,
+            coef=coef,
+            basis_dot_and_deriv_fn=fn,
+            parametric_distribution=tfd.Normal,
+            loc=0.0,
+            scale=1.0,
+        )
+
+        assert dist.batch_shape == tf.TensorShape([30, 4])
+
     def test_transformation_and_logdet_spline(self) -> None:
         knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")

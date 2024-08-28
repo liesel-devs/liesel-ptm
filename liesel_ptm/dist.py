@@ -152,17 +152,37 @@ class TransformationDist(tfd.Distribution):
 
     def _batch_shape(self):
         kwargs_shapes = [
-            param.shape for param in self.parametric_distribution_kwargs.values()
+            jnp.shape(param) for param in self.parametric_distribution_kwargs.values()
         ]
-        shape = jnp.broadcast_shapes(self.coef.shape[:-1], *kwargs_shapes)
-        return tf.TensorShape(shape)
+        parametric_shape = tuple()
+        for shape in kwargs_shapes:
+            parametric_shape = tf.broadcast_static_shape(parametric_shape, shape)
+
+        coef_shape = self.coef.shape[:-1]
+
+        if len(parametric_shape):
+            coef_shape = coef_shape + (1,)
+
+        coef_shape = tf.TensorShape(coef_shape)
+
+        return tf.broadcast_static_shape(coef_shape, parametric_shape)
 
     def _batch_shape_tensor(self):
         kwargs_shapes = [
-            param.shape for param in self.parametric_distribution_kwargs.values()
+            jnp.shape(param) for param in self.parametric_distribution_kwargs.values()
         ]
-        shape = jnp.broadcast_shapes(self.coef.shape[:-1], *kwargs_shapes)
-        return jnp.array(shape, dtype=jnp.int32)
+        parametric_shape = tuple()
+        for shape in kwargs_shapes:
+            parametric_shape = tf.broadcast_dynamic_shape(parametric_shape, shape)
+
+        coef_shape = self.coef.shape[:-1]
+
+        if len(parametric_shape):
+            coef_shape = coef_shape + (1,)
+
+        coef_shape = tf.TensorShape(coef_shape)
+
+        return tf.broadcast_dynamic_shape(coef_shape, parametric_shape)
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
         if self.parametric_distribution is None:
