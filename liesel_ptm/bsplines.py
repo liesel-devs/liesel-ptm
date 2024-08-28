@@ -245,6 +245,7 @@ class BSplineApprox:
         self.step = (self.max_knot - self.min_knot) / ngrid
         prepend = jnp.array([self.min_knot - self.step])
         append = jnp.array([self.max_knot + self.step])
+        self.ngrid = ngrid
         self.grid = jnp.concatenate((prepend, grid, append))
 
         Z = jnp.eye(self.nparam) if postmultiply_by is None else postmultiply_by
