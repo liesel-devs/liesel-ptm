@@ -115,6 +115,15 @@ class OnionPTMLocScale:
 
         self._graph: lsl.Model | None = None
 
+        self.coef_kernel = gs.NUTSKernel([self.coef.log_increments.transformed.name])
+        tau2_name = (
+            self.tau2.transformed.name
+            if self.tau2.transformed is not None
+            else self.tau2.name
+        )
+
+        self.tau2_kernel = gs.NUTSKernel([tau2_name])
+
     def _build_graph(self) -> lsl.Model:
         gb = lsl.GraphBuilder().add(self.response)
         self._graph = gb.build_model()
@@ -277,8 +286,8 @@ class OnionPTMLocScale:
                 eb.add_kernel(kernel)
 
         if sample_transformation:
-            eb.add_kernel(gs.NUTSKernel([self.coef.log_increments.transformed.name]))
-            eb.add_kernel(gs.NUTSKernel([nd.find_param(self.tau2).name]))  # type: ignore
+            eb.add_kernel(self.coef_kernel)
+            eb.add_kernel(self.tau2_kernel)  # type: ignore
 
         eb.positions_included = self.intercept_names
 
