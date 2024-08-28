@@ -6,7 +6,7 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 from tensorflow_probability.substrates.jax import tf2jax as tf
 
 from liesel_ptm import bsplines
-from liesel_ptm.bsplines import ExtrapBSplineApprox
+from liesel_ptm.bsplines import BSpline, ExtrapBSplineApprox
 from liesel_ptm.dist import LocScaleTransformationDist, TransformationDist
 from liesel_ptm.nodes import OnionCoefParam, VarWeibull
 
@@ -454,3 +454,84 @@ class TestLocScaleTransformationDist:
 
         y = dist.quantile(u)
         assert y.shape == (10, 4, 8, 32)
+
+    def test_transformation_sample_shape(self):
+        knots = bsplines.OnionKnots(-3.0, 3.0, nparam=10)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
+
+        samples = {}
+        samples[coef.log_increments.transformed.name] = jax.random.normal(
+            key, shape=(4, 100, knots.nparam)
+        )
+        samples["tau2_transformed"] = jnp.ones((4, 100))
+        coef_samples = coef.predict(samples)
+
+        loc = jax.random.normal(key, shape=(4, 100, 382))
+        scale = jnp.log(1 + jnp.exp(jax.random.normal(key, shape=(4, 100, 382))))
+
+        bspline = BSpline(knots=knots.knots, target_slope=1.0)
+
+        dist = LocScaleTransformationDist(
+            knots=knots.knots,
+            basis_dot_and_deriv_fn=bspline.dot_and_deriv,
+            coef=coef_samples,
+            loc=loc,
+            scale=scale,
+        )
+
+        assert dist.batch_shape is not None
+
+        z, _ = dist.transformation_and_logdet(jnp.linspace(-5.0, 5.0, 382))
+        assert z.shape == (4, 100, 382)
+
+        z, _ = dist.transformation_and_logdet(0.0)
+        assert z.shape == (4, 100, 382)
+
+        dist = LocScaleTransformationDist(
+            knots=knots.knots,
+            basis_dot_and_deriv_fn=bspline.dot_and_deriv,
+            coef=coef_samples[0, ...],
+            loc=loc[0, ...],
+            scale=scale[0, ...],
+        )
+
+        assert dist.batch_shape is not None
+
+        z, _ = dist.transformation_and_logdet(jnp.linspace(-5.0, 5.0, 382))
+        assert z.shape == (100, 382)
+
+        z, _ = dist.transformation_and_logdet(0.0)
+        assert z.shape == (100, 382)
+
+        dist = LocScaleTransformationDist(
+            knots=knots.knots,
+            basis_dot_and_deriv_fn=bspline.dot_and_deriv,
+            coef=coef_samples[0, 0, ...],
+            loc=loc[0, 0, ...],
+            scale=scale[0, 0, ...],
+        )
+
+        assert dist.batch_shape is not None
+
+        z, _ = dist.transformation_and_logdet(jnp.linspace(-5.0, 5.0, 382))
+        assert z.shape == (382,)
+
+        z, _ = dist.transformation_and_logdet(0.0)
+        assert z.shape == (382,)
+
+        dist = LocScaleTransformationDist(
+            knots=knots.knots,
+            basis_dot_and_deriv_fn=bspline.dot_and_deriv,
+            coef=coef_samples[0, 0, ...],
+            loc=0.0,
+            scale=0.0,
+        )
+
+        assert dist.batch_shape is not None
+
+        z, _ = dist.transformation_and_logdet(jnp.linspace(-5.0, 5.0, 382))
+        assert z.shape == (382,)
+
+        z, _ = dist.transformation_and_logdet(0.0)
+        assert z.shape == (1,)
