@@ -2953,7 +2953,7 @@ def rw_weight_matrix(nparam: int, center: bool = False):
 
 class OnionCoefLogIncrements(lsl.Var):
     def __init__(self, nparam: int, tau2: TransformedVar, name: str = "") -> None:
-        self.W = rw_weight_matrix(nparam=nparam)
+        self.W = rw_weight_matrix(nparam=nparam, center=True)
         self.tau2 = tau2
 
         self.transformed = lsl.param(
