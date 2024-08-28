@@ -40,7 +40,8 @@ class OnionPTMLocScale:
         scaled: bool = True,
     ) -> None:
         self.tau2 = tau2
-        self.knots = nd.OnionKnots(a=a, b=b, nparam=nparam, order=3)
+        self._knots = nd.OnionKnots(a=a, b=b, nparam=nparam, order=3)
+        self.knots_var = lsl.Var(self.knots.knots, name="knots")
         self.coef = nd.OnionCoefParam(knots=self.knots, tau2=tau2, name="shape_coef")
 
         self.loc_model: nd.Predictor = nd.Predictor("loc_model").update()
@@ -85,7 +86,7 @@ class OnionPTMLocScale:
         self._dist_centered = centered
         self._dist_scaled = scaled
 
-        bspline = BSpline(
+        self._bspline = BSpline(
             knots=self.knots.knots,
             order=3,
             approx=True,
@@ -93,16 +94,16 @@ class OnionPTMLocScale:
             target_slope=1.0,
         )
 
-        self.dist_class = partial(
+        self._dist_class = partial(
             LocScaleTransformationDist,
-            basis_dot_and_deriv_fn=bspline.dot_and_deriv,
+            basis_dot_and_deriv_fn=self.bspline.dot_and_deriv,
             centered=self._dist_centered,
             scaled=self._dist_scaled,
         )
 
         response_dist = lsl.Dist(
             self.dist_class,
-            knots=self.knots.knots,
+            knots=self.knots_var,
             coef=self.coef,
             loc=self.loc,
             scale=self.scale,
@@ -123,6 +124,48 @@ class OnionPTMLocScale:
         )
 
         self.tau2_kernel = gs.NUTSKernel([tau2_name])
+
+    @property
+    def knots(self):
+        return self._knots
+
+    @knots.setter
+    def knots(self, value: nd.OnionKnots) -> None:
+        self.graph.pop_nodes_and_vars()
+        self._knots = value
+        self.knots_var.value = value.knots
+
+        self._bspline = BSpline(
+            knots=value.knots,
+            order=self.bspline.order,
+            approx=self.bspline.approx,
+            ngrid=self.bspline.ngrid,
+            postmultiply_by=self.bspline.postmultiply_by,
+            extrapolate=self.bspline.extrapolate,
+            eps=self.bspline.eps,
+            target_slope=self.bspline.target_slope,
+        )
+
+        self._dist_class = partial(
+            LocScaleTransformationDist,
+            basis_dot_and_deriv_fn=self.bspline.dot_and_deriv,
+            centered=self._dist_centered,
+            scaled=self._dist_scaled,
+        )
+
+        self.coef.coef_spec = nd.OnionCoef(value)
+        self.coef.value_node.function = self.coef.coef_spec
+        self.response.dist_node.distribution = self.dist_class
+
+        self._graph = self._build_graph()
+
+    @property
+    def bspline(self) -> BSpline:
+        return self._bspline
+
+    @property
+    def dist_class(self):
+        return self._dist_class
 
     def _build_graph(self) -> lsl.Model:
         gb = lsl.GraphBuilder().add(self.response)
@@ -229,6 +272,27 @@ class OnionPTMLocScale:
         self.graph.state = result_loc_scale.model_state
 
         return result_loc_scale
+
+    def update_knots(
+        self, q: tuple[float, float] = (0.0, 1.0), stretch: float = 1.0
+    ) -> nd.OnionKnots:
+        dist = self.init_dist()
+
+        y = self.response.value
+        resid = dist.transformation_and_logdet_parametric(y)[0]
+        quantiles = jnp.quantile(resid, jnp.array(q))
+
+        range_ = quantiles[1] - quantiles[0]
+        mid = quantiles[0] + range_ / 2
+
+        a = float(mid - (range_ / 2) * stretch)
+        b = float(mid + (range_ / 2) * stretch)
+
+        knots = nd.OnionKnots(
+            a=a, b=b, nparam=self.knots.nparam, order=self.knots.order
+        )
+        self.knots = knots
+        return knots
 
     def optimize_transformation(
         self,

@@ -41,6 +41,26 @@ class TestOnionPTMLocScale:
         assert model.loc_intercept.value == pytest.approx(beta_hat[0], abs=0.05)
         assert jnp.allclose(res1.position["lin_coef"], beta_hat[1:], atol=0.05)
 
+    def test_update_knots(self) -> None:
+        resid = jax.random.exponential(k2, shape=(X.shape[0],))
+        y = X @ beta + resid
+
+        model = OnionPTMLocScale(
+            y=y,
+            nparam=15,
+            tau2=VarInverseGamma(0.2, concentration=2.0, scale=0.5, name="tau2"),
+        )
+
+        model.loc_model += LinearTerm(x=X, name="lin")
+
+        model.optimize_locscale(atol=0.001)
+
+        knots_before = model.knots.knots
+        model.update_knots()
+        knots_after = model.knots.knots
+
+        assert not jnp.allclose(knots_before, knots_after)
+
     def test_setup_engine_builder(self) -> None:
         model = OnionPTMLocScale(
             y=y,
