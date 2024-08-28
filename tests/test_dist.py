@@ -292,6 +292,30 @@ class TestTransformationDist:
         assert (initial_deviations >= 1e-5).sum() > (deviations >= 1e-5).sum()
         assert jnp.allclose(ygrid, ygrid_inverted, atol=1e-2)
 
+    def test_inverse_transformation_jit(self) -> None:
+        seed = 1
+        knots = bsplines.OnionKnots(-1.0, 1.0, nparam=10)
+        tau2 = VarWeibull(1.0, scale=0.05, name="tau2")
+        coef = OnionCoefParam(knots, tau2=tau2)
+        shape = coef.log_increments.transformed.value.shape
+        coef.log_increments.transformed.value = jrd.normal(jrd.PRNGKey(seed), shape)
+        coef.log_increments.update()
+        coef.update()
+
+        bspline = ExtrapBSplineApprox(knots=knots.knots, order=3)
+        fn = bspline.get_extrap_basis_dot_and_deriv_fn(target_slope=1.0)
+
+        dist = TransformationDist(
+            knots=knots.knots, coef=coef.value, basis_dot_and_deriv_fn=fn
+        )
+
+        ygrid = jnp.linspace(-5.0, 5.0, 300)
+        zgrid, _ = dist.transformation_and_logdet(ygrid)
+
+        ygrid_inverted = jax.jit(dist.inverse_transformation)(zgrid)
+
+        assert jnp.allclose(ygrid, ygrid_inverted, atol=1e-7)
+
     def test_inverse_transformation_initial_guess(self) -> None:
         knots = bsplines.OnionKnots(-1.0, 1.0, nparam=10)
         tau2 = VarWeibull(1.0, scale=0.05, name="tau2")

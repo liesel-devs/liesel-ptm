@@ -271,6 +271,76 @@ class TransformationDist(tfd.Distribution):
 
         return y_new
 
+    def _find_y_lo(
+        self,
+        min_z: float | Array,
+    ) -> Array:
+        y_lo = self.knots[0]
+        left_shift = jnp.array(0.1)
+        min_zgrid = self.transformation_and_logdet_spline(y_lo - left_shift)[0]
+        min_zgrid = jnp.min(min_zgrid)
+
+        def _cond_fun_l(val):
+            _, min_zgrid = val
+            return jnp.squeeze(min_zgrid >= min_z)
+
+        def _body_fun_l(val):
+            left_shift, min_zgrid = val
+            left_shift = left_shift + 0.5
+            min_zgrid = self.transformation_and_logdet_spline(y_lo - left_shift)[0]
+            min_zgrid = jnp.min(min_zgrid)
+            return left_shift, min_zgrid
+
+        # while _cond_fun_l((left_shift, min_zgrid)):
+        #     left_shift, min_zgrid = _body_fun_l((left_shift, min_zgrid))
+
+        left_shift, _ = jax.lax.while_loop(
+            _cond_fun_l, _body_fun_l, (left_shift, min_zgrid)
+        )
+        return y_lo - left_shift
+
+    def _find_y_hi(
+        self,
+        max_z: float | Array,
+    ) -> Array:
+        y_hi = self.knots[-1]
+        right_shift = jnp.array(0.1)
+        max_zgrid = self.transformation_and_logdet_spline(y_hi + right_shift)[0]
+        max_zgrid = jnp.max(max_zgrid)
+
+        def _cond_fun_r(val):
+            _, max_zgrid = val
+            return jnp.squeeze(max_zgrid <= max_z)
+
+        def _body_fun_r(val):
+            right_shift, max_zgrid = val
+            right_shift = right_shift + 0.5
+            max_zgrid = self.transformation_and_logdet_spline(y_hi + right_shift)[0]
+            max_zgrid = jnp.max(max_zgrid)
+            return right_shift, max_zgrid
+
+        # while _cond_fun_r((right_shift, max_zgrid)):
+        #     right_shift, max_zgrid = _body_fun_r((right_shift, max_zgrid))
+        right_shift, _ = jax.lax.while_loop(
+            _cond_fun_r, _body_fun_r, (right_shift, max_zgrid)
+        )
+        return y_hi + right_shift
+
+    def _find_grid(
+        self,
+        y_lo: float | Array,
+        y_hi: float | Array,
+        ngrid: int = 200,
+    ) -> tuple[Array, Array]:
+        """
+        Finds a grid of y values such that h(y) covers the range of z values.
+        """
+
+        ygrid = jnp.linspace(y_lo, y_hi, ngrid)
+        zgrid = self.transformation_and_logdet_spline(ygrid)[0]
+
+        return ygrid, zgrid
+
     def _inverse_transformation_initial_guess(self, value: Array) -> Array:
         if self.centered:
             ymean = self._transformation_spline_mean()  # intercept / expected val.
@@ -286,14 +356,12 @@ class TransformationDist(tfd.Distribution):
 
         scaled_value = (value - ymean) / ystd
 
-        y_tilde_grid = jnp.linspace(self.knots[0], self.knots[-1], 500)
-        zgrid, _ = self.transformation_and_logdet_spline(y_tilde_grid)
+        y_lo = self._find_y_lo(jnp.min(scaled_value))
+        y_hi = self._find_y_hi(jnp.max(scaled_value))
+        # ngrid = jnp.array((y_hi - y_lo + 1) * 100, int)
+        y_tilde_grid, zgrid = self._find_grid(y_lo, y_hi, ngrid=1000)
+
         initial_guess = approximate_inverse(y_tilde_grid, zgrid, value)
-        initial_guess = jnp.where(
-            (scaled_value <= self.knots[0]) | (scaled_value >= self.knots[-1]),
-            scaled_value,
-            initial_guess,
-        )
 
         return initial_guess
 
