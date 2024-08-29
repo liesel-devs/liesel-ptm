@@ -40,8 +40,9 @@ class TransformationDist(tfd.Distribution):
         self,
         knots: Array,
         coef: Array,
-        basis_dot_and_deriv_fn: Callable[[Array, Array], tuple[Array, Array]]
-        | None = None,
+        basis_dot_and_deriv_fn: (
+            Callable[[Array, Array], tuple[Array, Array]] | None
+        ) = None,
         parametric_distribution: type[tfd.Distribution] | None = None,
         reference_distribution: tfd.Distribution | None = None,
         validate_args: bool = False,
@@ -430,8 +431,9 @@ class LocScaleTransformationDist(TransformationDist):
         coef: Array,
         loc: Array,
         scale: Array,
-        basis_dot_and_deriv_fn: Callable[[Array, Array], tuple[Array, Array]]
-        | None = None,
+        basis_dot_and_deriv_fn: (
+            Callable[[Array, Array], tuple[Array, Array]] | None
+        ) = None,
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "LocScaleTransformationDist",
