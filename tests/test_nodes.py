@@ -769,3 +769,56 @@ class TestOnionCoefParam:
         new_coef = coef.predict(samples)
 
         assert new_coef.shape == (3, knots.nparam_full_domain)
+
+
+class TestPTMCoef:
+    def test_nparam(self):
+        knots = nd.EquidistantKnots(a=-3.0, b=3.0, nparam=10)
+        tau2 = nd.VarWeibull(value=1.0, scale=0.05, name="tau2")
+        coef = nd.PTMCoef(knots=knots, tau2=tau2, name="coef")
+
+        assert coef.value.shape == (knots.nparam + 1,)
+
+    def test_values(self):
+        knots = nd.EquidistantKnots(a=-3.0, b=3.0, nparam=10)
+        tau2 = nd.VarWeibull(value=1.0, scale=0.05, name="tau2")
+        coef = nd.PTMCoef(knots=knots, tau2=tau2, name="coef")
+
+        assert np.allclose(np.diff(knots.knots[2:-2]), np.diff(coef.value))
+
+    def test_param_name(self):
+        knots = nd.EquidistantKnots(a=-3.0, b=3.0, nparam=10)
+        tau2 = nd.VarWeibull(value=1.0, scale=0.05, name="tau2")
+        coef = nd.PTMCoef(knots=knots, tau2=tau2, name="coef")
+        param = nd.find_param(coef)
+
+        assert param.name == coef.log_increments.transformed.name
+
+    def test_predict(self):
+        knots = nd.EquidistantKnots(a=-3.0, b=3.0, nparam=10)
+        tau2 = nd.VarWeibull(value=1.0, scale=0.05, name="tau2")
+        coef = nd.PTMCoef(knots=knots, tau2=tau2, name="coef")
+
+        samples = dict()
+
+        actual_nparam = knots.nparam - 1
+        ncoef = coef.value.shape[-1]
+
+        key = jax.random.PRNGKey(42)
+        samples[tau2.transformed.name] = jax.random.normal(key, (3, 20))
+        samples[coef.log_increments.transformed.name] = jax.random.normal(
+            key, (3, 20, actual_nparam)
+        )
+
+        new_coef = coef.predict(samples)
+
+        assert new_coef.shape == (3, 20, ncoef)
+
+        samples[tau2.transformed.name] = jax.random.normal(key, (3,))
+        samples[coef.log_increments.transformed.name] = jax.random.normal(
+            key, (3, actual_nparam)
+        )
+
+        new_coef = coef.predict(samples)
+
+        assert new_coef.shape == (3, ncoef)

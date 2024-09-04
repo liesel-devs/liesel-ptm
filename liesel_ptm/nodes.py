@@ -21,7 +21,7 @@ from liesel.goose.kernel import Kernel
 from liesel.model.nodes import no_model_setter
 from sklearn.preprocessing import LabelBinarizer
 
-from .bsplines import OnionCoef, OnionKnots
+from .bsplines import EquidistantKnots, OnionCoef, OnionKnots
 from .custom_types import Array, KeyArray, TFPDistribution
 from .liesel_internal import splines
 from .sampling import summarise_by_quantiles, summarise_by_samples
@@ -2939,9 +2939,14 @@ def brownian_motion_mat(nrows: int, ncols: int):
     return jnp.minimum(r, c)
 
 
-def rw_weight_matrix(nparam: int, center: bool = False):
-    B = brownian_motion_mat(nparam, nparam)
+def rw_weight_matrix(nparam: int, center: bool = False, nfixed: int = 0):
+    nparam_flex = nparam - nfixed
+
+    B = brownian_motion_mat(nparam_flex, nparam_flex)
     L = jnp.linalg.cholesky(B, upper=False)
+
+    for _ in range(nfixed):
+        L = jnp.r_[jnp.zeros((1, L.shape[-1])), L]
 
     if not center:
         return L
@@ -2951,13 +2956,15 @@ def rw_weight_matrix(nparam: int, center: bool = False):
     return W
 
 
-class OnionCoefLogIncrements(lsl.Var):
-    def __init__(self, nparam: int, tau2: TransformedVar, name: str = "") -> None:
-        self.W = rw_weight_matrix(nparam=nparam, center=True)
+class IncreasingCoefLogIncrements(lsl.Var):
+    def __init__(
+        self, nparam: int, tau2: TransformedVar, name: str = "", nfixed: int = 0
+    ) -> None:
+        self.W = rw_weight_matrix(nparam=nparam, center=True, nfixed=nfixed)
         self.tau2 = tau2
 
         self.transformed = lsl.param(
-            jnp.zeros(nparam),
+            jnp.zeros(nparam - nfixed),
             distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
             name=f"{name}_param",
         )
@@ -2981,15 +2988,107 @@ class OnionCoefLogIncrements(lsl.Var):
 
 class OnionCoefParam(lsl.Var):
     def __init__(self, knots: OnionKnots, tau2: TransformedVar, name: str = "") -> None:
-        self.log_increments = OnionCoefLogIncrements(
-            nparam=knots.nparam, tau2=tau2, name=f"{name}_latent"
+        self.log_increments = IncreasingCoefLogIncrements(
+            nparam=knots.nparam, tau2=tau2, name=f"{name}_latent", nfixed=0
         )
-        self.coef_spec = OnionCoef(knots)
+        self.nparam = knots.nparam
+        self.order = knots.order
+        self._knots = knots.knots
+        self.fn = OnionCoef(knots)
+        self.tau2 = tau2
 
         super().__init__(
-            lsl.Calc(self.coef_spec, self.log_increments).update(),
+            lsl.Calc(self.fn, self.log_increments).update(),
             name=name,
         )
 
+        tau2_param_name = (
+            self.tau2.transformed.name
+            if self.tau2.transformed is not None
+            else self.tau2.name
+        )
+        self.mcmc_kernels = [
+            gs.NUTSKernel([self.log_increments.transformed.name]),
+            gs.NUTSKernel([tau2_param_name]),
+        ]
+
+    @property
+    def knots(self) -> Array:
+        return self._knots
+
+    @knots.setter
+    def knots(self, value: Array) -> None:
+        knots = OnionKnots.new_from_knots_array(value)
+
+        if not knots.nparam == self.nparam:
+            raise ValueError(
+                f"New knots imply a different number of parameters than {self.nparam=}."
+            )
+        if not knots.order == self.order:
+            raise ValueError(f"Order of new knots does not match {self.order=}.")
+
+        self._knots = knots.knots
+
+        knots = OnionKnots.new_from_knots_array(self._knots, order=self.order)
+        self.fn = OnionCoef(knots)
+        self.value_node.function = self.fn
+
     def predict(self, samples: dict[str, Array]) -> Array:
-        return self.coef_spec(self.log_increments.predict(samples))
+        return self.fn(self.log_increments.predict(samples))
+
+
+class PTMCoef(lsl.Var):
+    """
+    Classic PTM coefficient with intercept coefficient fixed to zero.
+    """
+
+    def __init__(
+        self, knots: EquidistantKnots, tau2: TransformedVar, name: str = ""
+    ) -> None:
+        self.log_increments = IncreasingCoefLogIncrements(
+            nparam=knots.nparam, tau2=tau2, name=f"{name}_latent", nfixed=1
+        )
+        self.nparam = knots.nparam
+        self.order = knots.order
+        self._knots = knots.knots
+        dknots = jnp.diff(knots.knots).mean()
+        self.fn = partial(normalization_coef, dknots=dknots)
+        self.tau2 = tau2
+
+        super().__init__(
+            lsl.Calc(self.fn, self.log_increments).update(),
+            name=name,
+        )
+
+        tau2_param_name = (
+            self.tau2.transformed.name
+            if self.tau2.transformed is not None
+            else self.tau2.name
+        )
+        self.mcmc_kernels = [
+            gs.NUTSKernel([self.log_increments.transformed.name]),
+            gs.NUTSKernel([tau2_param_name]),
+        ]
+
+    @property
+    def knots(self) -> Array:
+        return self._knots
+
+    @knots.setter
+    def knots(self, value: Array) -> None:
+        knots = EquidistantKnots.new_from_knots_array(value, order=self.order)
+        if not knots.nparam == self.nparam:
+            raise ValueError(
+                f"New knots imply a different number of parameters than {self.nparam=}."
+            )
+        if not knots.order == self.order:
+            raise ValueError(f"Order of new knots does not match {self.order=}.")
+
+        self._knots = knots.knots
+
+        dknots = jnp.diff(self._knots).mean()
+        self.fn = partial(normalization_coef, dknots=dknots)
+        self.value_node.function = self.fn
+
+    def predict(self, samples: dict[str, Array]) -> Array:
+        return self.fn(self.log_increments.predict(samples))
