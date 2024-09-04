@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from collections.abc import Sequence
 from functools import partial
@@ -28,21 +30,20 @@ from .sampling import summarise_by_quantiles, summarise_by_samples
 logger = logging.getLogger(__name__)
 
 
-class OnionPTMLocScale:
+class NewPTMLocScale:
     def __init__(
         self,
         y: Array,
-        nparam: int,
-        tau2: nd.TransformedVar,
-        a: float = -4.0,
-        b: float = 4.0,
-        centered: bool = True,
-        scaled: bool = True,
+        coef: nd.PTMCoef | nd.OnionCoefParam,
+        centered: bool = False,
+        scaled: bool = False,
+        knots_class: type | None = None,
     ) -> None:
-        self.tau2 = tau2
-        self._knots = nd.OnionKnots(a=a, b=b, nparam=nparam, order=3)
-        self.knots_var = lsl.Var(self.knots.knots, name="knots")
-        self.coef = nd.OnionCoefParam(knots=self.knots, tau2=tau2, name="shape_coef")
+        self._knots = coef.knots
+        self._knots_class = knots_class
+        self.coef = coef
+        self.order = 3
+        self.nparam = coef.log_increments.transformed.value.shape[-1]
 
         self.loc_model: nd.Predictor = nd.Predictor("loc_model").update()
         """Predictor for the location model part. Does not include an intercept."""
@@ -87,8 +88,8 @@ class OnionPTMLocScale:
         self._dist_scaled = scaled
 
         self._bspline = BSpline(
-            knots=self.knots.knots,
-            order=3,
+            knots=self.knots,
+            order=self.order,
             approx=True,
             extrapolate=True,
             target_slope=1.0,
@@ -99,11 +100,11 @@ class OnionPTMLocScale:
             basis_dot_and_deriv_fn=self.bspline.dot_and_deriv,
             centered=self._dist_centered,
             scaled=self._dist_scaled,
+            knots=self.knots,
         )
 
         response_dist = lsl.Dist(
             self.dist_class,
-            knots=self.knots_var,
             coef=self.coef,
             loc=self.loc,
             scale=self.scale,
@@ -116,15 +117,6 @@ class OnionPTMLocScale:
 
         self._graph: lsl.Model | None = None
 
-        self.coef_kernel = gs.NUTSKernel([self.coef.log_increments.transformed.name])
-        tau2_name = (
-            self.tau2.transformed.name
-            if self.tau2.transformed is not None
-            else self.tau2.name
-        )
-
-        self.tau2_kernel = gs.NUTSKernel([tau2_name])
-
     @property
     def knots(self):
         return self._knots
@@ -133,10 +125,9 @@ class OnionPTMLocScale:
     def knots(self, value: nd.OnionKnots) -> None:
         self.graph.pop_nodes_and_vars()
         self._knots = value
-        self.knots_var.value = value.knots
 
         self._bspline = BSpline(
-            knots=value.knots,
+            knots=value,
             order=self.bspline.order,
             approx=self.bspline.approx,
             ngrid=self.bspline.ngrid,
@@ -151,11 +142,10 @@ class OnionPTMLocScale:
             basis_dot_and_deriv_fn=self.bspline.dot_and_deriv,
             centered=self._dist_centered,
             scaled=self._dist_scaled,
+            knots=value,
         )
 
-        self.coef.coef_spec = nd.OnionCoef(value)
-        self.coef.value_node.function = self.coef.coef_spec
-        self.response.dist_node.distribution = self.dist_class
+        self.coef.knots = self._knots
 
         self._graph = self._build_graph()
 
@@ -202,6 +192,10 @@ class OnionPTMLocScale:
         return kwargs
 
     def _augment_samples(self, samples: dict[str, Array]) -> dict[str, Array]:
+        """
+        If there are no samples for a certain parameter, this helper method adds the
+        current values of the parameter node from the model graph into the samples.
+        """
         augmentations = {}
 
         for name, var in self.graph.vars.items():
@@ -273,9 +267,9 @@ class OnionPTMLocScale:
 
         return result_loc_scale
 
-    def update_knots(
+    def updated_ab(
         self, q: tuple[float, float] = (0.0, 1.0), stretch: float = 1.0
-    ) -> nd.OnionKnots:
+    ) -> tuple[float, float]:
         dist = self.init_dist()
 
         y = self.response.value
@@ -288,11 +282,23 @@ class OnionPTMLocScale:
         a = float(mid - (range_ / 2) * stretch)
         b = float(mid + (range_ / 2) * stretch)
 
-        knots = nd.OnionKnots(
-            a=a, b=b, nparam=self.knots.nparam, order=self.knots.order
-        )
-        self.knots = knots
-        return knots
+        return a, b
+
+    def update_knots(
+        self,
+        q: tuple[float, float] = (0.0, 1.0),
+        stretch: float = 1.0,
+        knots_class: type | None = None,
+    ) -> Array:
+        knots_class = knots_class if knots_class is not None else self._knots_class
+        if knots_class is None:
+            raise ValueError("No knot class available.")
+
+        a, b = self.updated_ab(q=q, stretch=stretch)
+        knots = knots_class(a=a, b=b, nparam=self.nparam, order=self.order)
+        self.knots = knots.knots
+
+        return knots.knots
 
     def optimize_transformation(
         self,
@@ -303,8 +309,17 @@ class OnionPTMLocScale:
         **kwargs,
     ) -> gs.OptimResult:
         params = [self.coef.log_increments.transformed.name]  # type: ignore
+
+        if not isinstance(self.coef.intercept, float):
+            params.append(self.coef.intercept.name)
+
+        if not isinstance(self.coef.slope, float):
+            slope_param = nd.find_param(self.coef.slope)
+            if slope_param is not None:
+                params.append(slope_param.name)
+
         if include_hyperparameters:
-            tau2_param = nd.find_param(self.tau2)
+            tau2_param = nd.find_param(self.coef.tau2)
             if tau2_param is not None:
                 params.append(tau2_param.name)
 
@@ -350,8 +365,8 @@ class OnionPTMLocScale:
                 eb.add_kernel(kernel)
 
         if sample_transformation:
-            eb.add_kernel(self.coef_kernel)
-            eb.add_kernel(self.tau2_kernel)  # type: ignore
+            for kernel in self.coef.mcmc_kernels:
+                eb.add_kernel(kernel)
 
         eb.positions_included = self.intercept_names
 
@@ -411,7 +426,6 @@ class OnionPTMLocScale:
     ) -> LocScaleTransformationDist:
         if samples is None:
             dist = self.dist_class(
-                knots=self.knots.knots,
                 coef=self.coef.value,
                 loc=self.loc.value,
                 scale=self.scale.value,
@@ -426,7 +440,6 @@ class OnionPTMLocScale:
             coef = self.coef.predict(samples)
 
             dist = self.dist_class(
-                knots=self.knots.knots,
                 coef=coef,
                 loc=loc,
                 scale=scale,
@@ -525,7 +538,6 @@ class OnionPTMLocScale:
 
         coef = self.coef.predict(samples)
         dist = self.dist_class(
-            knots=self.knots.knots,
             coef=coef,
             loc=0.0,
             scale=1.0,
@@ -545,3 +557,89 @@ class OnionPTMLocScale:
         df["residual"] = np.squeeze(residuals)
 
         return df
+
+    @classmethod
+    def new_onion(
+        cls,
+        y: Array,
+        nparam: int,
+        tau2: nd.TransformedVar | None = None,
+        a: float = -4.0,
+        b: float = 4.0,
+        centered: bool = False,
+        scaled: bool = False,
+        trafo_intercept: bool = False,
+        trafo_slope: bool = False,
+        trafo_combined_kernels: bool = False,
+    ) -> NewPTMLocScale:
+        if tau2 is None:
+            tau2 = nd.VarInverseGamma(
+                value=1.0, concentration=1.0, scale=0.01, name="tau2"
+            )
+
+        knots = nd.OnionKnots(a=a, b=b, nparam=nparam)
+
+        trafo_intercept_var = (
+            lsl.param(0.0, name="coef_intercept") if trafo_intercept else None
+        )
+        trafo_slope_var = (
+            nd.TransformedVar(1.0, name="coef_slope") if trafo_slope else None
+        )
+
+        coef = nd.OnionCoefParam(
+            knots=knots,
+            tau2=tau2,
+            name="coef",
+            intercept=trafo_intercept_var,
+            slope=trafo_slope_var,
+            combined_kernels=trafo_combined_kernels,
+        )
+
+        return cls(
+            y=y, coef=coef, centered=centered, scaled=scaled, knots_class=nd.OnionKnots
+        )
+
+    @classmethod
+    def new_ptm(
+        cls,
+        y: Array,
+        nparam: int,
+        tau2: nd.TransformedVar | None = None,
+        a: float = -3.0,
+        b: float = 3.0,
+        centered: bool = False,
+        scaled: bool = False,
+        trafo_intercept: bool = False,
+        trafo_slope: bool = False,
+        trafo_combined_kernels: bool = False,
+    ) -> NewPTMLocScale:
+        if tau2 is None:
+            tau2 = nd.VarInverseGamma(
+                value=1.0, concentration=1.0, scale=0.01, name="tau2"
+            )
+
+        knots = nd.EquidistantKnots(a=a, b=b, nparam=nparam)
+
+        trafo_intercept_var = (
+            lsl.param(0.0, name="coef_intercept") if trafo_intercept else None
+        )
+        trafo_slope_var = (
+            nd.TransformedVar(1.0, name="coef_slope") if trafo_slope else None
+        )
+
+        coef = nd.PTMCoef(
+            knots=knots,
+            tau2=tau2,
+            name="coef",
+            intercept=trafo_intercept_var,
+            slope=trafo_slope_var,
+            combined_kernels=trafo_combined_kernels,
+        )
+
+        return cls(
+            y=y,
+            coef=coef,
+            centered=centered,
+            scaled=scaled,
+            knots_class=nd.EquidistantKnots,
+        )

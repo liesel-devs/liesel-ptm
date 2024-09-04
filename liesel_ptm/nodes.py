@@ -2958,9 +2958,14 @@ def rw_weight_matrix(nparam: int, center: bool = False, nfixed: int = 0):
 
 class IncreasingCoefLogIncrements(lsl.Var):
     def __init__(
-        self, nparam: int, tau2: TransformedVar, name: str = "", nfixed: int = 0
+        self,
+        nparam: int,
+        tau2: TransformedVar,
+        name: str = "",
+        nfixed: int = 0,
+        center: bool = False,
     ) -> None:
-        self.W = rw_weight_matrix(nparam=nparam, center=True, nfixed=nfixed)
+        self.W = rw_weight_matrix(nparam=nparam, center=center, nfixed=nfixed)
         self.tau2 = tau2
 
         self.transformed = lsl.param(
@@ -2987,30 +2992,80 @@ class IncreasingCoefLogIncrements(lsl.Var):
 
 
 class OnionCoefParam(lsl.Var):
-    def __init__(self, knots: OnionKnots, tau2: TransformedVar, name: str = "") -> None:
+    def __init__(
+        self,
+        knots: OnionKnots,
+        tau2: TransformedVar,
+        intercept: lsl.Var | None = None,
+        slope: TransformedVar | None = None,
+        name: str = "",
+        combined_kernels: bool = True,
+    ) -> None:
         self.log_increments = IncreasingCoefLogIncrements(
-            nparam=knots.nparam, tau2=tau2, name=f"{name}_latent", nfixed=0
+            nparam=knots.nparam,
+            tau2=tau2,
+            name=f"{name}_log_increments",
+            nfixed=0,
+            center=False,
         )
         self.nparam = knots.nparam
         self.order = knots.order
         self._knots = knots.knots
         self.fn = OnionCoef(knots)
         self.tau2 = tau2
+        self.intercept = intercept if intercept is not None else float(0.0)
+        self.slope = slope if slope is not None else float(1.0)
+        self.combined_kernels = combined_kernels
+
+        def compute_coef(log_increments, intercept, slope):
+            standardized_coef = self.fn(log_increments)
+            coef = standardized_coef.at[..., 1:].set(standardized_coef[..., 1:] * slope)
+            coef = intercept + coef
+            return coef
 
         super().__init__(
-            lsl.Calc(self.fn, self.log_increments).update(),
+            lsl.Calc(
+                compute_coef, self.log_increments, self.intercept, self.slope
+            ).update(),
             name=name,
         )
+
+        # setup mcmc kernels
+        param_names: list[list[str]] = []
+
+        param_names.append([self.log_increments.transformed.name])
+
+        intercept_and_slope: list[str] = []
+        if intercept is not None:
+            intercept_param = find_param(intercept)
+            if intercept_param is not None:
+                intercept_and_slope.append(intercept_param.name)
+        if slope is not None:
+            slope_param = find_param(slope)
+            if slope_param is not None:
+                intercept_and_slope.append(slope_param.name)
+        if intercept_and_slope:
+            param_names.append(intercept_and_slope)
 
         tau2_param_name = (
             self.tau2.transformed.name
             if self.tau2.transformed is not None
             else self.tau2.name
         )
-        self.mcmc_kernels = [
-            gs.NUTSKernel([self.log_increments.transformed.name]),
-            gs.NUTSKernel([tau2_param_name]),
-        ]
+
+        param_names.append([tau2_param_name])
+
+        if combined_kernels:
+            # the nested structure is intentional
+            param_names_list: list[list[str]] = [
+                [item for sublist in param_names for item in sublist]
+            ]
+        else:
+            param_names_list = param_names
+
+        self.mcmc_kernels: list[gs.NUTSKernel] = []
+        for param_name_list in param_names_list:
+            self.mcmc_kernels.append(gs.NUTSKernel(param_name_list))
 
     @property
     def knots(self) -> Array:
@@ -3031,10 +3086,40 @@ class OnionCoefParam(lsl.Var):
 
         knots = OnionKnots.new_from_knots_array(self._knots, order=self.order)
         self.fn = OnionCoef(knots)
-        self.value_node.function = self.fn
+
+        def compute_coef(log_increments, intercept, slope):
+            standardized_coef = self.fn(log_increments)
+            coef = standardized_coef.at[..., 1:].set(standardized_coef[..., 1:] * slope)
+            coef = intercept + coef
+            return coef
+
+        self.value_node.function = compute_coef
 
     def predict(self, samples: dict[str, Array]) -> Array:
-        return self.fn(self.log_increments.predict(samples))
+        log_increments = self.log_increments.predict(samples)
+
+        if isinstance(self.intercept, float):
+            intercept = self.intercept
+        else:
+            intercept = samples[self.intercept.name]
+
+        if isinstance(self.slope, float):
+            slope = self.slope
+        else:
+            slope = self.slope.predict(samples)  # type: ignore
+
+        return self.value_node.function(log_increments, intercept, slope)
+
+
+def find_coef_offset(knots: Array, nparam: int, order: int = 3):
+    dknots = jnp.diff(knots).mean()
+    log_increments = jnp.zeros((nparam + 1,))
+
+    temp_coef = normalization_coef(log_increments, dknots)
+
+    fx_at_zero = bspline_basis(x=jnp.zeros(1), knots=knots, order=order) @ temp_coef
+
+    return -fx_at_zero.squeeze()
 
 
 class PTMCoef(lsl.Var):
@@ -3043,10 +3128,20 @@ class PTMCoef(lsl.Var):
     """
 
     def __init__(
-        self, knots: EquidistantKnots, tau2: TransformedVar, name: str = ""
+        self,
+        knots: EquidistantKnots,
+        tau2: TransformedVar,
+        intercept: lsl.Var | None = None,
+        slope: TransformedVar | None = None,
+        name: str = "",
+        combined_kernels: bool = True,
     ) -> None:
         self.log_increments = IncreasingCoefLogIncrements(
-            nparam=knots.nparam, tau2=tau2, name=f"{name}_latent", nfixed=1
+            nparam=knots.nparam + 1,
+            tau2=tau2,
+            name=f"{name}_log_increments",
+            nfixed=1,
+            center=True,
         )
         self.nparam = knots.nparam
         self.order = knots.order
@@ -3054,21 +3149,61 @@ class PTMCoef(lsl.Var):
         dknots = jnp.diff(knots.knots).mean()
         self.fn = partial(normalization_coef, dknots=dknots)
         self.tau2 = tau2
+        self.intercept = intercept if intercept is not None else 0.0
+        self.slope = slope if slope is not None else 1.0
+        self.combined_kernels = combined_kernels
+
+        self._coef_offset = find_coef_offset(self.knots, self.nparam, self.order)
+
+        def compute_coef(log_increments, intercept, slope):
+            standardized_coef = self.fn(log_increments) + self._coef_offset
+            coef = standardized_coef.at[..., 1:].set(standardized_coef[..., 1:] * slope)
+            coef = intercept + coef
+            return coef
 
         super().__init__(
-            lsl.Calc(self.fn, self.log_increments).update(),
+            lsl.Calc(
+                compute_coef, self.log_increments, self.intercept, self.slope
+            ).update(),
             name=name,
         )
+
+        # setup mcmc kernels
+        param_names: list[list[str]] = []
+
+        param_names.append([self.log_increments.transformed.name])
+
+        intercept_and_slope: list[str] = []
+        if intercept is not None:
+            intercept_param = find_param(intercept)
+            if intercept_param is not None:
+                intercept_and_slope.append(intercept_param.name)
+        if slope is not None:
+            slope_param = find_param(slope)
+            if slope_param is not None:
+                intercept_and_slope.append(slope_param.name)
+        if intercept_and_slope:
+            param_names.append(intercept_and_slope)
 
         tau2_param_name = (
             self.tau2.transformed.name
             if self.tau2.transformed is not None
             else self.tau2.name
         )
-        self.mcmc_kernels = [
-            gs.NUTSKernel([self.log_increments.transformed.name]),
-            gs.NUTSKernel([tau2_param_name]),
-        ]
+
+        param_names.append([tau2_param_name])
+
+        if combined_kernels:
+            # the nested structure is intentional
+            param_names_list: list[list[str]] = [
+                [item for sublist in param_names for item in sublist]
+            ]
+        else:
+            param_names_list = param_names
+
+        self.mcmc_kernels: list[gs.NUTSKernel] = []
+        for param_name_list in param_names_list:
+            self.mcmc_kernels.append(gs.NUTSKernel(param_name_list))
 
     @property
     def knots(self) -> Array:
@@ -3088,7 +3223,26 @@ class PTMCoef(lsl.Var):
 
         dknots = jnp.diff(self._knots).mean()
         self.fn = partial(normalization_coef, dknots=dknots)
-        self.value_node.function = self.fn
+
+        def compute_coef(log_increments, intercept, slope):
+            standardized_coef = self.fn(log_increments) + self._coef_offset
+            coef = standardized_coef.at[..., 1:].set(standardized_coef[..., 1:] * slope)
+            coef = intercept + coef
+            return coef
+
+        self.value_node.function = compute_coef
 
     def predict(self, samples: dict[str, Array]) -> Array:
-        return self.fn(self.log_increments.predict(samples))
+        log_increments = self.log_increments.predict(samples)
+
+        if isinstance(self.intercept, float):
+            intercept = self.intercept
+        else:
+            intercept = samples[self.intercept.name]
+
+        if isinstance(self.slope, float):
+            slope = self.slope
+        else:
+            slope = self.slope.predict(samples)  # type: ignore
+
+        return self.value_node.function(log_increments, intercept, slope)

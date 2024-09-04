@@ -777,7 +777,7 @@ class TestPTMCoef:
         tau2 = nd.VarWeibull(value=1.0, scale=0.05, name="tau2")
         coef = nd.PTMCoef(knots=knots, tau2=tau2, name="coef")
 
-        assert coef.value.shape == (knots.nparam + 1,)
+        assert coef.value.shape == (knots.nparam + 2,)
 
     def test_values(self):
         knots = nd.EquidistantKnots(a=-3.0, b=3.0, nparam=10)
@@ -801,7 +801,7 @@ class TestPTMCoef:
 
         samples = dict()
 
-        actual_nparam = knots.nparam - 1
+        actual_nparam = knots.nparam
         ncoef = coef.value.shape[-1]
 
         key = jax.random.PRNGKey(42)
