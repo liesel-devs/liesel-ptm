@@ -17,6 +17,27 @@ kn = splines.create_equidistant_knots
 logger = logging.getLogger(__name__)
 
 
+class EquidistantKnots:
+    def __init__(
+        self, a: float, b: float, nparam: int, order: int = 3, epsilon: float = 0.0
+    ) -> None:
+        self.a = a
+        self.b = b
+        self.nparam = nparam
+        self.order = order
+
+        self.knots = splines.create_equidistant_knots(
+            jnp.array([a, b]), order=order, n_params=nparam + 1, epsilon=epsilon
+        )
+
+    @classmethod
+    def new_from_knots_array(cls, knots: Array, order: int = 3) -> EquidistantKnots:
+        a = knots[order]
+        b = knots[-(order + 1)]
+        nparam = knots.shape[-1] - order - 2
+        return cls(a=a, b=b, nparam=nparam, order=order, epsilon=0.0)
+
+
 class OnionKnots:
     def __init__(
         self, a: float, b: float, nparam: int, order: int = 3, epsilon: float = 0.0
@@ -68,6 +89,16 @@ class OnionKnots:
         b = float(helper_knots.knots[-(order + helper_knots.nfixed_right + 1 + 2)])
 
         return cls(a=a, b=b, nparam=nparam, order=order)
+
+    @classmethod
+    def new_from_knots_array(cls, knots: Array, order: int = 3) -> OnionKnots:
+        nfixed_left = 3
+        nfixed_right = 3
+        a = float(knots[order + nfixed_left])
+        b = float(knots[-(order + nfixed_right + 1)])
+        nparam = knots.shape[-1] - nfixed_left - nfixed_right - order - 2
+
+        return cls(a=a, b=b, nparam=nparam, order=order, epsilon=0.0)
 
 
 class OnionCoef:

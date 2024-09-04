@@ -10,7 +10,7 @@ from plotnine import aes, geom_line, geom_vline, ggplot
 
 from liesel_ptm import bsplines as bs
 from liesel_ptm import nodes as nd
-from liesel_ptm.bsplines import OnionCoef, OnionKnots, kn
+from liesel_ptm.bsplines import EquidistantKnots, OnionCoef, OnionKnots, kn
 from liesel_ptm.custom_types import Array
 from liesel_ptm.datagen import sample_shape
 from liesel_ptm.liesel_internal import splines
@@ -640,6 +640,18 @@ class TestOnionKnots:
         knots = OnionKnots.new_from_lr(left, right, nparam=nparam)
         assert knots.left == pytest.approx(left, abs=1e-4)
         assert knots.right == pytest.approx(right, abs=1e-4)
+
+    def test_new_from_knots_array(self):
+        knotsa = OnionKnots(-3.0, 3.0, nparam=10)
+        knotsb = OnionKnots.new_from_knots_array(knotsa.knots)
+        assert jnp.allclose(knotsa.knots, knotsb.knots)
+
+
+class TestEquidistantKnots:
+    def test_new_from_knots_array(self):
+        knotsa = EquidistantKnots(-3.0, 3.0, nparam=10)
+        knotsb = EquidistantKnots.new_from_knots_array(knotsa.knots)
+        assert jnp.allclose(knotsa.knots, knotsb.knots)
 
 
 class TestOnionCoef:
