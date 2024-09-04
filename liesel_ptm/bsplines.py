@@ -27,14 +27,14 @@ class EquidistantKnots:
         self.order = order
 
         self.knots = splines.create_equidistant_knots(
-            jnp.array([a, b]), order=order, n_params=nparam + 1, epsilon=epsilon
+            jnp.array([a, b]), order=order, n_params=nparam + 2, epsilon=epsilon
         )
 
     @classmethod
     def new_from_knots_array(cls, knots: Array, order: int = 3) -> EquidistantKnots:
         a = knots[order]
         b = knots[-(order + 1)]
-        nparam = knots.shape[-1] - order - 2
+        nparam = knots.shape[-1] - order - 3
         return cls(a=a, b=b, nparam=nparam, order=order, epsilon=0.0)
 
 
