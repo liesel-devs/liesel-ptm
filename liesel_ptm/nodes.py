@@ -944,7 +944,7 @@ class StructuredAdditiveTerm(Term):
         tau2: lsl.Var,
         name: str,
         mcmc_kernel: Kernel = gs.NUTSKernel,
-        combined_kernels: bool = True,
+        combined_kernels: bool = False,
     ) -> None:
         self._default_kernel = mcmc_kernel
         self.x = lsl.obs(x, name=f"{name}_covariate")
@@ -1018,7 +1018,7 @@ class StructuredAdditiveTerm(Term):
         nparam: int,
         tau2: lsl.Var | Var,
         name: str,
-        combined_kernels: bool = True,
+        combined_kernels: bool = False,
     ) -> StructuredAdditiveTerm:
         """
         Alternative constructor for quickly setting up a P-spline.
@@ -1047,7 +1047,7 @@ class StructuredAdditiveTerm(Term):
         star = cls(x, basis_fn, Kz, tau2, name, combined_kernels=combined_kernels)
         return star
 
-    def _default_kernels(self, combined_kernels: bool = True) -> list[Kernel]:
+    def _default_kernels(self, combined_kernels: bool = False) -> list[Kernel]:
         kernels: list[Kernel] = []
 
         if combined_kernels:
@@ -1288,6 +1288,9 @@ class RandomIntercept(StructuredAdditiveTerm):
         self.mcmc_kernels: list[Kernel] = self._default_kernels()
 
     def _default_kernels(self, combined_kernels: bool = False) -> list[Kernel]:
+        if combined_kernels:
+            raise NotImplementedError
+
         kernels: list[Kernel] = []
 
         kernels.append(self._default_kernel([self.coef.name]))
@@ -1308,7 +1311,7 @@ class RandomIntercept(StructuredAdditiveTerm):
         nparam: int,
         tau2: lsl.Var | Var,
         name: str,
-        combined_kernels: bool = True,
+        combined_kernels: bool = False,
     ):
         raise NotImplementedError
 
@@ -3124,12 +3127,12 @@ class OnionCoefParam(lsl.Var):
         if isinstance(self.intercept, float):
             intercept = self.intercept
         else:
-            intercept = samples[self.intercept.name]
+            intercept = jnp.expand_dims(samples[self.intercept.name], -1)  # type: ignore
 
         if isinstance(self.slope, float):
             slope = self.slope
         else:
-            slope = self.slope.predict(samples)  # type: ignore
+            slope = jnp.expand_dims(self.slope.predict(samples), -1)  # type: ignore
 
         return self.value_node.function(log_increments, intercept, slope)
 
@@ -3261,11 +3264,11 @@ class PTMCoef(lsl.Var):
         if isinstance(self.intercept, float):
             intercept = self.intercept
         else:
-            intercept = samples[self.intercept.name]
+            intercept = jnp.expand_dims(samples[self.intercept.name], -1)  # type: ignore
 
         if isinstance(self.slope, float):
             slope = self.slope
         else:
-            slope = self.slope.predict(samples)  # type: ignore
+            slope = jnp.expand_dims(self.slope.predict(samples), -1)  # type: ignore
 
         return self.value_node.function(log_increments, intercept, slope)
