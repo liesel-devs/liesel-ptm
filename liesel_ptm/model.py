@@ -122,7 +122,7 @@ class NewPTMLocScale:
         return self._knots
 
     @knots.setter
-    def knots(self, value: nd.OnionKnots) -> None:
+    def knots(self, value: Array) -> None:
         self.graph.pop_nodes_and_vars()
         self._knots = value
 
@@ -146,6 +146,9 @@ class NewPTMLocScale:
         )
 
         self.coef.knots = self._knots
+
+        self.response.dist_node.distribution = self.dist_class
+        self.response.update()
 
         self._graph = self._build_graph()
 
@@ -520,6 +523,34 @@ class NewPTMLocScale:
                     df[f"{xname}{k}"] = np.asarray(np.tile(xval[:, k], n))
             else:
                 df[xname] = np.asarray(np.tile(xval, n))
+
+        return df
+
+    def summarise_transformation_by_samples(
+        self,
+        key: KeyArray | int,
+        residuals: Array,
+        samples: dict[str, Array],
+        n: int = 100,
+    ) -> pd.DataFrame:
+        key = jax.random.PRNGKey(key) if isinstance(key, int) else key
+
+        dist = self.init_dist(samples)
+        z, _ = dist.transformation_and_logdet_spline(residuals)
+        cdf = dist.cdf_spline(residuals)
+        pdf = dist.prob_spline(residuals)
+
+        z_df = summarise_by_samples(key, z, "z", n=n)
+        cdf_df = summarise_by_samples(key, cdf, "cdf", n=n)
+        pdf_df = summarise_by_samples(key, pdf, "pdf", n=n)
+
+        df = pd.concat([z_df.z, cdf_df.cdf, pdf_df.pdf], axis=1)
+        df["index"] = z_df.index
+        df["obs"] = z_df.obs
+        df["chain"] = z_df.chain
+        df["sample"] = z_df["sample"]
+
+        df["residual"] = np.tile(jnp.squeeze(residuals), n)
 
         return df
 

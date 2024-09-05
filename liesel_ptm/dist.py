@@ -104,7 +104,7 @@ class TransformationDist(tfd.Distribution):
         if self.centered:
             return parametric_mean
 
-        return parametric_mean + self._transformation_spline_mean()
+        return parametric_mean + self.transformation_spline_mean()
 
     def _stddev(self) -> Array:
         if self.parametric_distribution is None:
@@ -118,8 +118,8 @@ class TransformationDist(tfd.Distribution):
         if self.scaled:
             return parametric_stddev
 
-        mean = self._transformation_spline_mean()
-        return parametric_stddev * jnp.sqrt(self._transformation_spline_variance(mean))
+        mean = self.transformation_spline_mean()
+        return parametric_stddev * jnp.sqrt(self.transformation_spline_variance(mean))
 
     def _cdf(self, value: Array) -> Array | float:
         z, _ = self.transformation_and_logdet(value)
@@ -144,6 +144,10 @@ class TransformationDist(tfd.Distribution):
         z = self.reference_distribution.quantile(value)
         y = self.inverse_transformation(z)
         return y
+
+    def quantile_spline(self, value: Array) -> Array:
+        z = self.reference_distribution.quantile(value)
+        return self.inverse_transformation_spline(z)
 
     def _event_shape(self):
         return tf.TensorShape([])
@@ -185,6 +189,17 @@ class TransformationDist(tfd.Distribution):
 
         return tf.broadcast_dynamic_shape(coef_shape, parametric_shape)
 
+    def log_prob_spline(self, value: Array):
+        z, logdet = self.transformation_and_logdet_spline(value)
+        return self.reference_distribution.log_prob(z) + logdet
+
+    def prob_spline(self, value: Array):
+        return jnp.exp(self.log_prob_spline(value))
+
+    def cdf_spline(self, value: Array):
+        z, _ = self.transformation_and_logdet_spline(value)
+        return self.reference_distribution.cdf(z)
+
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
         if self.parametric_distribution is None:
             return value, jnp.zeros_like(value)
@@ -217,15 +232,15 @@ class TransformationDist(tfd.Distribution):
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         if self.centered:
-            ymean = self._transformation_spline_mean()  # intercept / expected val.
+            ymean = self.transformation_spline_mean()  # intercept / expected val.
         else:
             ymean = jnp.zeros(1)
 
         if self.scaled and not self.centered:
-            _ymean = self._transformation_spline_mean()  # intercept / expected val.
-            ystd = jnp.sqrt(self._transformation_spline_variance(_ymean))
+            _ymean = self.transformation_spline_mean()  # intercept / expected val.
+            ystd = jnp.sqrt(self.transformation_spline_variance(_ymean))
         elif self.scaled and self.centered:
-            ystd = jnp.sqrt(self._transformation_spline_variance(ymean))
+            ystd = jnp.sqrt(self.transformation_spline_variance(ymean))
         else:
             ystd = jnp.ones(1)
 
@@ -248,7 +263,7 @@ class TransformationDist(tfd.Distribution):
 
         return transf_spline, logdet
 
-    def _transformation_spline_mean(self) -> Array:
+    def transformation_spline_mean(self) -> Array:
         def fn(x):
             z, logdet = self._transformation_and_logdet_spline(x)
             return x * self.reference_distribution.prob(z) * jnp.exp(logdet)
@@ -257,7 +272,10 @@ class TransformationDist(tfd.Distribution):
 
         return mom
 
-    def _transformation_spline_variance(self, mean: Array) -> Array:
+    def transformation_spline_variance(self, mean: Array | None = None) -> Array:
+        if mean is None:
+            mean = self.transformation_spline_mean()
+
         def fn(x):
             z, logdet = self._transformation_and_logdet_spline(x)
             return (
@@ -364,14 +382,14 @@ class TransformationDist(tfd.Distribution):
 
     def _inverse_transformation_initial_guess(self, value: Array) -> Array:
         if self.centered:
-            ymean = self._transformation_spline_mean()  # intercept / expected val.
+            ymean = self.transformation_spline_mean()  # intercept / expected val.
         else:
             ymean = jnp.zeros(1)
         if self.scaled and not self.centered:
-            _ymean = self._transformation_spline_mean()  # intercept / expected val.
-            ystd = jnp.sqrt(self._transformation_spline_variance(_ymean))
+            _ymean = self.transformation_spline_mean()  # intercept / expected val.
+            ystd = jnp.sqrt(self.transformation_spline_variance(_ymean))
         elif self.scaled and self.centered:
-            ystd = jnp.sqrt(self._transformation_spline_variance(ymean))
+            ystd = jnp.sqrt(self.transformation_spline_variance(ymean))
         else:
             ystd = jnp.ones(1)
 

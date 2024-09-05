@@ -944,6 +944,7 @@ class StructuredAdditiveTerm(Term):
         tau2: lsl.Var,
         name: str,
         mcmc_kernel: Kernel = gs.NUTSKernel,
+        combined_kernels: bool = True,
     ) -> None:
         self._default_kernel = mcmc_kernel
         self.x = lsl.obs(x, name=f"{name}_covariate")
@@ -1003,7 +1004,7 @@ class StructuredAdditiveTerm(Term):
             log_pdet=self.log_pdet,
         )
 
-        self.mcmc_kernels: list[Kernel] = self._default_kernels()
+        self.mcmc_kernels: list[Kernel] = self._default_kernels(combined_kernels)
         """
         List of :class:`liesel.goose.kernel.Kernel` MCMC kernel classes.
         These kernels are used when setting up a :class:`liesel.goose.EngineBuilder`
@@ -1012,7 +1013,12 @@ class StructuredAdditiveTerm(Term):
 
     @classmethod
     def pspline(
-        cls, x: Array, nparam: int, tau2: lsl.Var | Var, name: str
+        cls,
+        x: Array,
+        nparam: int,
+        tau2: lsl.Var | Var,
+        name: str,
+        combined_kernels: bool = True,
     ) -> StructuredAdditiveTerm:
         """
         Alternative constructor for quickly setting up a P-spline.
@@ -1038,11 +1044,21 @@ class StructuredAdditiveTerm(Term):
 
         basis_fn = bs(knots, order=3, Z=Z)
 
-        star = cls(x, basis_fn, Kz, tau2, name)
+        star = cls(x, basis_fn, Kz, tau2, name, combined_kernels=combined_kernels)
         return star
 
-    def _default_kernels(self) -> list[Kernel]:
+    def _default_kernels(self, combined_kernels: bool = True) -> list[Kernel]:
         kernels: list[Kernel] = []
+
+        if combined_kernels:
+            param_names = [self.coef.name]
+            tau2_param = find_param(self.tau2)
+            if tau2_param is not None:
+                param_names.append(tau2_param.name)
+
+            kernels.append(self._default_kernel(param_names))
+
+            return kernels
 
         kernels.append(self._default_kernel([self.coef.name]))
 
@@ -1271,7 +1287,7 @@ class RandomIntercept(StructuredAdditiveTerm):
         self._default_kernel = gs.NUTSKernel
         self.mcmc_kernels: list[Kernel] = self._default_kernels()
 
-    def _default_kernels(self) -> list[Kernel]:
+    def _default_kernels(self, combined_kernels: bool = False) -> list[Kernel]:
         kernels: list[Kernel] = []
 
         kernels.append(self._default_kernel([self.coef.name]))
@@ -1286,7 +1302,14 @@ class RandomIntercept(StructuredAdditiveTerm):
         return kernels
 
     @classmethod
-    def pspline(cls, x: Array, nparam: int, tau2: lsl.Var | Var, name: str):
+    def pspline(
+        cls,
+        x: Array,
+        nparam: int,
+        tau2: lsl.Var | Var,
+        name: str,
+        combined_kernels: bool = True,
+    ):
         raise NotImplementedError
 
 
@@ -3073,7 +3096,7 @@ class OnionCoefParam(lsl.Var):
 
     @knots.setter
     def knots(self, value: Array) -> None:
-        knots = OnionKnots.new_from_knots_array(value)
+        knots = OnionKnots.new_from_knots_array(value, order=self.order)
 
         if not knots.nparam == self.nparam:
             raise ValueError(
@@ -3084,7 +3107,6 @@ class OnionCoefParam(lsl.Var):
 
         self._knots = knots.knots
 
-        knots = OnionKnots.new_from_knots_array(self._knots, order=self.order)
         self.fn = OnionCoef(knots)
 
         def compute_coef(log_increments, intercept, slope):
@@ -3094,6 +3116,7 @@ class OnionCoefParam(lsl.Var):
             return coef
 
         self.value_node.function = compute_coef
+        self.update()
 
     def predict(self, samples: dict[str, Array]) -> Array:
         log_increments = self.log_increments.predict(samples)

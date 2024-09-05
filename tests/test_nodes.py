@@ -664,17 +664,24 @@ class TestS:
         tau2 = nd.VarInverseGamma(
             1.0, concentration=1.0, scale=0.01, bijector=None, name="tau2"
         )
-        s = nd.S.pspline(x, nparam=10, tau2=tau2, name="x1")
+        s = nd.S.pspline(x, nparam=10, tau2=tau2, name="x1", combined_kernels=False)
 
         assert isinstance(s.mcmc_kernels[0], gs.NUTSKernel)
         assert isinstance(s.mcmc_kernels[1], gs.GibbsKernel)
 
     def test_tau_hc(self):
         tau2 = nd.VarHalfCauchy(1.0, scale=25.0, name="tau2")
-        s = nd.S.pspline(x, nparam=10, tau2=tau2, name="x1")
+        s = nd.S.pspline(x, nparam=10, tau2=tau2, name="x1", combined_kernels=False)
 
         assert isinstance(s.mcmc_kernels[0], gs.NUTSKernel)
         assert isinstance(s.mcmc_kernels[1], gs.NUTSKernel)
+
+    def test_tau_hc_combined(self):
+        tau2 = nd.VarHalfCauchy(1.0, scale=25.0, name="tau2")
+        s = nd.S.pspline(x, nparam=10, tau2=tau2, name="x1", combined_kernels=True)
+
+        assert isinstance(s.mcmc_kernels[0], gs.NUTSKernel)
+        assert len(s.mcmc_kernels) == 1
 
 
 class TestVarParams:
