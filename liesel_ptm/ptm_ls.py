@@ -1223,7 +1223,7 @@ class PTMLocScalePredictions:
             norm_sd = jnp.ones_like(norm_mean)
 
         normalization = NormalizationFn(self.model.knots, order=3)
-        zt = normalization.inverse_newton(z, coef, norm_mean, norm_sd)
+        zt = normalization.inverse(z, coef, norm_mean, norm_sd)
         return zt
 
     def predict_transformation_inverse(self, z: Array) -> Array:
