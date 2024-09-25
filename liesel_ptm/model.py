@@ -602,6 +602,7 @@ class NewPTMLocScale:
         trafo_intercept: bool = False,
         trafo_slope: bool = False,
         trafo_combined_kernels: bool = False,
+        reparameterize: bool = True,
     ) -> NewPTMLocScale:
         if tau2 is None:
             tau2 = nd.VarInverseGamma(
@@ -624,6 +625,7 @@ class NewPTMLocScale:
             intercept=trafo_intercept_var,
             slope=trafo_slope_var,
             combined_kernels=trafo_combined_kernels,
+            reparameterize=reparameterize,
         )
 
         return cls(
@@ -643,6 +645,7 @@ class NewPTMLocScale:
         trafo_intercept: bool = False,
         trafo_slope: bool = False,
         trafo_combined_kernels: bool = False,
+        reparameterize: bool = True,
     ) -> NewPTMLocScale:
         if tau2 is None:
             tau2 = nd.VarInverseGamma(
@@ -665,6 +668,7 @@ class NewPTMLocScale:
             intercept=trafo_intercept_var,
             slope=trafo_slope_var,
             combined_kernels=trafo_combined_kernels,
+            reparameterize=reparameterize,
         )
 
         return cls(

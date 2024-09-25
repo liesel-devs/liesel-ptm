@@ -2982,6 +2982,45 @@ def rw_weight_matrix(nparam: int, center: bool = False, nfixed: int = 0):
     return W
 
 
+def _rank(eigenvalues: Array, tol: float = 1e-6) -> Array | float:
+    """
+    Computes the rank of a matrix based on the provided eigenvalues. The rank is taken
+    to be the number of non-zero eigenvalues.
+
+    Can handle batches.
+    """
+    mask = eigenvalues > tol
+    rank = jnp.sum(mask, axis=-1)
+    return rank
+
+
+def _log_pdet(
+    eigenvalues: Array, rank: Array | float | None = None, tol: float = 1e-6
+) -> Array | float:
+    """
+    Computes the log of the pseudo-determinant of a matrix based on the provided
+    eigenvalues. If the rank is provided, it is used to select the non-zero eigenvalues.
+    If the rank is not provided, it is computed by counting the non-zero eigenvalues. An
+    eigenvalue is deemed to be non-zero if it is greater than the numerical tolerance
+    ``tol``.
+
+    Can handle batches.
+    """
+    if rank is None:
+        mask = eigenvalues > tol
+    else:
+        max_index = eigenvalues.shape[-1] - rank
+
+        def fn(i, x):
+            return x.at[..., i].set(i >= max_index)
+
+        mask = jax.lax.fori_loop(0, eigenvalues.shape[-1], fn, eigenvalues)
+
+    selected = jnp.where(mask, eigenvalues, 1.0)
+    log_pdet = jnp.sum(jnp.log(selected), axis=-1)
+    return log_pdet
+
+
 class IncreasingCoefLogIncrements(lsl.Var):
     def __init__(
         self,
@@ -2990,19 +3029,49 @@ class IncreasingCoefLogIncrements(lsl.Var):
         name: str = "",
         nfixed: int = 0,
         center: bool = False,
+        reparameterize: bool = True,
     ) -> None:
         self.W = rw_weight_matrix(nparam=nparam, center=center, nfixed=nfixed)
         self.tau2 = tau2
+        self.reparameterize = reparameterize
 
-        self.transformed = lsl.param(
-            jnp.zeros(nparam - nfixed),
-            distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
-            name=f"{name}_param",
-        )
+        if self.reparameterize:
+            self.transformed = lsl.param(
+                jnp.zeros(nparam - nfixed),
+                distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
+                name=f"{name}_param",
+            )
+
+            def fn(latent, tau2):
+                return jnp.sqrt(tau2) * jnp.dot(self.W, latent)
+
+        else:
+            pen = jnp.linalg.inv(self.W @ self.W.T)
+            evals = jax.numpy.linalg.eigvalsh(pen)
+            rank = _rank(evals)
+            log_pdet = _log_pdet(evals, rank=rank)
+
+            prior = lsl.Dist(
+                MultivariateNormalDegenerate.from_penalty,
+                loc=0.0,
+                var=self.tau2,
+                pen=pen,
+                rank=rank,
+                log_pdet=log_pdet,
+            )
+
+            self.transformed = lsl.param(
+                jnp.zeros(nparam),
+                distribution=prior,
+                name=f"{name}_param",
+            )
+
+            def fn(latent, tau2):
+                return latent
 
         super().__init__(
             lsl.Calc(
-                lambda latent, tau2: jnp.sqrt(tau2) * jnp.dot(self.W, latent),
+                fn,
                 self.transformed,
                 self.tau2,
             ),
@@ -3012,6 +3081,9 @@ class IncreasingCoefLogIncrements(lsl.Var):
 
     def predict(self, samples: dict[str, Array]) -> Array:
         transformed_samples = samples[self.transformed.name]
+        if not self.reparameterize:
+            return transformed_samples
+
         tau2_samples = self.tau2.predict(samples)
         tau_samples = jnp.expand_dims(jnp.sqrt(tau2_samples), -1)
         return tau_samples * jnp.einsum("jp,...p->...j", self.W, transformed_samples)
@@ -3026,6 +3098,7 @@ class OnionCoefParam(lsl.Var):
         slope: TransformedVar | None = None,
         name: str = "",
         combined_kernels: bool = True,
+        reparameterize: bool = True,
     ) -> None:
         self.log_increments = IncreasingCoefLogIncrements(
             nparam=knots.nparam,
@@ -3033,6 +3106,7 @@ class OnionCoefParam(lsl.Var):
             name=f"{name}_log_increments",
             nfixed=0,
             center=False,
+            reparameterize=reparameterize,
         )
         self.nparam = knots.nparam
         self.order = knots.order
@@ -3161,6 +3235,7 @@ class PTMCoef(lsl.Var):
         slope: TransformedVar | None = None,
         name: str = "",
         combined_kernels: bool = True,
+        reparameterize: bool = True,
     ) -> None:
         self.log_increments = IncreasingCoefLogIncrements(
             nparam=knots.nparam + 1,
@@ -3168,6 +3243,7 @@ class PTMCoef(lsl.Var):
             name=f"{name}_log_increments",
             nfixed=1,
             center=True,
+            reparameterize=reparameterize,
         )
         self.nparam = knots.nparam
         self.order = knots.order
