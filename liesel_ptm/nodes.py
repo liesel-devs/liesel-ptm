@@ -3089,6 +3089,79 @@ class IncreasingCoefLogIncrements(lsl.Var):
         return tau_samples * jnp.einsum("jp,...p->...j", self.W, transformed_samples)
 
 
+class IncreasingCoefLogIncrementsPTM(lsl.Var):
+    def __init__(
+        self,
+        nparam: int,
+        tau2: TransformedVar,
+        name: str = "",
+        nfixed: int = 0,
+        center: bool = False,
+        reparameterize: bool = True,
+    ) -> None:
+        self.W = rw_weight_matrix(nparam=nparam, center=center, nfixed=nfixed)
+        self.tau2 = tau2
+        self.reparameterize = reparameterize
+        self.Z = None
+
+        if self.reparameterize:
+            self.transformed = lsl.param(
+                jnp.zeros(nparam - nfixed),
+                distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
+                name=f"{name}_param",
+            )
+
+            def fn(latent, tau2):
+                return jnp.sqrt(tau2) * jnp.dot(self.W, latent)
+
+        else:
+            pen = diffpen(ncol=nparam, diff=1)
+            Z = sumzero_coef(nparam)
+            pen_z = Z.T @ pen @ Z
+            evals = jax.numpy.linalg.eigvalsh(pen_z)
+            rank = _rank(evals)
+            log_pdet = _log_pdet(evals, rank=rank)
+
+            prior = lsl.Dist(
+                MultivariateNormalDegenerate.from_penalty,
+                loc=0.0,
+                var=self.tau2,
+                pen=pen_z,
+                rank=rank,
+                log_pdet=log_pdet,
+            )
+
+            self.transformed = lsl.param(
+                jnp.zeros(nparam - 1),
+                distribution=prior,
+                name=f"{name}_param",
+            )
+
+            self.Z = Z
+
+            def fn(latent, tau2):
+                return Z @ latent
+
+        super().__init__(
+            lsl.Calc(
+                fn,
+                self.transformed,
+                self.tau2,
+            ),
+            name=name,
+        )
+        self.update()
+
+    def predict(self, samples: dict[str, Array]) -> Array:
+        transformed_samples = samples[self.transformed.name]
+        if not self.reparameterize:
+            return jnp.einsum("jp,...p->...j", self.Z, transformed_samples)
+
+        tau2_samples = self.tau2.predict(samples)
+        tau_samples = jnp.expand_dims(jnp.sqrt(tau2_samples), -1)
+        return tau_samples * jnp.einsum("jp,...p->...j", self.W, transformed_samples)
+
+
 class OnionCoefParam(lsl.Var):
     def __init__(
         self,
@@ -3237,7 +3310,7 @@ class PTMCoef(lsl.Var):
         combined_kernels: bool = True,
         reparameterize: bool = True,
     ) -> None:
-        self.log_increments = IncreasingCoefLogIncrements(
+        self.log_increments = IncreasingCoefLogIncrementsPTM(
             nparam=knots.nparam + 1,
             tau2=tau2,
             name=f"{name}_log_increments",
