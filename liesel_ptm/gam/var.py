@@ -53,6 +53,10 @@ class UserVar(lsl.Var):
 
 
 class Term(UserVar):
+    """
+    General structured additive term.
+    """
+
     def __init__(
         self,
         basis: Basis,
@@ -140,6 +144,9 @@ class Term(UserVar):
         inference: InferenceTypes = None,
         noncentered: bool = False,
     ) -> Term:
+        """
+        Initializes a term.
+        """
         name = f"{fname}({basis.x.name})"
 
         coef_name = "$\\beta_{" + f"{name}" + "}$"
@@ -170,6 +177,10 @@ class Term(UserVar):
         variance_jitter_dist: tfd.Distribution | None = None,
         noncentered: bool = False,
     ) -> Term:
+        """
+        Initializes a term with a default inverse gamma prior and Gibbs sampling for
+        the variance parameter.
+        """
         name = f"{fname}({basis.x.name})"
         coef_name = "$\\beta_{" + f"{name}" + "}$"
 
@@ -337,6 +348,8 @@ def make_callback(function, input_shape, dtype, *args, **kwargs):
 
 
 class Basis(UserVar):
+    """General basis for a structured additive term."""
+
     def __init__(
         self,
         value: lsl.Var | lsl.Node | Array,
@@ -548,6 +561,7 @@ def ps(
     | None = "sumzero_term",
     constraint_matrix: ArrayLike | None = None,
 ) -> Basis:
+    """P-spline basis."""
     if isinstance(x, lsl.Var):
         xvar = x
     elif isinstance(x, pd.Series):
@@ -590,6 +604,7 @@ def lin(
     xname: str | None = None,
     add_intercept: bool = False,
 ) -> Basis:
+    """Linear basis (design matrix)."""
     if isinstance(x, lsl.Var):
         xvar = x
     elif isinstance(x, pd.Series):
@@ -602,6 +617,8 @@ def lin(
 
 
 class RandomIntercept(UserVar):
+    """Random intercept term."""
+
     def __init__(
         self,
         basis: Basis,
@@ -731,6 +748,7 @@ def ri(
     x: ArrayLike | pd.Series | lsl.Var,
     xname: str | None = None,
 ) -> Basis:
+    """Random intercept basis."""
     if isinstance(x, lsl.Var):
         xvar = x
     elif isinstance(x, pd.Series):

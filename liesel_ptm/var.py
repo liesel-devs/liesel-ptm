@@ -594,9 +594,9 @@ class ScaleWeibull(lsl.Var):
         to this transformed variable and transformed according to the \
         change-of-variables theorem.
     clip_min
-        Values very close to zero will be clipped to this value to avoid numerical
-        instability. For 32-bit floats, we use a default of ``jnp.sqrt(jnp.exp(-7.0))``;
-        for 64-bit floats we use ``jnp.sqrt(jnp.exp(-9.0))``.
+        Values very close to zero will be soft-clipped to this value to avoid numerical
+        instability. For 32-bit floats, we use a default of ``jnp.sqrt(jnp.exp(-9.0))``;
+        for 64-bit floats we use ``jnp.sqrt(jnp.exp(-11.0))``.
 
     Attributes
     ----------
