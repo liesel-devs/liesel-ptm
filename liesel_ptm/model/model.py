@@ -248,7 +248,7 @@ class LocScalePTM:
 
         model.plot(samples)
 
-    A basic model with one structured additive term::
+    A basic model with one P-spline::
 
         import jax
         import liesel_ptm as ptm
@@ -258,17 +258,6 @@ class LocScalePTM:
         x = jax.random.uniform(jax.random.key(1), (50,))
 
         model = ptm.LocScalePTM.new_ptm(y, a=-4.0, b=4.0, nparam=20)
-
-        # location and scale predictors can be filled by adding terms.
-
-        sf = SmoothFactory({"x": x})
-        smooth = sf(
-            "s(x, bs='ps', k=20)", # corresponds to the syntax of the R function mgcv::s
-            diagonal_penalty=True,
-            absorb_cons=True,
-            scale_penalty=True,
-        )
-        basis = lsl.Var.new_obs(smooth(x), name="B(x)")
 
         xps = ps(x, nbases=20, xname="x")
         model.loc += term.f_ig(xps, fname="s")
