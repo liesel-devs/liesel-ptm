@@ -36,13 +36,7 @@ This is a simple example for first steps:
 
     y = jax.random.normal(jax.random.key(0), (50,))
 
-    knots = ptm.PTMKnots(-4.0, 4.0, nparam=20)
-    model = ptm.LocScalePTM(y, knots=knots)
-
-    # the transformation function is specified by adding a PTMCoef variable
-    # to the .trafo attribute of the model instance.
-    model.trafo += ptm.PTMCoef.new_rw1_sumzero_wb(knots, wb_scale=0.5, name="t0")
-
+    model = ptm.LocScalePTM.new_ptm(y)
     results = model.run_mcmc(seed=1, warmup=300, posterior=500)
     samples = results.get_posterior_samples()
 
