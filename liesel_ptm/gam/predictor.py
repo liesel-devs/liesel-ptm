@@ -5,7 +5,7 @@ from typing import Any, Self, cast
 
 import liesel.model as lsl
 
-from .var import Term, UserVar
+from .var import term, UserVar
 
 Array = Any
 
@@ -27,21 +27,21 @@ class AdditivePredictor(UserVar):
 
         super().__init__(lsl.Calc(_sum), name=name)
         self.update()
-        self.terms: dict[str, Term] = {}
+        self.terms: dict[str, term] = {}
         """Dictionary of terms in this predictor."""
 
     def update(self) -> Self:
         return cast(Self, super().update())
 
-    def __iadd__(self, other: Term | Sequence[Term]) -> Self:
-        if isinstance(other, Term):
+    def __iadd__(self, other: term | Sequence[term]) -> Self:
+        if isinstance(other, term):
             self.append(other)
         else:
             self.extend(other)
         return self
 
-    def append(self, term: Term) -> None:
-        if not isinstance(term, Term):
+    def append(self, term: term) -> None:
+        if not isinstance(term, term):
             raise TypeError(f"{term} is of unsupported type {type(term)}.")
 
         if term.name in self.terms:
@@ -57,7 +57,7 @@ class AdditivePredictor(UserVar):
         self.terms[term.name] = term
         self.update()
 
-    def extend(self, terms: Sequence[Term]) -> None:
+    def extend(self, terms: Sequence[term]) -> None:
         for term in terms:
             self.append(term)
 

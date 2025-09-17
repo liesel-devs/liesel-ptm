@@ -52,7 +52,7 @@ class UserVar(lsl.Var):
         )
 
 
-class Term(UserVar):
+class term(UserVar):
     """
     General structured additive term.
     """
@@ -143,7 +143,7 @@ class Term(UserVar):
         scale: lsl.Var | Array | float = 1000.0,
         inference: InferenceTypes = None,
         noncentered: bool = False,
-    ) -> Term:
+    ) -> term:
         """
         Initializes a term.
         """
@@ -176,7 +176,7 @@ class Term(UserVar):
         variance_value: float = 100.0,
         variance_jitter_dist: tfd.Distribution | None = None,
         noncentered: bool = False,
-    ) -> Term:
+    ) -> term:
         """
         Initializes a term with a default inverse gamma prior and Gibbs sampling for
         the variance parameter.
@@ -219,11 +219,11 @@ class Term(UserVar):
         return term
 
 
-SmoothTerm = Term
-term = Term
+SmoothTerm = term
+Term = term
 
 
-class LinearTerm(Term):
+class LinearTerm(term):
     """Kept for backwards-compatibility of the interface."""
 
     def __init__(
@@ -249,7 +249,7 @@ class LinearTerm(Term):
 
         nbases = jnp.shape(basis.value)[-1]
         penalty = jnp.eye(nbases)
-        # just a temporary variable to satisfy the api of Term
+        # just a temporary variable to satisfy the api of term
         scale = lsl.Var(1.0, name=f"_{name}_scale_tmp")
 
         super().__init__(
@@ -265,8 +265,8 @@ class LinearTerm(Term):
         self.role = Roles.term_linear
 
 
-class LinearTerm2(Term):
-    """New version of LinearTerm, with interface consistent with the Term base class."""
+class LinearTerm2(term):
+    """New version of LinearTerm, with interface consistent with the term base class."""
 
     def __init__(
         self,
@@ -616,7 +616,7 @@ def lin(
     return basis
 
 
-class RandomIntercept(UserVar):
+class term_ri(UserVar):
     """Random intercept term."""
 
     def __init__(
@@ -680,7 +680,7 @@ class RandomIntercept(UserVar):
         variance_value: float = 100.0,
         variance_jitter_dist: tfd.Distribution | None = None,
         coef_name: str | None = None,
-    ) -> RandomIntercept:
+    ) -> term_ri:
         name = f"{fname}({basis.x.name})"
         coef_name = "$\\beta_{" + f"{name}" + "}$"
 
@@ -726,7 +726,7 @@ class RandomIntercept(UserVar):
         fname: str = "ri",
         scale: lsl.Var | Array | float = 1000.0,
         inference: InferenceTypes = gs.MCMCSpec(gs.NUTSKernel),
-    ) -> RandomIntercept:
+    ) -> term_ri:
         name = f"{fname}({basis.x.name})"
         coef_name = "$\\beta_{" + f"{name}" + "}$"
 
@@ -741,7 +741,7 @@ class RandomIntercept(UserVar):
         return term
 
 
-term_ri = RandomIntercept
+RandomIntercept = term_ri
 
 
 def ri(
