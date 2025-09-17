@@ -59,6 +59,7 @@ API Reference
     ~liesel_ptm.LocScalePTM
     ~liesel_ptm.TransformationDist
     ~liesel_ptm.LocScaleTransformationDist
+    ~liesel_ptm.Basis
     ~liesel_ptm.term
     ~liesel_ptm.term_ri
     ~liesel_ptm.ps
