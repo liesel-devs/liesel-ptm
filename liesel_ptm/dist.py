@@ -652,7 +652,7 @@ class TransformationDist(tfd.Distribution):
 
 class LocScaleTransformationDist(TransformationDist):
     """
-    Location–scale specialization of :class:`TransformationDist`.
+    Location–scale specialization of :class:`.TransformationDist`.
 
     Uses a Normal parametric layer with location ``loc`` and scale ``scale``,
     combined with a spline transformation and reference Normal(0, 1).
