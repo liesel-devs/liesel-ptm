@@ -270,7 +270,7 @@ class LocScalePTM:
         )
         basis = lsl.Var.new_obs(smooth(x), name="B(x)")
 
-        xps = ps(x, xname="x")
+        xps = ps(x, nbases=20, xname="x")
         model.loc += term.f_ig(xps, fname="s")
 
         results = model.run_mcmc(seed=1, warmup=300, posterior=500)
