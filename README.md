@@ -13,6 +13,9 @@ Learn more in the paper:
 
 Brachem, J., Wiemann, P. F. V., & Kneib, T. (2024). Bayesian penalized transformation models: Structured additive location-scale regression for arbitrary conditional distributions (No. arXiv:2404.07440). arXiv. `https://doi.org/10.48550/arXiv.2404.07440 <https://doi.org/10.48550/arXiv.2404.07440>`_
 
+Application examples are included in the supplementary materials for the paper, which
+can be found here: https://github.com/liesel-devs/ptm-supplement
+
 ## Installation
 
 The library can be installed from GitHub:
