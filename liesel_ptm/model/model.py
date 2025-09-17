@@ -216,13 +216,7 @@ class LocScalePTM:
 
         y = jax.random.normal(jax.random.key(0), (50,))
 
-        knots = ptm.PTMKnots(-4.0, 4.0, nparam=20)
-        model = ptm.LocScalePTM(y, knots=knots)
-
-        # the transformation function is specified by adding a PTMCoef variable
-        # to the .trafo attribute of the model instance.
-        model.trafo += ptm.PTMCoef.new_rw1_sumzero_wb(knots, wb_scale=0.5, name="t0")
-
+        model = ptm.LocScalePTM.new_ptm(y, a=-4.0, b=4.0, nparam=20)
         results = model.run_mcmc(seed=1, warmup=300, posterior=500)
         samples = results.get_posterior_samples()
 
@@ -232,26 +226,22 @@ class LocScalePTM:
 
     A basic linear location-scale model::
 
-        import liesel_ptm as ptm
-        import liesel_ptm.gam as gam
         import jax
+        import liesel_ptm as ptm
+        from liesel_ptm import lin, term
 
         y = jax.random.normal(jax.random.key(0), (50,))
         x = jax.random.uniform(jax.random.key(1), (50,))
 
-        knots = ptm.PTMKnots(-4.0, 4.0, nparam=20)
-        model = ptm.LocScalePTM(y, knots=knots)
-        model.trafo += ptm.PTMCoef.new_rw1_sumzero_wb(knots, wb_scale=0.5, name="t0")
+        model = ptm.LocScalePTM.new_ptm(y, a=-4.0, b=4.0, nparam=20)
 
         # location and scale predictors can be filled by adding terms.
-        # the terms should be liesel_ptm.gam.LinearTerm or liesel_ptm.gam.SmoothTerm
-        # objects.
-        x_var = lsl.Var.new_obs(x, name="x")
-        model.loc += gam.LinearTerm(x=x_var, name="lin(x)_loc")
+        xlin = lin(x, xname="x")
+        model.loc += term.f(xlin, fname="s")
 
         # when adding terms to the scale model part, they are applied additively
         # to the log-level automatically
-        model.scale += gam.LinearTerm(x=x_var, name="lin(x)_scale")
+        model.scale += term.f(xlin, fname="g")
 
         results = model.run_mcmc(seed=1, warmup=300, posterior=500)
         samples = results.get_posterior_samples()
@@ -262,22 +252,14 @@ class LocScalePTM:
 
         import jax
         import liesel_ptm as ptm
-        import liesel_ptm.gam as gam
-
-        # for obtaining smoothing basis matrices and penalties by interfacing
-        # the R package mgcv
-        from smoothcon import SmoothFactory
+        from liesel_ptm import term, ps
 
         y = jax.random.normal(jax.random.key(0), (50,))
         x = jax.random.uniform(jax.random.key(1), (50,))
 
-        knots = ptm.PTMKnots(-4.0, 4.0, nparam=20)
-        model = ptm.LocScalePTM(y, knots=knots)
-        model.trafo += ptm.PTMCoef.new_rw1_sumzero_wb(knots, wb_scale=0.5, name="t0")
+        model = ptm.LocScalePTM.new_ptm(y, a=-4.0, b=4.0, nparam=20)
 
         # location and scale predictors can be filled by adding terms.
-        # the terms should be liesel_ptm.gam.LinearTerm or liesel_ptm.gam.SmoothTerm
-        # objects.
 
         sf = SmoothFactory({"x": x})
         smooth = sf(
@@ -288,18 +270,8 @@ class LocScalePTM:
         )
         basis = lsl.Var.new_obs(smooth(x), name="B(x)")
 
-        model.loc += gam.SmoothTerm.new_ig(
-            basis=basis, # any valid basis matrix for a structured additive term
-            penalty=smooth.penalty, # penalty corresponding to the term
-            ig_concentration=1.0,
-            ig_scale=0.001,
-            name="s(x)",
-            variance_value=10.0,
-        )
-
-        # when adding terms to the scale model part, they are applied additively
-        # to the log-level automatically
-        model.scale += gam.LinearTerm(x=x_var, name="lin(x)_scale")
+        xps = ps(x, xname="x")
+        model.loc += term.f_ig(xps, fname="s")
 
         results = model.run_mcmc(seed=1, warmup=300, posterior=500)
         samples = results.get_posterior_samples()
@@ -389,6 +361,9 @@ class LocScalePTM:
         trafo_target_slope: Literal["identity", "continue_linearly"] = "identity",
         to_float32: bool = True,
     ):
+        """
+        Shortcut for convenient model setup.
+        """
         kernel_kwargs = {"da_target_accept": 0.9, "mm_diag": False, "max_treedepth": 10}
         knots = LogIncKnots(a, b, nparam=nparam)
 
