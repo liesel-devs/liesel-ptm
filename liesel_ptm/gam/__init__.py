@@ -1,0 +1,14 @@
+from .dist import MultivariateNormalSingular as MultivariateNormalSingular
+from .kernel import init_star_ig_gibbs as init_star_ig_gibbs
+from .kernel import star_ig_gibbs as star_ig_gibbs
+from .plots import plot_term as plot_term
+from .predictor import AdditivePredictor as AdditivePredictor
+from .var import Basis as Basis
+from .var import Intercept as Intercept
+from .var import LinearTerm as LinearTerm
+from .var import SmoothTerm as SmoothTerm
+from .var import lin as lin
+from .var import ps as ps
+from .var import ri as ri
+from .var import term as term
+from .var import term_ri as term_ri
