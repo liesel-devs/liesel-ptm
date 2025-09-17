@@ -21,7 +21,7 @@ The library can be installed from GitHub:
 
 .. code:: bash
 
-    $ pip install git+https://github.com/liesel-devs/liesel-ptm.git#egg=liesel_ptm
+    $ pip install git+https://github.com/liesel-devs/liesel-ptm.git
 
 
 Getting Started
