@@ -5,7 +5,8 @@ from typing import Any, Self, cast
 
 import liesel.model as lsl
 
-from .var import term, UserVar
+from .var import UserVar
+from .var import term as Term
 
 Array = Any
 
@@ -27,21 +28,21 @@ class AdditivePredictor(UserVar):
 
         super().__init__(lsl.Calc(_sum), name=name)
         self.update()
-        self.terms: dict[str, term] = {}
+        self.terms: dict[str, Term] = {}
         """Dictionary of terms in this predictor."""
 
     def update(self) -> Self:
         return cast(Self, super().update())
 
-    def __iadd__(self, other: term | Sequence[term]) -> Self:
-        if isinstance(other, term):
+    def __iadd__(self, other: Term | Sequence[Term]) -> Self:
+        if isinstance(other, Term):
             self.append(other)
         else:
             self.extend(other)
         return self
 
-    def append(self, term: term) -> None:
-        if not isinstance(term, term):
+    def append(self, term: Term) -> None:
+        if not isinstance(term, Term):
             raise TypeError(f"{term} is of unsupported type {type(term)}.")
 
         if term.name in self.terms:
@@ -57,19 +58,19 @@ class AdditivePredictor(UserVar):
         self.terms[term.name] = term
         self.update()
 
-    def extend(self, terms: Sequence[term]) -> None:
-        for term in terms:
-            self.append(term)
+    def extend(self, terms: Sequence[Term]) -> None:
+        for term_ in terms:
+            self.append(term_)
 
     @property
     def includes_intercept(self) -> bool | None:
         any_intercept_none: bool = False
         intercept_found = False
-        for term in self.terms.values():
-            if term.includes_intercept is None:
+        for term_ in self.terms.values():
+            if term_.includes_intercept is None:
                 any_intercept_none = True
 
-            if term.includes_intercept:
+            if term_.includes_intercept:
                 intercept_found = True
                 return intercept_found  # early return
 

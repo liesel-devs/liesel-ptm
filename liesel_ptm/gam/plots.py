@@ -8,13 +8,13 @@ from jax import Array
 from jax.typing import ArrayLike
 
 from ..util.summary import summarise_by_samples
-from .var import term
+from .var import term as Term
 
 KeyArray = Any
 
 
 def plot_term(
-    term: term,
+    term: Term,
     samples: dict[str, Array],
     grid: ArrayLike | None = None,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
@@ -22,7 +22,7 @@ def plot_term(
     show_n_samples: int | None = 50,
     seed: int | KeyArray = 1,
 ):
-    assert isinstance(term, term)
+    assert isinstance(term, Term)
 
     if grid is None:
         xgrid = jnp.linspace(term.basis.x.value.min(), term.basis.x.value.max(), 150)
