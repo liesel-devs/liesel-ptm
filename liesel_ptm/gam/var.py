@@ -174,7 +174,6 @@ class term(UserVar):
         ig_scale: float = 0.005,
         inference: InferenceTypes = None,
         variance_value: float = 100.0,
-        variance_jitter_dist: tfd.Distribution | None = None,
         noncentered: bool = False,
     ) -> term:
         """
@@ -210,7 +209,6 @@ class term(UserVar):
         variance.inference = gs.MCMCSpec(
             init_star_ig_gibbs,
             kernel_kwargs={"coef": term.coef, "scale": scale},
-            jitter_dist=variance_jitter_dist,
         )
 
         if noncentered:
