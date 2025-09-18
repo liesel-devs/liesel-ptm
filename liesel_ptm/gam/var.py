@@ -937,7 +937,55 @@ def ps(
     | None = "sumzero_term",
     constraint_matrix: ArrayLike | None = None,
 ) -> Basis:
-    """P-spline basis."""
+    """
+    Create a P-spline basis.
+
+    Convenience function to build a B-spline/P-spline basis for a numeric
+    predictor. It constructs knots (if not provided), builds a basis function
+    that evaluates the B-spline basis, attaches a difference-penalty (by
+    default a second-order random-walk penalty), and returns a
+    :class:`.Basis` instance. Optional post-processing steps like scaling the
+    penalty, diagonalization and constraint application are supported and provided
+    with sensible defaults.
+
+    Parameters
+    ----------
+    x
+        Predictor values or an observed variable. If an array or Series is \
+        provided, ``xname`` should be set to produce a named observation \
+        variable.
+    nbases
+        Number of basis functions (parameters) to use for the P-spline.
+    xname
+        Name for the created observation variable when ``x`` is not already \
+        a :class:`liesel.model.Var`.
+    knots
+        Knot locations for the B-spline basis. If ``None`` equidistant knots \
+        are generated based on the data and ``nbases``.
+    order
+        Order of the B-spline (degree + 1). Default is 3 (cubic splines).
+    outer_ok
+        Passed to the underlying basis generator to control behavior for observed \
+        values outside the internal knot range.
+    penalty
+        Penalty matrix to use. If ``None`` a default P-spline penalty is \
+        created using a second-order difference.
+    diagonalize_penalty
+        If ``True`` (default), diagonalize the penalty.
+    scale_penalty
+        If ``True`` (default), scale the penalty matrix to improve numeric \
+        conditioning.
+    constraint
+        Optional constraint to apply to the basis (see \
+        :meth:`.Basis.reparam_constraint`). If ``None`` no constraint is
+        applied.
+    constraint_matrix
+        Custom constraint matrix used when ``constraint=='custom'``.
+
+    Returns
+    -------
+    A configured :class:`Basis` instance representing the P-spline basis.
+    """
     if isinstance(x, lsl.Var):
         xvar = x
     elif isinstance(x, pd.Series):
@@ -980,7 +1028,29 @@ def lin(
     xname: str | None = None,
     add_intercept: bool = False,
 ) -> Basis:
-    """Linear basis (design matrix)."""
+    """
+    Create a linear basis (design matrix) for a predictor.
+
+    This function wraps :meth:`.Basis.new_linear` and accepts either a raw
+    array/Series or an existing :class:`liesel.model.Var`. When a raw array is
+    supplied, ``xname`` is used to create a named observation variable.
+
+    Parameters
+    ----------
+    x
+        Predictor values or an observed variable.
+    xname
+        Name for the created observation variable when ``x`` is not already \
+        a :class:`liesel.model.Var`.
+    add_intercept
+        If ``True``, include an intercept column of ones in the design \
+        matrix.
+
+    Returns
+    -------
+    A :class:`.Basis` instance that produces the design matrix for the
+    linear predictor.
+    """
     if isinstance(x, lsl.Var):
         xvar = x
     elif isinstance(x, pd.Series):
@@ -993,7 +1063,38 @@ def lin(
 
 
 class term_ri(UserVar):
-    """Random intercept term."""
+    """Random-intercept (group-level) term.
+
+    The :class:`term_ri` class implements a random intercept effect where the
+    basis encodes group labels (integers) and each group receives a
+    coefficient. The coefficients are centered and scaled by an associated
+    scale parameter. This term is provided in a form convenient for mixed
+    models and hierarchical specifications.
+
+    Parameters
+    ----------
+    basis
+        Basis object that must evaluate to a 1-D array of integer labels \
+        (group indices). The length of the unique labels defines the \
+        number of group-specific coefficients.
+    scale
+        Scale parameter (or variable) for the random-intercept \
+        coefficients. Typically represents the standard deviation for the \
+        group effects.
+    name
+        Human-readable name for the term. Used to construct internal \
+        variable names when ``coef_name`` is not provided.
+    inference
+        Inference specification forwarded to coefficient creation.
+    coef_name
+        Name for the coefficient variable. If ``None`` a default name is \
+        constructed from ``name``.
+
+    Raises
+    ------
+    ValueError
+        If ``basis.value`` is not one-dimensional (group index array).
+    """
 
     def __init__(
         self,
@@ -1057,6 +1158,38 @@ class term_ri(UserVar):
         variance_jitter_dist: tfd.Distribution | None = None,
         coef_name: str | None = None,
     ) -> term_ri:
+        """
+        Construct a random-intercept term with an inverse-gamma variance prior.
+
+        This convenience constructor creates a :class:`.term_ri` and attaches a
+        variance parameter with an Inverse-Gamma prior. The variance is
+        transformed into a scale variable and used to scale the group
+        coefficients. An MCMC inference specification for the variance is set
+        up using a Gibbs kernel by default.
+
+        Parameters
+        ----------
+        basis
+            Basis encoding integer group labels.
+        fname
+            Prefix used to build the term name (default ``'ri'``).
+        ig_concentration
+            Shape parameter for the Inverse-Gamma prior on the variance.
+        ig_scale
+            Scale parameter for the Inverse-Gamma prior on the variance.
+        inference
+            Inference specification for the coefficient variable.
+        variance_value
+            Initial value for the variance parameter.
+        coef_name
+            Optional human-readable name for the coefficient variable.
+
+        Returns
+        -------
+        A configured random-intercept term with variance and scale
+        variables attached.
+        """
+
         name = f"{fname}({basis.x.name})"
         coef_name = "$\\beta_{" + f"{name}" + "}$"
 
@@ -1103,6 +1236,27 @@ class term_ri(UserVar):
         scale: lsl.Var | Array | float = 1000.0,
         inference: InferenceTypes = gs.MCMCSpec(gs.NUTSKernel),
     ) -> term_ri:
+        """
+        Construct a random-intercept term with a custom scale.
+
+        Parameters
+        ----------
+        basis
+            Basis encoding integer group labels.
+        fname
+            Prefix used to build the term name (default ``'ri'``).
+        scale
+            Scale parameter (or variable) for the group coefficients. If a \
+            scalar is provided, it is wrapped into a parameter/value as \
+            needed.
+        inference
+            Inference specification forwarded to coefficient creation.
+
+        Returns
+        -------
+        A configured random-intercept term.
+        """
+
         name = f"{fname}({basis.x.name})"
         coef_name = "$\\beta_{" + f"{name}" + "}$"
 
@@ -1124,7 +1278,30 @@ def ri(
     x: ArrayLike | pd.Series | lsl.Var,
     xname: str | None = None,
 ) -> Basis:
-    """Random intercept basis."""
+    """
+    Create a random-intercept basis from grouping labels.
+
+    The returned :class:`Basis` maps arbitrary group labels (strings or
+    integers) to contiguous integer indices suitable for indexing group
+    coefficients. The produced basis yields, for each observation, the
+    integer group index which can be used by :class:`term_ri` to select the
+    corresponding group effect.
+
+    Parameters
+    ----------
+    x
+        Grouping labels for each observation. If ``x`` is not an \
+        :class:`liesel.model.Var`, a named observation variable will be \
+        created using ``xname``.
+    xname
+        Name for the created observation variable when ``x`` is not already \
+        an :class:`liesel.model.Var`.
+
+    Returns
+    -------
+    A :class:`Basis` whose evaluation yields integer group indices for
+    each observation.
+    """
     if isinstance(x, lsl.Var):
         xvar = x
     elif isinstance(x, pd.Series):
