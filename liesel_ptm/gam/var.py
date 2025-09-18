@@ -592,6 +592,37 @@ class Basis(UserVar):
         callback wrapper inspects the return shape to build a compatible
         JAX ShapeDtypeStruct for the pure callback.
 
+        Attributes
+        ----------
+        role
+            The role assigned to this variable.
+        observed
+            Whether the basis is derived from an observed variable (always \
+            ``True`` for bases created from input data).
+        includes_intercept
+            Flag indicating whether the basis contains an intercept column. If \
+            ``None`` the information is unspecified.
+        x
+            The input variable (observations) used to construct the basis.
+        nbases
+            Number of basis functions (number of columns in the basis matrix).
+        penalty
+            Penalty matrix (wrapped as a :class:`liesel.model.Value`) associated \
+            with the basis.
+        is_constrained
+            Whether a linear constraint has been applied to the basis.
+        penalty_is_scaled
+            Whether the penalty has been scaled (via :meth:`.reparam_scale_penalty`).
+        penalty_is_diagonalized
+            Whether the penalty has been diagonalized (via \
+            :meth:`.reparam_diagonalize_penalty`).
+        constraint_type
+            If constrained, the type of constraint applied (for example \
+            ``'sumzero_term'``).
+        constraint_matrix
+            The constraint matrix used when a ``'custom'`` constraint has been \
+            applied.
+
         Examples
         --------
         Identity basis from a named variable::
@@ -661,9 +692,26 @@ class Basis(UserVar):
 
     @property
     def penalty(self) -> lsl.Value:
+        """
+        Return the penalty matrix wrapped as a :class:`liesel.model.Value`.
+
+        Returns
+        -------
+        lsl.Value
+            Value wrapper holding the penalty (precision) matrix for this
+            basis.
+        """
         return self._penalty
 
     def update_penalty(self, value: ArrayLike | lsl.Value):
+        """
+        Update the penalty matrix for this basis.
+
+        Parameters
+        ----------
+        value
+            New penalty matrix or an already-wrapped :class:`liesel.model.Value`.
+        """
         if isinstance(value, lsl.Value):
             self._penalty.value = value.value
         else:
@@ -678,6 +726,28 @@ class Basis(UserVar):
         xname: str | None = None,
         add_intercept: bool = False,
     ):
+        """
+        Create a linear basis (design matrix) from input values.
+
+        Parameters
+        ----------
+        value
+            Input variable or raw array used to construct the design matrix.
+        name
+            Optional name for the basis.
+        xname
+            Name for the observation variable when ``value`` is \
+            a raw array.
+        add_intercept
+            If ``True``, adds an intercept column of ones as the first \
+            column of the design matrix.
+
+        Returns
+        -------
+        A :class:`.Basis` instance that produces a (n_obs, n_features)
+        design matrix.
+        """
+
         def as_matrix(x):
             x = jnp.atleast_1d(x)
             if len(jnp.shape(x)) == 1:
@@ -700,6 +770,20 @@ class Basis(UserVar):
         return basis
 
     def reparam_diagonalize_penalty(self) -> Self:
+        """
+        Diagonalize the penalty via an eigenvalue decomposition.
+
+        This method computes a transformation that diagonalizes
+        the penalty matrix and updates the internal basis function such that
+        subsequent evaluations use the accordingly transformed basis. The penalty is
+        updated to the diagonalized version and the attribute
+        ``penalty_is_diagonalized`` is set to True.
+
+        Returns
+        -------
+        The modified basis instance (self).
+        """
+
         if self.penalty_is_diagonalized:
             return self
 
@@ -721,6 +805,19 @@ class Basis(UserVar):
         return self
 
     def reparam_scale_penalty(self) -> Self:
+        """
+        Scale the penalty matrix by its infinite norm.
+
+        The penalty matrix is divided by its infinity norm (max absolute row
+        sum) so that its values are numerically well-conditioned for
+        downstream use. The updated penalty replaces the previous one and
+        ``penalty_is_scaled`` is set to True.
+
+        Returns
+        -------
+        The modified basis instance (self).
+        """
+
         if self.penalty_is_scaled:
             return self
 
@@ -732,6 +829,23 @@ class Basis(UserVar):
         return self
 
     def _apply_constraint(self, Z: Array) -> Self:
+        """
+        Apply a linear reparameterisation to the basis using matrix Z.
+
+        This internal helper multiplies the basis functions by ``Z`` (i.e.
+        right-multiplies the design matrix) and updates the penalty to
+        reflect the change of basis: ``K_new = Z.T @ K @ Z``.
+
+        Parameters
+        ----------
+        Z
+            Transformation matrix applied to the basis functions.
+
+        Returns
+        -------
+        The modified basis instance (self).
+        """
+
         assert isinstance(self.value_node, lsl.Calc)
         basis_fn = self.value_node.function
 
@@ -751,6 +865,29 @@ class Basis(UserVar):
         type: Literal["sumzero_coef", "sumzero_term", "constant_and_linear", "custom"],
         constraint_matrix: Array | None = None,
     ) -> Self:
+        """
+        Apply a linear constraint to the basis and corresponding penalty.
+
+        Parameters
+        ----------
+        type
+            Type of constraint to apply. If ``'custom'``, the \
+            ``constraint_matrix`` argument must be provided and will be used \
+            directly. Other values cause the method to compute a suitable \
+            constraint matrix via internal helpers.
+        constraint_matrix
+            Custom constraint matrix to apply when ``type=='custom'``.
+
+        Returns
+        -------
+        The modified basis instance (self).
+
+        Raises
+        ------
+        ValueError
+            If ``type=='custom'`` and ``constraint_matrix`` is not provided.
+        """
+
         type_ = type
 
         if self.is_constrained:
