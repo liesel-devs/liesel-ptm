@@ -87,7 +87,7 @@ class term(UserVar):
             penalty_rank=jnp.linalg.matrix_rank(penalty_arr),
         )
 
-        self.scale = scale
+        self.scale = prior["scale"]
         self.nbases = nbases
         self.basis = basis
         self.coef = lsl.Var.new_param(
