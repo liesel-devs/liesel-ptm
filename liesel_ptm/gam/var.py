@@ -55,6 +55,67 @@ class UserVar(lsl.Var):
 class term(UserVar):
     """
     General structured additive term.
+
+    A structured additive term represents a smooth or structured effect in a
+    generalized additive model. The term wraps a design/basis matrix together
+    with a prior/penalty and a set of coefficients. The object exposes the
+    coefficient variable and evaluates the term as the matrix-vector product
+    of the basis and the coefficients.
+    The term evaluates to ``basis @ coef``.
+
+    Parameters
+    ----------
+    basis
+        A :class:`.Basis` instance that produces the design matrix for the \
+        term. The basis must evaluate to a 2-D array with shape ``(n_obs, n_bases)``.
+    penalty
+        Penalty matrix or a variable/value wrapping the penalty \
+        used to construct the multivariate normal prior for the coefficients.
+    scale
+        Scale parameter for the prior on the coefficients. This \
+        is typically either a scalar or a per-coefficient scale variable.
+    name
+        Human-readable name for the term. Used for labelling variables and \
+        building sensible default names for internal nodes.
+    inference
+        :class:`liesel.goose.MCMCSpec` inference specification forwarded to coefficient\
+        creation.
+    coef_name
+        Name for the coefficient variable. If ``None``, a default name based \
+        on ``name`` will be used.
+    _update_on_init
+        If ``True`` (default) the internal calculation/graph nodes are \
+        evaluated during initialization. Set to ``False`` to delay \
+        initial evaluation.
+
+    Raises
+    ------
+    ValueError
+        If ``basis.value`` does not have two dimensions.
+
+    Attributes
+    ----------
+    scale
+        The scale variable used by the prior on the coefficients.
+    nbases
+        Number of basis functions (number of columns in the basis matrix).
+    basis
+        The basis object provided to the constructor.
+    coef
+        The coefficient variable created for this term. It holds the prior
+        (multivariate normal singular) and is used in the evaluation of the
+        term.
+    is_noncentered
+        Whether the term has been reparameterized to the non-centered form.
+
+    Examples
+    --------
+    Create a P-spline basis and wrap it into a term::
+
+        # assume x to be a 1d array.
+        b = ps(x, nbases=10)
+        t = term(basis=b, penalty=b.penalty, name="f(x)")
+
     """
 
     def __init__(
@@ -115,9 +176,9 @@ class term(UserVar):
     def reparam_noncentered(self) -> Self:
         """
         Turns this term into noncentered form, which means the prior for
-        the coefficient will be turned from ``coef ~ N(0, scale * I)`` into
-        ``latent_coef ~ N(0, I); coef = scale * latent_coef``.
-        This can be helpful when sampling with the No-U-Turn Sampler.
+        the coefficient will be turned from ``coef ~ N(0, scale^2 * inv(penalty))`` into
+        ``latent_coef ~ N(0, inv(penalty)); coef = scale * latent_coef``.
+        This can sometimes be helpful when sampling with the No-U-Turn Sampler.
         """
         if self.is_noncentered:
             return self
@@ -145,7 +206,66 @@ class term(UserVar):
         noncentered: bool = False,
     ) -> term:
         """
-        Initializes a term.
+        Construct a smooth term from a :class:`Basis`.
+
+        This convenience constructor builds a named ``term`` using the
+        provided basis. The penalty matrix is taken from ``basis.penalty`` and
+        a coefficient variable with an appropriate multivariate-normal prior
+        is created. The returned term evaluates to ``basis @ coef``.
+
+        Parameters
+        ----------
+        basis
+            Basis object that provides the design matrix and penalty for the \
+            smooth term. The basis must have an associated input variable with \
+            a meaningful name (used to compose the term name).
+        fname
+            Function-name prefix used when constructing the term name. Default \
+            is ``'f'`` which results in names like ``f(x)`` when the basis \
+            input is named ``x``.
+        scale
+            Scale parameter passed to the coefficient prior. \
+            Defaults to ``1000.0`` for a weakly-informative prior.
+        inference
+            Inference specification forwarded to the coefficient variable \
+            creation, a :class:`liesel.goose.MCMCSpec`.
+        noncentered
+            If ``True``, the term is reparameterized to the non-centered \
+            form via :meth:`.reparam_noncentered` before being returned.
+
+        Returns
+        -------
+        A :class:`.term` instance configured with the given basis and prior settings.
+
+        Notes
+        -----
+        The default coefficient name is a LaTeX-like string ``"$\\beta_{f(x)}$"``
+        to improve readability in printed summaries.
+
+        See Also
+        --------
+        .ScaleWeibull : A scale parameter derived from a variance parameter with Weibull
+            prior.
+
+        Examples
+        --------
+
+        Create a P-spline basis and wrap it into a term, using a Weibull prior
+        for the variance parameter::
+
+            import liesel.goose as gs
+            import tensorflow_probability.substrates.jax.bijectors as tfb
+
+            # assume x to be a 1d array.
+            b = ps(x, nbases=10)
+            scale = ScaleWeibull(
+                1.0,
+                scale=0.5,
+                inference=gs.MCMCSpec(gs.NUTSKernel),
+                bijector=tfb.Exp(),
+                name="fx_scale"
+            )
+            t = term.f(basis=b, scale=scale)
         """
         name = f"{fname}({basis.x.name})"
 
@@ -177,8 +297,54 @@ class term(UserVar):
         noncentered: bool = False,
     ) -> term:
         """
-        Initializes a term with a default inverse gamma prior and Gibbs sampling for
-        the variance parameter.
+        Construct a smooth term with an inverse-gamma prior on the variance.
+
+        This convenience constructor creates a term similar to :meth:`.f` but
+        sets up an explicit variance parameter with an Inverse-Gamma prior.
+        A scale variable is set up by taking the square-root, and the
+        coefficient prior uses the derived ``scale`` together with the basis
+        penalty. By default a Gibbs-style initialization is attached to the
+        variance inference via an internal kernel; an optional jitter
+        distribution can be provided for MCMC initialization.
+
+        Parameters
+        ----------
+        basis
+            Basis object providing the design matrix and penalty.
+        fname
+            Prefix used to build the term name (default: ``'f'``).
+        ig_concentration
+            Concentration (shape) parameter of the Inverse-Gamma prior for the \
+            variance.
+        ig_scale
+            Scale parameter of the Inverse-Gamma prior for the variance.
+        inference
+            Inference specification forwarded to the coefficient variable \
+            creation, a :class:`liesel.goose.MCMCSpec`.
+        variance_value
+            Initial value for the variance parameter.
+        noncentered
+            If ``True``, reparameterize the term to non-centered form \
+            (see :meth:`.reparam_noncentered`).
+
+        Returns
+        -------
+        A :class:`.term` instance configured with an inverse-gamma prior on
+        the variance and an appropriate inference specification for
+        variance updates.
+
+        Notes
+        -----
+        - The variance parameter is named using a LaTeX-like representation
+          ``"$\\tau^2_{...}$"`` for readability in summaries.
+
+        Examples
+        --------
+        Create a P-spline basis and wrap it into a term::
+
+            # assume x to be a 1d array.
+            b = ps(x, nbases=10)
+            t = term.f_ig(b)
         """
         name = f"{fname}({basis.x.name})"
         coef_name = "$\\beta_{" + f"{name}" + "}$"
@@ -360,6 +526,81 @@ class Basis(UserVar):
         penalty: ArrayLike | lsl.Value | None = None,
         **basis_kwargs,
     ) -> None:
+        """
+        Create a basis object for a structured additive term.
+
+        The ``Basis`` class wraps either a provided observation variable or a raw
+        array and a basis-generation function. It constructs an internal
+        calculation node that produces the basis (design) matrix used by
+        smooth terms. The basis function may be executed via a
+        callback that does not need to be jax-compatible (the default, potentially slow)
+        with a jax-compatible function that is included in just-in-time-compilation
+        (when ``use_callback=False``).
+
+        Parameters
+        ----------
+        value
+            If a :class:`liesel.model.Var` or node is provided it is used as \
+            the input variable for the basis. Otherwise a raw array-like \
+            object may be supplied together with ``xname`` to create an \
+            observed variable internally.
+        basis_fn
+            Function mapping the input variable's values to a basis matrix or \
+            vector. It must accept the input array and any ``basis_kwargs`` \
+            and return an array of shape ``(n_obs, n_bases)`` (or a scalar/1-d \
+            array for simpler bases). By default this is the identity \
+            function (``lambda x: x``).
+        name
+            Optional name for the basis object. If omitted, a sensible name \
+            is constructed from the input variable's name (``B(<xname>)``).
+        xname
+            Required when ``value`` is a raw array: provides a name for the \
+            observation variable that will be created.
+        use_callback
+            If ``True`` (default) the basis_fn is wrapped in a JAX \
+            ``pure_callback`` via :func:`make_callback` to allow arbitrary \
+            Python basis functions while preserving JAX tracing. If ``False`` \
+            the function is used directly and must be jittable via JAX.
+        cache_basis
+            If ``True`` the computed basis is cached in a persistent \
+            calculation node (``lsl.Calc``), which avoids re-computation \
+            when not required, but uses memory. If ``False`` a transient \
+            calculation node (``lsl.TransientCalc``) is used and the basis \
+            will be recomputed with each evaluation of ``Basis.value``, \
+            but not stored in memory.
+        includes_intercept
+            Explicit flag stating whether the basis includes an intercept \
+            column. If ``None`` the property is left unspecified and may be \
+            inferred (if possible) by downstream code.
+        penalty
+            Penalty matrix associated with the basis. If omitted, \
+            a default identity penalty is created based on the number \
+            of basis functions.
+        **basis_kwargs
+            Additional keyword arguments forwarded to ``basis_fn``.
+
+        Raises
+        ------
+        ValueError
+            If ``value`` is an array and ``xname`` is not provided, or if
+            the created input variable has no name.
+
+        Notes
+        -----
+        The basis is evaluated once during initialization (via
+        ``self.update()``) to determine its shape and dtype. The internal
+        callback wrapper inspects the return shape to build a compatible
+        JAX ShapeDtypeStruct for the pure callback.
+
+        Examples
+        --------
+        Identity basis from a named variable::
+
+            import liesel.model as lsl
+            import jax.numpy as jnp
+            xvar = lsl.Var.new_obs(jnp.array([1.,2.,3.]), name='x')
+            b = Basis(value=xvar)
+        """
         if isinstance(value, lsl.Var | lsl.Node):
             value_var = value
         else:
