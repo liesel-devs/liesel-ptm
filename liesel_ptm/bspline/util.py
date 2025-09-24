@@ -25,7 +25,7 @@ def _broadcast_leading(x, target_batch_shape):
 class TransformationSpline:
     def __init__(self, knots: Array):
         """
-        Parent class for monotonically transformation splines.
+        Parent class for monotonically increasing splines.
 
         Assumes usage of a cubic B-spline.
 
