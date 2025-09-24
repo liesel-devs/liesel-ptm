@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from jax import Array
 from jax.tree_util import Partial as partial
 
-from .approx import bspline_basis, equidistant_knots
+from .approx import BSplineApprox, bspline_basis, equidistant_knots
 from .util import TransformationSpline
 
 
@@ -304,7 +304,21 @@ class PTMSpline(TransformationSpline):
         if eps < 1e-6:
             raise ValueError(f"{eps=} is < 1e-6; that is numerically unstable.")
 
-        super().__init__(knots)
+        self.n_chunks = 1024
+        self.knots = knots
+
+        self._nparam = knots.size - 4  # len(knots) - order - 1; order is fixed to 3
+        S = jnp.tril(jnp.ones((self._nparam, self._nparam)))
+        self.bspline = BSplineApprox(knots, order=3, ngrid=1000, postmultiply_by=S)
+
+        self.min_knot = self.bspline.min_knot
+        self.max_knot = self.bspline.max_knot
+
+        self._outer_knot_left = float(self.bspline.knots[0])
+        self._outer_knot_right = float(self.bspline.knots[-1])
+        self._ngrid_inverse = int(
+            int(self.bspline.knots[-1] - self.bspline.knots[0]) * 100
+        )
 
         self._compute_coef = jax.jit(
             partial(PTMCoef(knots).get_ptm_fn_squeeze(), intercept=0.0, log_slope=0.0)
@@ -325,16 +339,12 @@ class PTMSpline(TransformationSpline):
 
         self._boundaries = jnp.array([self.min_knot, self.max_knot])
 
-        # if continue_linearly:
+        self._dot_and_deriv_n = self._vmap_over_n_chunked(
+            self._dot_and_deriv_n_fullbatch
+        )
+        self._dot_and_deriv = self._batch_in_chunks(self.dot_and_deriv_n)
 
-        #     def slope_at_min_knot(coef):
-        #         return self.bspline.dot_and_deriv_n(self.min_knot, coef)[0]
-
-        #     def slope_at_max_knot(coef):
-        #         return self.bspline.dot_and_deriv_n(self.max_knot, coef)[0]
-
-        #     self._target_slope_left = slope_at_min_knot
-        #     self._target_slope_right = slope_at_max_knot
+        self._dot_inverse = self._batch_in_chunks_inverse(self.dot_inverse_n)
 
     def _left_transition_and_deriv(self, x, coef, value_left, deriv_left):
         """
