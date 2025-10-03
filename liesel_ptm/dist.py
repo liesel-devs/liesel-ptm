@@ -691,6 +691,7 @@ class LocScaleTransformationDist(TransformationDist):
         loc: Array,
         scale: Array,
         bspline: PTMSpline | OnionSpline,
+        parametric_distribution: type[tfd.Distribution] | None = None,
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "LocScaleTransformationDist",
@@ -701,7 +702,7 @@ class LocScaleTransformationDist(TransformationDist):
     ) -> None:
         super().__init__(
             coef=coef,
-            parametric_distribution=tfd.Normal,
+            parametric_distribution=parametric_distribution,
             reference_distribution=reference_distribution,
             bspline=bspline,
             validate_args=validate_args,
@@ -832,9 +833,7 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
         return self.transformation_and_logdet_parametric(value)
 
     @partial(jax.jit, static_argnums=0)
-    def inverse_transformation(
-        self, value: Array, tol: float = 0.000001, max_iter: int = 100
-    ) -> Array:
+    def inverse_transformation(self, value: Array) -> Array:
         return self.inverse_transformation_parametric(value)
 
     @cache
@@ -856,9 +855,9 @@ class PseudoTransformationDist(TransformationDist):
     """
     Oseudo-transformation distribution.
 
-    A simplified version of :class:`LocScaleTransformationDist` with
+    A simplified version of :class:`TransformationDist` with
     identity spline behavior. This class is used to be compatible in interface to
-    :class:`LocScaleTransformationDist` while conveniently representing a parametric
+    :class:`TransformationDist` while conveniently representing a parametric
     distribution.
 
 
@@ -924,9 +923,138 @@ class PseudoTransformationDist(TransformationDist):
         return self.transformation_and_logdet_parametric(value)
 
     @partial(jax.jit, static_argnums=0)
-    def inverse_transformation(
-        self, value: Array, tol: float = 0.000001, max_iter: int = 100
-    ) -> Array:
+    def inverse_transformation(self, value: Array) -> Array:
+        return self.inverse_transformation_parametric(value)
+
+    @cache
+    def transformation_spline_mean(self):
+        return 0.0
+
+    @cache
+    def transformation_spline_variance(self) -> Array:
+        return 1.0
+
+    def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
+        return value, tf.zeros_like(value)
+
+    def inverse_transformation_spline(self, value: Array) -> Array:
+        return value
+
+
+class LocScalePseudoTransformationDist(TransformationDist):
+    """
+    Location–scale specialization of :class:`.PseudoTransformationDist`.
+
+    Parameters
+    ----------
+    coef
+        Coefficients for the spline basis.
+    loc
+        Location parameter for the Normal layer.
+    scale
+        Scale parameter for the Normal layer.
+    validate_args
+        Whether to validate input arguments.
+    allow_nan_stats
+        Whether to allow NaN statistics.
+    name
+        Name of the distribution.
+    centered
+        If True, the transformation is centered.
+    scaled
+        If True, the transformation is scaled.
+    batched
+        If True, use batched computations.
+
+    Notes
+    -----
+    Inherits public attributes from :class:`TransformationDist`.
+    """
+
+    knots = jnp.linspace(-3.0, 3.0, 10)
+    bspline = PTMSpline(knots)
+
+    def __init__(
+        self,
+        coef: Array,
+        loc: Array,
+        scale: Array,
+        parametric_distribution: type[tfd.Distribution] | None = None,
+        validate_args: bool = False,
+        allow_nan_stats: bool = True,
+        name: str = "LocScalePseudoTransformationDist",
+        centered: bool = False,
+        scaled: bool = False,
+        batched: bool = True,
+    ) -> None:
+        super().__init__(
+            coef=coef,
+            parametric_distribution=parametric_distribution,
+            reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
+            bspline=self.bspline,
+            validate_args=validate_args,
+            allow_nan_stats=allow_nan_stats,
+            name=name,
+            loc=loc,
+            scale=scale,
+            centered=centered,
+            scaled=scaled,
+            batched=batched,
+        )
+
+    def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
+        """
+        Apply location–scale normalization and its log-determinant.
+
+        Parameters
+        ----------
+        value
+            Input values on the original scale.
+
+        Returns
+        -------
+        transf, logdet
+            Normalized values and corresponding log-determinant.
+        """
+        if self.parametric_distribution is None:
+            raise RuntimeError
+
+        sd = self.parametric_distribution.stddev()
+        transf = (value - self.parametric_distribution.mean()) / sd
+
+        logdet = -jnp.log(sd)
+
+        return transf, logdet
+
+    def inverse_transformation_parametric(self, value: Array) -> Array:
+        """
+        Invert the location–scale normalization.
+
+        Parameters
+        ----------
+        value
+            Values on the normalized (reference) scale.
+
+        Returns
+        -------
+        y
+            Values mapped back to the original scale.
+        """
+        if self.parametric_distribution is None:
+            raise RuntimeError
+
+        sd = self.parametric_distribution.stddev()
+        m = self.parametric_distribution.mean()
+        y = value * sd + m
+
+        return y
+
+    @partial(jax.jit, static_argnums=0)
+    def transformation_and_logdet(self, value: Array) -> tuple[Array, Array]:
+        return self.transformation_and_logdet_parametric(value)
+
+    @partial(jax.jit, static_argnums=0)
+    def inverse_transformation(self, value: Array) -> Array:
         return self.inverse_transformation_parametric(value)
 
     @cache
