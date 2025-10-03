@@ -9,9 +9,9 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 import liesel_ptm.gam as gam
 
 from .constraint import mixed_model
+from .gam.kernel import init_star_ig_gibbs as init_star_ig_gibbs2
 from .kernel import init_star_ig_gibbs
 from .penalty import Penalty
-from .gam.kernel import init_star_ig_gibbs as init_star_ig_gibbs2
 
 Array = Any
 InferenceTypes = Any
