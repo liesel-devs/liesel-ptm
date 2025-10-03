@@ -852,9 +852,7 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
         return value
 
 
-
-
-class PseudoTransformationDist(LocScaleTransformationDist):
+class PseudoTransformationDist(TransformationDist):
     """
     Oseudo-transformation distribution.
 
@@ -897,8 +895,7 @@ class PseudoTransformationDist(LocScaleTransformationDist):
     def __init__(
         self,
         coef: Array,
-        loc: Array,
-        scale: Array,
+        parametric_distribution: type[tfd.Distribution] | None = None,
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "PseudoTransformationDist",
@@ -906,6 +903,7 @@ class PseudoTransformationDist(LocScaleTransformationDist):
         scaled: bool = False,
         batched: bool = True,
         reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
+        **parametric_distribution_kwargs,
     ) -> None:
         super().__init__(
             coef=coef,
@@ -914,11 +912,11 @@ class PseudoTransformationDist(LocScaleTransformationDist):
             allow_nan_stats=allow_nan_stats,
             reference_distribution=reference_distribution,
             name=name,
-            loc=jnp.atleast_1d(loc),
-            scale=jnp.atleast_1d(scale),
+            parametric_distribution=parametric_distribution,
             centered=centered,
             scaled=scaled,
             batched=batched,
+            **parametric_distribution_kwargs,
         )
 
     @partial(jax.jit, static_argnums=0)
