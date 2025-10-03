@@ -697,11 +697,12 @@ class LocScaleTransformationDist(TransformationDist):
         centered: bool = False,
         scaled: bool = False,
         batched: bool = True,
+        reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
     ) -> None:
         super().__init__(
             coef=coef,
             parametric_distribution=tfd.Normal,
-            reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
+            reference_distribution=reference_distribution,
             bspline=bspline,
             validate_args=validate_args,
             allow_nan_stats=allow_nan_stats,
@@ -818,6 +819,100 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
             bspline=self.bspline,
             validate_args=validate_args,
             allow_nan_stats=allow_nan_stats,
+            name=name,
+            loc=jnp.atleast_1d(loc),
+            scale=jnp.atleast_1d(scale),
+            centered=centered,
+            scaled=scaled,
+            batched=batched,
+        )
+
+    @partial(jax.jit, static_argnums=0)
+    def transformation_and_logdet(self, value: Array) -> tuple[Array, Array]:
+        return self.transformation_and_logdet_parametric(value)
+
+    @partial(jax.jit, static_argnums=0)
+    def inverse_transformation(
+        self, value: Array, tol: float = 0.000001, max_iter: int = 100
+    ) -> Array:
+        return self.inverse_transformation_parametric(value)
+
+    @cache
+    def transformation_spline_mean(self):
+        return 0.0
+
+    @cache
+    def transformation_spline_variance(self) -> Array:
+        return 1.0
+
+    def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
+        return value, tf.zeros_like(value)
+
+    def inverse_transformation_spline(self, value: Array) -> Array:
+        return value
+
+
+
+
+class PseudoTransformationDist(LocScaleTransformationDist):
+    """
+    Oseudo-transformation distribution.
+
+    A simplified version of :class:`LocScaleTransformationDist` with
+    identity spline behavior. This class is used to be compatible in interface to
+    :class:`LocScaleTransformationDist` while conveniently representing a parametric
+    distribution.
+
+
+    Parameters
+    ----------
+    coef
+        Coefficients for the spline basis (kept for consistency).
+    loc
+        Location parameter for the Normal layer.
+    scale
+        Scale parameter for the Normal layer.
+    validate_args
+        Whether to validate input arguments.
+    allow_nan_stats
+        Whether to allow NaN statistics.
+    name
+        Name of the distribution.
+    centered
+        If True, the transformation is centered.
+    scaled
+        If True, the transformation is scaled.
+    batched
+        If True, use batched computations.
+
+    Notes
+    -----
+    - Inherits attributes from :class:`LocScaleTransformationDist`.
+    - The spline transformation is effectively the identity.
+    """
+
+    knots = jnp.linspace(-3.0, 3.0, 10)
+    bspline = PTMSpline(knots)
+
+    def __init__(
+        self,
+        coef: Array,
+        loc: Array,
+        scale: Array,
+        validate_args: bool = False,
+        allow_nan_stats: bool = True,
+        name: str = "PseudoTransformationDist",
+        centered: bool = False,
+        scaled: bool = False,
+        batched: bool = True,
+        reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
+    ) -> None:
+        super().__init__(
+            coef=coef,
+            bspline=self.bspline,
+            validate_args=validate_args,
+            allow_nan_stats=allow_nan_stats,
+            reference_distribution=reference_distribution,
             name=name,
             loc=jnp.atleast_1d(loc),
             scale=jnp.atleast_1d(scale),
