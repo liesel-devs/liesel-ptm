@@ -691,7 +691,7 @@ class LocScaleTransformationDist(TransformationDist):
         loc: Array,
         scale: Array,
         bspline: PTMSpline | OnionSpline,
-        parametric_distribution: type[tfd.Distribution] | None = None,
+        parametric_distribution: type[tfd.Distribution] | None = tfd.Normal,
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "LocScaleTransformationDist",
