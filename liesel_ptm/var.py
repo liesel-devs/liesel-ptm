@@ -11,6 +11,7 @@ import liesel_ptm.gam as gam
 from .constraint import mixed_model
 from .kernel import init_star_ig_gibbs
 from .penalty import Penalty
+from .gam.kernel import init_star_ig_gibbs as init_star_ig_gibbs2
 
 Array = Any
 InferenceTypes = Any
@@ -512,6 +513,7 @@ class PTMCoef(lsl.Var):
         scale_penalty: bool = True,
         diagonalize_penalty: bool = True,
         role: str = "transformation_coef",
+        noncentered: bool = False,
     ) -> Self:
         """Create from-zero RW1 coefficients with an inverse-gamma prior on the
         variance parameter.
@@ -561,10 +563,12 @@ class PTMCoef(lsl.Var):
             scale_penalty=scale_penalty,
             diagonalize_penalty=diagonalize_penalty,
             role=role,
+            noncentered=noncentered,
         )
 
         scale.variance_param.inference = gs.MCMCSpec(
-            init_star_ig_gibbs, kernel_kwargs={"coef": coef}
+            init_star_ig_gibbs2,
+            kernel_kwargs={"coef": coef, "scale": scale, "penalty": penalty},
         )
 
         return coef
