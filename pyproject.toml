@@ -3,7 +3,7 @@ name = "liesel_ptm"
 dynamic = ["version"]
 description = "Bayesian Penalized Transformation Models in Liesel"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 authors = [
     { name = "Johannes Brachem" },
 ]
