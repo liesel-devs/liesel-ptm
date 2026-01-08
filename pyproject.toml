@@ -36,7 +36,7 @@ testpaths = "tests"
 # turn warnings into errors and filter out specific warnings
 filterwarnings = [
     "error",
-    # "ignore::DeprecationWarning:tensorflow_probability",
+    "ignore::FutureWarning:arviz",
     "ignore:invalid escape sequence.*:SyntaxWarning:properscoring.*",
     "ignore:jax.interpreters.xla.pytype_aval_mappings is deprecated:DeprecationWarning:tensorflow_probability.python.internal.backend.jax.ops",
     "ignore:shape requires ndarray or scalar arguments, got <class 'NoneType'> at position 0. In a future JAX release this will be an error.:DeprecationWarning:tensorflow_probability.python.internal.backend.jax.random_generators",
