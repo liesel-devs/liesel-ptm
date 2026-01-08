@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import jax
@@ -14,6 +15,7 @@ except SyntaxError:
 
 from jax.scipy.integrate import trapezoid
 
+from ..util.split_dict import split_dict_rough
 from ..util.summary import subsample_tree
 from ..waic import waic as waic_fun
 from .model import LocScalePTM
@@ -426,44 +428,132 @@ class EvaluatePTM:
 
         return jax.jit(qs_)(probs)
 
-    def _crps_inefficient(
+    def _crps_by_integrated_quantile_score(
         self,
         probs: Array,
         newdata: dict[str, Array] | None = None,
+        k: int = 1,
+        quantile_weight_fn: Callable[[Array], Array] = lambda q: jnp.ones_like(q),
     ):
-        """Inefficient CRPS by numerical integration over quantiles (private)."""
+        """
+        CRPS by numerical integration over quantile score.
 
-        samples = self.samples
-        newdata = newdata if newdata is not None else {}
+        To reduce memory burden, the computation proceeds in batches, based on
+        partitioning the posterior samples into ``k`` chunks.
+
+        The returned array has shape ``(Chains, Samples)``; each element of the array
+        is already averaged over Ntest.
+        """
+
+        newdata = newdata.copy() if newdata is not None else {}
         response = newdata.pop(self.model.response.name, self.model.response.value)
-        dist = self.model.init_dist(samples, newdata=newdata)
+        samples = self.samples
 
-        def crps_(probs):
+        def crps_(probs, samples):
             probs = jnp.reshape(probs, (jnp.shape(probs)[0], 1, 1, 1))
+            dist = self.model.init_dist(samples, newdata=newdata)
             quantiles = dist.quantile(probs)
+            quantile_weights = quantile_weight_fn(probs)
 
             probs = jnp.swapaxes(probs, 0, -1)
             probs = jnp.moveaxis(probs, 0, 2)
             quantiles = jnp.swapaxes(quantiles, 0, -1)
             quantiles = jnp.moveaxis(quantiles, 0, 2)
+            quantile_weights = jnp.swapaxes(quantile_weights, 0, -1)
+            quantile_weights = jnp.moveaxis(quantile_weights, 0, 2)
 
             response_reshaped = jnp.reshape(response, (1, 1, jnp.shape(response)[0], 1))
 
             deviation = quantiles - response_reshaped
             weight = 2 * (jnp.heaviside(deviation, 0.0) - probs)
-            quantile_score = weight * deviation
+            quantile_score = weight * deviation * quantile_weights
 
             crps_samples = trapezoid(quantile_score, probs, axis=3)
-            return crps_samples
+            return crps_samples.mean(axis=-2)
 
-        return crps_(probs)
+        samples_partitions = split_dict_rough(samples, k=k)
+        crps_jitted = jax.jit(crps_)
+        crps_partitions = []
+        for samp in samples_partitions:
+            crps_partition = crps_jitted(probs, samp)
+            crps_partitions.append(crps_partition)
+        return jnp.concatenate(crps_partitions, axis=1)
+
+    def crps_by_estimated_quantiles(
+        self,
+        key: jax.Array,
+        probs: Array,
+        newdata: dict[str, Array] | None = None,
+        quantile_weight_fn: Callable[[Array], Array] = lambda q: jnp.ones_like(q),
+        m: int = 1,
+    ):
+        """
+        Computes CRPS as follows:
+
+        1. Draw samples from the posterior predictive distribution.
+        2. Use these samples to estimate the quantiles for the probability levels
+           in ``probs``.
+        3. Compute the quantile score using these quantiles
+        4. Integrate over the quantile score
+
+        The output has shape ``(N_test,)``.
+
+        By default, one predictive sample is drawn for each posterior sample.
+        The argument ``m`` can be used to multiply the number of samples, i.e. for
+        ``m=2``, two predictive samples are drawn for each posterior sample.
+        """
+
+        newdata = newdata.copy() if newdata is not None else {}
+        response = newdata.pop(self.model.response.name, self.model.response.value)
+        samples = self.samples
+
+        def sample_(key, samples, n):
+            dist = self.model.init_dist(samples, newdata=newdata)
+            return dist.sample(n, key)
+
+        sample_ = jax.jit(sample_, static_argnames="n")
+
+        def quantile_(samples, probs, key):
+            event_samples = sample_(key, samples, m)
+            quantiles = jnp.quantile(event_samples, q=probs, axis=(0, 1, 2))
+            return quantiles
+
+        def crps_(probs, samples, key):
+            quantiles = quantile_(samples, probs, key)  # (probs, n)
+
+            probs = jnp.reshape(probs, (jnp.shape(probs)[0], 1))
+            quantile_weights = quantile_weight_fn(probs)
+
+            probs = jnp.swapaxes(probs, 0, -1)
+            quantiles = jnp.swapaxes(quantiles, 0, -1)
+            quantile_weights = jnp.swapaxes(quantile_weights, 0, -1)
+
+            response_reshaped = jnp.reshape(response, (jnp.shape(response)[0], 1))
+
+            deviation = quantiles - response_reshaped
+            weight = 2 * (jnp.heaviside(deviation, 0.0) - probs)
+            quantile_score = weight * deviation * quantile_weights
+
+            crps_contributions = trapezoid(quantile_score, probs, axis=1)
+            return crps_contributions
+
+        key, subkey = jax.random.split(key)
+        crps_jitted = jax.jit(crps_)
+        return crps_jitted(probs, samples, subkey)
 
     def crps(
         self,
         probs: Array,
         newdata: dict[str, Array] | None = None,
+        k: int = 10,
+        quantile_weight_fn: Callable[[Array], Array] = lambda q: jnp.ones_like(q),
     ):
-        return self._crps_inefficient(probs, newdata)
+        return self._crps_by_integrated_quantile_score(
+            probs,
+            newdata,
+            k=k,
+            quantile_weight_fn=quantile_weight_fn,
+        )
 
     def crps_sample(
         self,
@@ -474,7 +564,7 @@ class EvaluatePTM:
         n_chunk: int = 500,
     ):
         newdata = newdata.copy() if newdata is not None else {}
-        response = newdata.pop(self.model.response.name, None)
+        response = newdata.pop(self.model.response.name, self.model.response.value)
         if response is None:
             raise ValueError("No response values provided in newdata.")
 
@@ -486,10 +576,14 @@ class EvaluatePTM:
             subsamples = subsample_tree(subkey, self.samples, num_samples=subsamples_n)
             samples = subsamples
 
+        ntest = test_data.shape[0]
         dist = self.model.init_dist(samples, newdata=newdata)
         key, subkey = jax.random.split(key)
         pred_samples = dist.sample(predictive_samples_n, seed=key)
-        nsamp, c, s, ntest = pred_samples.shape
+        nsamp, c, s, ntest_ = pred_samples.shape
+        if ntest_ == 1:
+            pred_samples = dist.sample((predictive_samples_n, ntest), seed=key)
+            nsamp, _, c, s, _ = pred_samples.shape
         pred_samples = jnp.reshape(pred_samples, shape=(nsamp * c * s, ntest))
 
         n_inf = jnp.isinf(pred_samples).sum()
@@ -501,7 +595,6 @@ class EvaluatePTM:
                 jnp.nan
             )
 
-        ntest = test_data.shape[0]
         crps_vals = []
 
         for i in range(0, ntest, n_chunk):
