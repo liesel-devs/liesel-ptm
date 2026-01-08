@@ -8,7 +8,7 @@ authors = [
     { name = "Johannes Brachem" },
 ]
 dependencies = [
-    "liesel>=0.4.1",
+    "liesel>=0.4.3",
     "plotnine>=0.14.5",
     "interpax>=0.3.10",
     "properscoring>=0.1",
