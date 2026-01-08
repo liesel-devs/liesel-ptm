@@ -353,7 +353,6 @@ class LocScalePTM:
         """
         Shortcut for convenient model setup.
         """
-        kernel_kwargs = {"da_target_accept": 0.9, "mm_diag": False, "max_treedepth": 10}
         knots = LogIncKnots(a, b, nparam=nparam)
 
         model = cls(
@@ -370,9 +369,6 @@ class LocScalePTM:
             scale=tau2_scale,
             name="$\\tau_\\delta$",
             bijector=tfb.Exp(),
-            inference=gs.MCMCSpec(
-                gs.NUTSKernel, kernel_group="trafo", kernel_kwargs=kernel_kwargs
-            ),
         )
         trafo_scale.variance_param.name = "$\\tau^2_\\delta$"
         trafo_scale.variance_param.value_node[0].name = "$\\log(\\tau^2_\\delta)$"
