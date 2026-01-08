@@ -1011,7 +1011,7 @@ class LocScalePTM:
                 if use_fallback_finfos:
                     try:
                         logger.warning(
-                            "NaNs von in the Cholesky decomposition of the "
+                            "NaNs found in the Cholesky decomposition of the "
                             "Fisher information matrix at current values for "
                             f"term {term.name}. Falling back to the expected Fisher "
                             "information of a Gaussian model. This can lead to less "
@@ -1025,7 +1025,7 @@ class LocScalePTM:
                         logger.exception("Failed to use Gaussian fallback. Continuing.")
 
                 logger.warning(
-                    "NaNs von in the Cholesky decomposition of the "
+                    "NaNs found in the Cholesky decomposition of the "
                     "Fisher information matrix at current values for "
                     f"term {term.name}. Falling back to an augmented Fisher "
                     "information to ensure positive definitness. This is likely "
@@ -1099,7 +1099,7 @@ class LocScalePTM:
                 if use_fallback_finfos:
                     try:
                         logger.warning(
-                            "NaNs von in the Cholesky decomposition of the "
+                            "NaNs found in the Cholesky decomposition of the "
                             "Fisher information matrix at current values for "
                             f"term {term.name}. Falling back to the expected Fisher "
                             "information of a Gaussian model. This can lead to less "
@@ -1113,7 +1113,7 @@ class LocScalePTM:
                         logger.exception("Failed to use Gaussian fallback. Continuing.")
 
                 logger.warning(
-                    "NaNs von in the Cholesky decomposition of the "
+                    "NaNs found in the Cholesky decomposition of the "
                     "Fisher information matrix at current values for "
                     f"term {term.name}. Falling back to an augmented Fisher "
                     "information to ensure positive definitness. This is likely "
