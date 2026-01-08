@@ -151,7 +151,6 @@ class PTMCholInfo:
     penalty: ArrayLike
     model: ModelInterface
     model_state: ModelState
-    fisher_info: ArrayLike | None = None
 
     @classmethod
     def from_coef(cls, coef: PTMCoef, model: ModelInterface):
