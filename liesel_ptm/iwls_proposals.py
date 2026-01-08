@@ -77,7 +77,7 @@ class GaussianLocCholInfo:
         inv_scale2 = 1.0 / jnp.clip(scale, a_min=eps) ** 2
 
         P = ZTWZ + inv_scale2 * self.penalty
-        return P
+        return P + 1e-6 * jnp.mean(jnp.diag(P)) * jnp.eye(P.shape[0], P.shape[1])
 
     def chol_info(self, model_state: ModelState) -> Array:
         chol = jnp.linalg.cholesky(self.precision(model_state))
@@ -138,7 +138,7 @@ class GaussianScaleCholInfo:
         inv_scale2 = 1.0 / jnp.clip(scale, a_min=eps) ** 2
 
         P = ZTWZ + inv_scale2 * self.penalty
-        return P
+        return P + 1e-6 * jnp.mean(jnp.diag(P)) * jnp.eye(P.shape[0], P.shape[1])
 
     def chol_info(self, model_state: ModelState) -> Array:
         return jnp.linalg.cholesky(self.precision(model_state))
