@@ -762,7 +762,7 @@ class Basis(UserVar):
             name=name,
             xname=xname,
             use_callback=False,
-            cache_basis=False,
+            cache_basis=True,
             includes_intercept=add_intercept,
         )
 
