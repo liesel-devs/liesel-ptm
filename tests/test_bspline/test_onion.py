@@ -350,11 +350,65 @@ class TestDotAndDerivNFullBatch:
     def test_scalar_x_batched_coef(self):
         x = 1.0
         coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
-        with pytest.raises(TypeError):
-            bs.dot_and_deriv_n_fullbatch(x, coef)
+        bs.dot_and_deriv_n_fullbatch(x, coef)
 
     def test_vector_x_batched_coef(self):
         x = jax.random.normal(jax.random.key(1), (200,))
         coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
-        with pytest.raises(TypeError):
-            bs.dot_and_deriv_n_fullbatch(x, coef)
+        bs.dot_and_deriv_n_fullbatch(x, coef)
+
+    def test_gptm_dot_and_deriv(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        k1 = jax.random.key(1)
+        k1, k2 = jax.random.split(k1)
+        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+
+        n = 17
+
+        coef = jax.random.normal(k1, (n, knots.nparam))
+        x = jax.random.normal(k2, (n,))
+
+        dot, deriv = bs.dot_and_deriv_n_fullbatch(x, coef)
+        assert dot.shape == (n,)
+        assert deriv.shape == (n,)
+
+        b = 13
+        coef = jax.random.normal(k1, (b, n, knots.nparam))
+
+        dot, deriv = bs.dot_and_deriv_n_fullbatch(x, coef)
+
+        assert dot.shape == (b, n)
+        assert deriv.shape == (b, n)
+
+        coef = jax.random.normal(k1, (1, b, n, knots.nparam))
+
+        dot, deriv = bs.dot_and_deriv_n_fullbatch(x, coef)
+
+        assert dot.shape == (1, b, n)
+        assert deriv.shape == (1, b, n)
+
+    def test_gptm_inverse(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        k1 = jax.random.key(1)
+        k1, k2 = jax.random.split(k1)
+        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+
+        n = 17
+
+        coef = jax.random.normal(k1, (n, knots.nparam))
+        x = jax.random.normal(k2, (n,))
+
+        dot = bs.dot_inverse_n_fullbatch(x, coef)
+        assert dot.shape == (n,)
+
+        b = 13
+        coef = jax.random.normal(k1, (b, n, knots.nparam))
+
+        dot = bs.dot_inverse_n_fullbatch(x, coef)
+
+        assert dot.shape == (b, n)
+
+        coef = jax.random.normal(k1, (1, b, n, knots.nparam))
+        dot = bs.dot_inverse_n_fullbatch(x, coef)
+
+        assert dot.shape == (1, b, n)

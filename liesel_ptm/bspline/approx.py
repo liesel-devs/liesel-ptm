@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -363,6 +364,9 @@ class BSplineApprox:
         order: int,
         ngrid: int = 1000,
         postmultiply_by: Array | None = None,
+        subscripts: Literal[
+            "...nj,...j->...n", "...nj,...nj->...n"
+        ] = "...nj,...j->...n",
     ) -> None:
         self.knots = jnp.asarray(knots)
         self.dknots = jnp.mean(jnp.diff(knots))
@@ -386,6 +390,8 @@ class BSplineApprox:
         self.basis_grid = basis_grids[0]
         self.basis_deriv_grid = basis_grids[1]
         self.basis_deriv2_grid = basis_grids[2]
+
+        self.subscripts = subscripts
 
         self._dot_fn = self._get_dot_fn()
         self._dot_and_deriv_fn = self._get_dot_and_deriv_fn()
@@ -458,7 +464,7 @@ class BSplineApprox:
             coef: Array,
         ) -> Array:
             basis = self.get_basis(x)
-            smooth = jnp.dot(basis, coef)
+            smooth = jnp.einsum(self.subscripts, basis, coef)
             return smooth
 
         @_dot.defjvp
@@ -467,10 +473,10 @@ class BSplineApprox:
             x_dot, coef_dot = tangents
 
             basis, basis_deriv = self.get_basis_and_deriv(x)
-            smooth = jnp.dot(basis, coef)
+            smooth = jnp.einsum(self.subscripts, basis, coef)
 
             tangent_x = (basis_deriv * coef) * x_dot
-            tangent_coef = jnp.dot(basis, coef_dot)
+            tangent_coef = jnp.einsum(self.subscripts, basis, coef_dot)
 
             tangent = tangent_x + tangent_coef
 
@@ -491,8 +497,8 @@ class BSplineApprox:
             And coef is (p,)
             """
             basis, basis_deriv = self.get_basis_and_deriv(x)  # (p,) and (p,) shapes
-            smooth = jnp.dot(basis, coef)
-            smooth_deriv = jnp.dot(basis_deriv, coef)
+            smooth = jnp.einsum(self.subscripts, basis, coef)
+            smooth_deriv = jnp.einsum(self.subscripts, basis_deriv, coef)
             return smooth, smooth_deriv  # (,) and (,) shapes
 
         @_dot_and_deriv.defjvp
@@ -501,18 +507,18 @@ class BSplineApprox:
             x_dot, coef_dot = tangents
 
             basis, basis_deriv, basis_deriv2 = self.get_basis_and_deriv2(x)
-            smooth = jnp.dot(basis, coef)
-            smooth_deriv = jnp.dot(basis_deriv, coef)
-            smooth_deriv2 = jnp.dot(basis_deriv2, coef)
+            smooth = jnp.einsum(self.subscripts, basis, coef)
+            smooth_deriv = jnp.einsum(self.subscripts, basis_deriv, coef)
+            smooth_deriv2 = jnp.einsum(self.subscripts, basis_deriv2, coef)
 
             primal_out = (smooth, smooth_deriv)
 
             tangent_bdot_x = smooth_deriv * x_dot
-            tangent_bdot_coef = jnp.dot(basis, coef_dot)
+            tangent_bdot_coef = jnp.einsum(self.subscripts, basis, coef_dot)
             tangent_bdot = tangent_bdot_x + tangent_bdot_coef
 
             tangent_deriv_x = smooth_deriv2 * x_dot
-            tangent_deriv_coef = jnp.dot(basis_deriv, coef_dot)
+            tangent_deriv_coef = jnp.einsum(self.subscripts, basis_deriv, coef_dot)
             tangent_deriv = tangent_deriv_x + tangent_deriv_coef
 
             tangent_out = (tangent_bdot, tangent_deriv)

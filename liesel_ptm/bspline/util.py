@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -23,7 +25,13 @@ def _broadcast_leading(x, target_batch_shape):
 
 
 class TransformationSpline:
-    def __init__(self, knots: Array):
+    def __init__(
+        self,
+        knots: Array,
+        subscripts: Literal[
+            "...nj,...j->...n", "...nj,...nj->...n"
+        ] = "...nj,...j->...n",
+    ):
         """
         Parent class for monotonically increasing splines.
 
@@ -53,7 +61,9 @@ class TransformationSpline:
 
         self._nparam = knots.size - 4  # len(knots) - order - 1; order is fixed to 3
         S = jnp.tril(jnp.ones((self._nparam, self._nparam)))
-        self.bspline = BSplineApprox(knots, order=3, ngrid=1000, postmultiply_by=S)
+        self.bspline = BSplineApprox(
+            knots, order=3, ngrid=1000, postmultiply_by=S, subscripts=subscripts
+        )
 
         self.min_knot = self.bspline.min_knot
         self.max_knot = self.bspline.max_knot
@@ -120,6 +130,38 @@ class TransformationSpline:
         )
 
         return x
+
+    def dot_inverse_n_fullbatch(self, y: Array, coef: Array) -> Array:
+        """
+        Compute inverse spline for y with shape (n,).
+        """
+
+        def _inv(y: Array, coef: Array):
+            def fn(x):
+                return self.dot_and_deriv_n_fullbatch(x, coef)[0]
+
+            x = inv1d(
+                y,
+                fn,
+                self._outer_knot_left,
+                self._outer_knot_right,
+                self._ngrid_inverse,
+                "monotonic",
+            )
+
+            return x
+
+        if self.bspline.subscripts == "...nj,...j->...n":
+            return jnp.vectorize(_inv, signature="(n),(j)->(n)")(y, coef)
+        elif self.bspline.subscripts == "...nj,...nj->...n":
+
+            def _inv2(y, coef):
+                return _inv(jnp.atleast_1d(y), jnp.atleast_2d(coef))
+
+            _inv2_vectorized = jnp.vectorize(
+                jax.vmap(_inv2), signature="(n),(n,j)->(n,1)"
+            )
+            return _inv2_vectorized(y, coef).squeeze(-1)
 
     def dot_and_deriv_n(self, x: Array, coef: Array) -> tuple[Array, Array]:
         """

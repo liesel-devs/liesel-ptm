@@ -95,7 +95,7 @@ class PTMDist(lsl.Dist):
         centered: bool = False,
         scaled: bool = False,
         trafo_lambda: float = 0.1,
-        bspline: Literal["ptm", "onion", "identity"] = "ptm",
+        bspline: Literal["ptm", "onion", "identity", "onion_nj"] = "ptm",
         trafo_target_slope: Literal["identity", "continue_linearly"] = "identity",
         **kwargs,
     ) -> None:
@@ -114,6 +114,14 @@ class PTMDist(lsl.Dist):
                 )
             case "onion":
                 bspline_inst = OnionSpline(knots)
+                partial_dist_class = partial(
+                    LocScaleTransformationDist,
+                    bspline=bspline_inst,
+                    centered=centered,
+                    scaled=scaled,
+                )
+            case "onion_nj":
+                bspline_inst = OnionSpline(knots, subscripts="...nj,...nj->...n")
                 partial_dist_class = partial(
                     LocScaleTransformationDist,
                     bspline=bspline_inst,

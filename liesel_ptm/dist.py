@@ -17,7 +17,11 @@ Array = Any
 
 
 def integrate_simpson(
-    f: Callable[[Array], Array], a: float | Array, b: float | Array, N: int = 20
+    f: Callable[[Array], Array],
+    a: float | Array,
+    b: float | Array,
+    N: int = 20,
+    batch_dims=(),
 ) -> Array:
     """
     Implementation from:
@@ -27,7 +31,9 @@ def integrate_simpson(
         raise ValueError("N must be an even integer.")
     dx = (b - a) / N
     x = jnp.linspace(a, b, N + 1)
+    x = jnp.expand_dims(x, batch_dims)
     y = f(x)
+    y = jnp.moveaxis(y, 0, -1)
     S = (
         dx
         / 3
@@ -35,7 +41,7 @@ def integrate_simpson(
             y[..., 0:-1:2] + 4 * y[..., 1::2] + y[..., 2::2], axis=-1, keepdims=True
         )
     )
-    return S
+    return S.squeeze(-1)
 
 
 class TransformationDist(tfd.Distribution):
@@ -138,8 +144,12 @@ class TransformationDist(tfd.Distribution):
 
         if batched:
             self.dot_and_deriv = self.bspline.dot_and_deriv
+            self._dot_inverse = self.bspline.dot_inverse
         else:
+            self._dot_inverse = self.bspline.dot_inverse_n_fullbatch
             self.dot_and_deriv = self.bspline.dot_and_deriv_n_fullbatch
+
+        self.simpson_integration_n = 32
 
         super().__init__(
             dtype=coef.dtype,
@@ -404,7 +414,13 @@ class TransformationDist(tfd.Distribution):
             z, logdet = self._transformation_and_logdet_spline(x)
             return x * self.reference_distribution.prob(z) * jnp.exp(logdet)
 
-        mom = integrate_simpson(fn, a=self.knots[0], b=self.knots[-1], N=1024)
+        mom = integrate_simpson(
+            fn,
+            a=self.knots[0],
+            b=self.knots[-1],
+            N=self.simpson_integration_n,
+            batch_dims=tuple(range(1, len(self.batch_shape) + 1)),
+        )
 
         return mom
 
@@ -423,7 +439,13 @@ class TransformationDist(tfd.Distribution):
                 z, logdet = self._transformation_and_logdet_spline(x + m_before)
                 return x * self.reference_distribution.prob(z) * jnp.exp(logdet)
 
-            m_after = integrate_simpson(fn, a=self.knots[0], b=self.knots[-1], N=1024)
+            m_after = integrate_simpson(
+                fn,
+                a=self.knots[0],
+                b=self.knots[-1],
+                N=self.simpson_integration_n,
+                batch_dims=tuple(range(1, len(self.batch_shape) + 1)),
+            )
             m_after = jnp.reshape(m_after, self.batch_shape)
             diff = jnp.abs(m_after).sum()
 
@@ -488,7 +510,13 @@ class TransformationDist(tfd.Distribution):
                 (x - mean) ** 2 * self.reference_distribution.prob(z) * jnp.exp(logdet)
             )
 
-        var = integrate_simpson(fn, a=self.knots[0], b=self.knots[-1], N=1024)
+        var = integrate_simpson(
+            fn,
+            a=self.knots[0],
+            b=self.knots[-1],
+            N=self.simpson_integration_n,
+            batch_dims=tuple(range(1, len(self.batch_shape) + 1)),
+        )
 
         return var
 
@@ -515,7 +543,9 @@ class TransformationDist(tfd.Distribution):
             def fn(x):
                 return x**2 * pdf(x, v_before)
 
-            v_after = integrate_simpson(fn, a=self.knots[0], b=self.knots[-1], N=1024)
+            v_after = integrate_simpson(
+                fn, a=self.knots[0], b=self.knots[-1], N=self.simpson_integration_n
+            )
             v_after = jnp.reshape(v_after, self.batch_shape)
             diff = jnp.abs(1.0 - v_after).sum()
             state = (diff, v_before * v_after, state[2] + 1)
@@ -561,7 +591,9 @@ class TransformationDist(tfd.Distribution):
             def fn(x):
                 return x**2 * pdf(x, v_before)
 
-            v_after = integrate_simpson(fn, a=self.knots[0], b=self.knots[-1], N=1024)
+            v_after = integrate_simpson(
+                fn, a=self.knots[0], b=self.knots[-1], N=self.simpson_integration_n
+            )
             v_after = jnp.reshape(v_after, self.batch_shape)
             diff = jnp.abs(1.0 - v_after).sum()
             state = (diff, v_before * v_after, state[2] + 1)
@@ -600,7 +632,7 @@ class TransformationDist(tfd.Distribution):
         else:
             ystd = jnp.array(1.0)
 
-        return (self.bspline.dot_inverse(value, self.coef) - ymean) / ystd
+        return (self._dot_inverse(value, self.coef) - ymean) / ystd
 
     def inverse_transformation_parametric(self, value: Array) -> Array:
         """

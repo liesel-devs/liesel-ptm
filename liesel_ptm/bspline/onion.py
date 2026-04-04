@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -106,11 +107,19 @@ def get_onion_fn(knots) -> Callable[[Array], Array]:
 
         return full_coef
 
-    return compute_coef
+    return jnp.vectorize(compute_coef, signature="(k)->(d)")
+
+    # return compute_coef
 
 
 class OnionSpline(TransformationSpline):
-    def __init__(self, knots: Array) -> None:
+    def __init__(
+        self,
+        knots: Array,
+        subscripts: Literal[
+            "...nj,...j->...n", "...nj,...nj->...n"
+        ] = "...nj,...j->...n",
+    ) -> None:
         """
         Onion spline transformation using given knots.
 
@@ -124,7 +133,7 @@ class OnionSpline(TransformationSpline):
         knots
             Array of spline knots.
         """
-        super().__init__(knots)
+        super().__init__(knots, subscripts=subscripts)
         self._compute_coef = jax.jit(get_onion_fn(knots))  # type: ignore
 
     def _dot_and_deriv_n_fullbatch(self, x: Array, coef: Array) -> tuple[Array, Array]:
