@@ -72,26 +72,15 @@ def _logdiffexp(log_a: Array, log_b: Array) -> Array:
     return jnp.where(log_a > log_b, value, neg_inf)
 
 
-class CensoredDistribution(tfd.Distribution):
-    """
-    Generic censoring-record wrapper for scalar-event TFP distributions.
-
-    The wrapped distribution models uncensored event times on its native scale.
-    This wrapper models censoring records with event shape ``(3,)`` and layout
-    ``[time, lower, upper]``:
-
-    - ``[time, nan, nan]`` for uncensored observations.
-    - ``[nan, nan, upper]`` for left-censored observations.
-    - ``[nan, lower, nan]`` for right-censored observations.
-    - ``[nan, lower, upper]`` for interval-censored observations.
-    """
+class _BaseCensoringDistribution(tfd.Distribution):
+    _event_shape_tuple: tuple[int, ...] = ()
 
     def __init__(
         self,
         distribution: Callable[..., tfd.Distribution],
         validate_args: bool = False,
         allow_nan_stats: bool = True,
-        name: str = "CensoredDistribution",
+        name: str = "BaseCensoringDistribution",
         **distribution_kwargs,
     ) -> None:
         parameters = dict(locals())
@@ -105,7 +94,7 @@ class CensoredDistribution(tfd.Distribution):
 
         if tuple(self.base_distribution.event_shape) != ():
             raise ValueError(
-                "CensoredDistribution requires a scalar-event base distribution."
+                f"{type(self).__name__} requires a scalar-event base distribution."
             )
 
         super().__init__(
@@ -118,10 +107,10 @@ class CensoredDistribution(tfd.Distribution):
         )
 
     def _event_shape(self):
-        return tf.TensorShape([3])
+        return tf.TensorShape(self._event_shape_tuple)
 
     def _event_shape_tensor(self):
-        return jnp.array([3], dtype=jnp.int32)
+        return jnp.asarray(self._event_shape_tuple, dtype=jnp.int32)
 
     def _batch_shape(self):
         return self.base_distribution.batch_shape
@@ -129,19 +118,10 @@ class CensoredDistribution(tfd.Distribution):
     def _batch_shape_tensor(self):
         return self.base_distribution.batch_shape_tensor()
 
-    def _as_record_value(self, value: Array) -> Array:
+    def _as_base_value(self, value: Array) -> Array:
         if self.dtype is None:
-            value = jnp.asarray(value)
-        else:
-            value = jnp.asarray(value, dtype=self.dtype)
-
-        if value.ndim == 0 or value.shape[-1] != 3:
-            raise ValueError(
-                "Censored records must have trailing event shape (3,), with "
-                "layout [time, lower, upper]."
-            )
-
-        return value
+            return jnp.asarray(value)
+        return jnp.asarray(value, dtype=self.dtype)
 
     def _base_log_cdf(self, value: Array) -> Array:
         try:
@@ -173,6 +153,153 @@ class CensoredDistribution(tfd.Distribution):
         interval_log_prob = jnp.maximum(cdf_diff, survival_diff)
 
         return jnp.where(upper > lower, interval_log_prob, -jnp.inf)
+
+    def _prob(self, value: Array) -> Array:
+        return jnp.exp(self._log_prob(value))
+
+    def _sample_n(self, n: int | Array, seed: KeyArray | None = None) -> Array:
+        raise NotImplementedError(
+            f"{type(self).__name__}.sample is not defined for censoring bounds. "
+            "Use .base_distribution.sample(...) for uncensored event times."
+        )
+
+    def _cdf(self, value: Array) -> Array:
+        raise NotImplementedError(
+            f"{type(self).__name__}.cdf is not defined for censoring records. "
+            "Use .base_distribution.cdf(...) for uncensored event times."
+        )
+
+    def _quantile(self, value: Array) -> Array:
+        raise NotImplementedError(
+            f"{type(self).__name__}.quantile is not defined for censoring records. "
+            "Use .base_distribution.quantile(...) for uncensored event times."
+        )
+
+
+class LeftCensoredDistribution(_BaseCensoringDistribution):
+    """Wrapper for observations known only to satisfy ``T <= upper``."""
+
+    def __init__(
+        self,
+        distribution: Callable[..., tfd.Distribution],
+        validate_args: bool = False,
+        allow_nan_stats: bool = True,
+        name: str = "LeftCensoredDistribution",
+        **distribution_kwargs,
+    ) -> None:
+        super().__init__(
+            distribution=distribution,
+            validate_args=validate_args,
+            allow_nan_stats=allow_nan_stats,
+            name=name,
+            **distribution_kwargs,
+        )
+
+    def _log_prob(self, value: Array) -> Array:
+        return self._base_log_cdf(self._as_base_value(value))
+
+
+class RightCensoredDistribution(_BaseCensoringDistribution):
+    """Wrapper for observations known only to satisfy ``T > lower``."""
+
+    def __init__(
+        self,
+        distribution: Callable[..., tfd.Distribution],
+        validate_args: bool = False,
+        allow_nan_stats: bool = True,
+        name: str = "RightCensoredDistribution",
+        **distribution_kwargs,
+    ) -> None:
+        super().__init__(
+            distribution=distribution,
+            validate_args=validate_args,
+            allow_nan_stats=allow_nan_stats,
+            name=name,
+            **distribution_kwargs,
+        )
+
+    def _log_prob(self, value: Array) -> Array:
+        return self._base_log_survival_function(self._as_base_value(value))
+
+
+class IntervalCensoredDistribution(_BaseCensoringDistribution):
+    """Wrapper for interval observations with event layout ``[lower, upper]``."""
+
+    _event_shape_tuple = (2,)
+
+    def __init__(
+        self,
+        distribution: Callable[..., tfd.Distribution],
+        validate_args: bool = False,
+        allow_nan_stats: bool = True,
+        name: str = "IntervalCensoredDistribution",
+        **distribution_kwargs,
+    ) -> None:
+        super().__init__(
+            distribution=distribution,
+            validate_args=validate_args,
+            allow_nan_stats=allow_nan_stats,
+            name=name,
+            **distribution_kwargs,
+        )
+
+    def _as_interval_value(self, value: Array) -> Array:
+        value = self._as_base_value(value)
+        if value.ndim == 0 or value.shape[-1] != 2:
+            raise ValueError(
+                "Interval-censored observations must have trailing event shape "
+                "(2,), with layout [lower, upper]."
+            )
+        return value
+
+    def _log_prob(self, value: Array) -> Array:
+        value = self._as_interval_value(value)
+        lower = value[..., 0]
+        upper = value[..., 1]
+        return self._interval_log_prob(lower, upper)
+
+
+class CensoredDistribution(_BaseCensoringDistribution):
+    """
+    Generic censoring-record wrapper for scalar-event TFP distributions.
+
+    The wrapped distribution models uncensored event times on its native scale.
+    This wrapper models censoring records with event shape ``(3,)`` and layout
+    ``[time, lower, upper]``:
+
+    - ``[time, nan, nan]`` for uncensored observations.
+    - ``[nan, nan, upper]`` for left-censored observations.
+    - ``[nan, lower, nan]`` for right-censored observations.
+    - ``[nan, lower, upper]`` for interval-censored observations.
+    """
+
+    _event_shape_tuple = (3,)
+
+    def __init__(
+        self,
+        distribution: Callable[..., tfd.Distribution],
+        validate_args: bool = False,
+        allow_nan_stats: bool = True,
+        name: str = "CensoredDistribution",
+        **distribution_kwargs,
+    ) -> None:
+        super().__init__(
+            distribution=distribution,
+            validate_args=validate_args,
+            allow_nan_stats=allow_nan_stats,
+            name=name,
+            **distribution_kwargs,
+        )
+
+    def _as_record_value(self, value: Array) -> Array:
+        value = self._as_base_value(value)
+        if value.ndim == 0 or value.shape[-1] != 3:
+            raise ValueError(
+                "Censored records must have trailing event shape (3,), with "
+                "layout [time, lower, upper]."
+            )
+
+        return value
 
     def log_prob_uncensored(self, value: Array) -> Array:
         """Log probability density/mass of uncensored event times."""
@@ -228,25 +355,10 @@ class CensoredDistribution(tfd.Distribution):
 
         return result
 
-    def _prob(self, value: Array) -> Array:
-        return jnp.exp(self._log_prob(value))
-
     def _sample_n(self, n: int | Array, seed: KeyArray | None = None) -> Array:
         samples = self.base_distribution.sample(n, seed=seed)
         nan = jnp.full_like(samples, jnp.nan)
         return jnp.stack((samples, nan, nan), axis=-1)
-
-    def _cdf(self, value: Array) -> Array:
-        raise NotImplementedError(
-            "CensoredDistribution.cdf is not defined for censoring records. "
-            "Use .base_distribution.cdf(...) for uncensored event times."
-        )
-
-    def _quantile(self, value: Array) -> Array:
-        raise NotImplementedError(
-            "CensoredDistribution.quantile is not defined for censoring records. "
-            "Use .base_distribution.quantile(...) for uncensored event times."
-        )
 
 
 class CensoredPTMDist(lsl.Dist):
@@ -293,4 +405,127 @@ class CensoredPTMDist(lsl.Dist):
             integration_bounds=integration_bounds,
         )
 
+        super().__init__(partial_dist_class, loc=loc, scale=scale, coef=shape, **kwargs)
+
+
+def _ptm_censoring_dist_class(
+    censoring_distribution: Callable[..., tfd.Distribution],
+    knots: Array,
+    centered: bool,
+    scaled: bool,
+    trafo_target_slope: Literal["continue_linearly", "identity"],
+    trafo_lambda: float | None,
+    gauss_legendre_order: int,
+    integration_bounds: tuple[float, float] | None,
+) -> Callable[..., tfd.Distribution]:
+    if trafo_target_slope not in ("continue_linearly", "identity"):
+        raise ValueError(
+            "trafo_target_slope must be either 'continue_linearly' or 'identity'."
+        )
+
+    eps = 0.1 if trafo_lambda is None else float(trafo_lambda)
+    bspline = PTMSpline(
+        knots=knots,
+        eps=eps,
+        continue_linearly=trafo_target_slope == "continue_linearly",
+    )
+
+    return partial(
+        censoring_distribution,
+        distribution=LocScaleTransformationDist,
+        bspline=bspline,
+        centered=centered,
+        scaled=scaled,
+        gauss_legendre_order=gauss_legendre_order,
+        integration_bounds=integration_bounds,
+    )
+
+
+class LeftCensoredPTMDist(lsl.Dist):
+    """Liesel helper for PTM observations known to satisfy ``T <= upper``."""
+
+    def __init__(
+        self,
+        knots: Array,
+        loc: lsl.Var,
+        scale: lsl.Var,
+        shape: lsl.Var,
+        centered: bool = False,
+        scaled: bool = False,
+        trafo_target_slope: Literal["continue_linearly", "identity"] = "identity",
+        trafo_lambda: float | None = None,
+        gauss_legendre_order: int = 8,
+        integration_bounds: tuple[float, float] | None = None,
+        **kwargs,
+    ) -> None:
+        partial_dist_class = _ptm_censoring_dist_class(
+            LeftCensoredDistribution,
+            knots,
+            centered,
+            scaled,
+            trafo_target_slope,
+            trafo_lambda,
+            gauss_legendre_order,
+            integration_bounds,
+        )
+        super().__init__(partial_dist_class, loc=loc, scale=scale, coef=shape, **kwargs)
+
+
+class RightCensoredPTMDist(lsl.Dist):
+    """Liesel helper for PTM observations known to satisfy ``T > lower``."""
+
+    def __init__(
+        self,
+        knots: Array,
+        loc: lsl.Var,
+        scale: lsl.Var,
+        shape: lsl.Var,
+        centered: bool = False,
+        scaled: bool = False,
+        trafo_target_slope: Literal["continue_linearly", "identity"] = "identity",
+        trafo_lambda: float | None = None,
+        gauss_legendre_order: int = 8,
+        integration_bounds: tuple[float, float] | None = None,
+        **kwargs,
+    ) -> None:
+        partial_dist_class = _ptm_censoring_dist_class(
+            RightCensoredDistribution,
+            knots,
+            centered,
+            scaled,
+            trafo_target_slope,
+            trafo_lambda,
+            gauss_legendre_order,
+            integration_bounds,
+        )
+        super().__init__(partial_dist_class, loc=loc, scale=scale, coef=shape, **kwargs)
+
+
+class IntervalCensoredPTMDist(lsl.Dist):
+    """Liesel helper for PTM interval observations ``[lower, upper]``."""
+
+    def __init__(
+        self,
+        knots: Array,
+        loc: lsl.Var,
+        scale: lsl.Var,
+        shape: lsl.Var,
+        centered: bool = False,
+        scaled: bool = False,
+        trafo_target_slope: Literal["continue_linearly", "identity"] = "identity",
+        trafo_lambda: float | None = None,
+        gauss_legendre_order: int = 8,
+        integration_bounds: tuple[float, float] | None = None,
+        **kwargs,
+    ) -> None:
+        partial_dist_class = _ptm_censoring_dist_class(
+            IntervalCensoredDistribution,
+            knots,
+            centered,
+            scaled,
+            trafo_target_slope,
+            trafo_lambda,
+            gauss_legendre_order,
+            integration_bounds,
+        )
         super().__init__(partial_dist_class, loc=loc, scale=scale, coef=shape, **kwargs)

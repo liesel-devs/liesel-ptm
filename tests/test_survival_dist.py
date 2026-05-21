@@ -9,6 +9,12 @@ from liesel_ptm.dist import LocScaleTransformationDist
 from liesel_ptm.survival_dist import (
     CensoredDistribution,
     CensoredPTMDist,
+    IntervalCensoredDistribution,
+    IntervalCensoredPTMDist,
+    LeftCensoredDistribution,
+    LeftCensoredPTMDist,
+    RightCensoredDistribution,
+    RightCensoredPTMDist,
     interval_censored,
     left_censored,
     right_censored,
@@ -18,6 +24,42 @@ from liesel_ptm.survival_dist import (
 
 def assert_no_nan(value):
     assert not jnp.any(jnp.isnan(value))
+
+
+class BranchSentinelDistribution(tfd.Distribution):
+    def __init__(self, validate_args=False, allow_nan_stats=True, name="sentinel"):
+        super().__init__(
+            dtype=jnp.float32,
+            reparameterization_type=tfd.FULLY_REPARAMETERIZED,
+            validate_args=validate_args,
+            allow_nan_stats=allow_nan_stats,
+            parameters=dict(locals()),
+            name=name,
+        )
+
+    def _event_shape(self):
+        return ()
+
+    def _event_shape_tensor(self):
+        return jnp.array([], dtype=jnp.int32)
+
+    def _batch_shape(self):
+        return ()
+
+    def _batch_shape_tensor(self):
+        return jnp.array([], dtype=jnp.int32)
+
+    def _log_prob(self, value):
+        raise AssertionError("log_prob branch should not be evaluated")
+
+    def _log_cdf(self, value):
+        return -jax.nn.softplus(-value)
+
+    def _log_survival_function(self, value):
+        return -jax.nn.softplus(value)
+
+    def _sample_n(self, n, seed=None):
+        return jnp.zeros((n,), dtype=jnp.float32)
 
 
 class TestCensoredDistributionApi:
@@ -73,6 +115,30 @@ class TestCensoredDistributionApi:
 
         with pytest.raises(NotImplementedError, match="base_distribution"):
             dist.quantile(0.5)
+
+    def test_specialized_distribution_shapes(self):
+        left = LeftCensoredDistribution(
+            tfd.Normal, loc=jnp.zeros((2,)), scale=jnp.ones((2,))
+        )
+        right = RightCensoredDistribution(
+            tfd.Normal, loc=jnp.zeros((2,)), scale=jnp.ones((2,))
+        )
+        interval = IntervalCensoredDistribution(
+            tfd.Normal, loc=jnp.zeros((2,)), scale=jnp.ones((2,))
+        )
+
+        assert left.event_shape == ()
+        assert right.event_shape == ()
+        assert interval.event_shape == (2,)
+        assert left.batch_shape == (2,)
+        assert right.batch_shape == (2,)
+        assert interval.batch_shape == (2,)
+
+    def test_specialized_sample_is_not_defined_for_bounds(self):
+        dist = RightCensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
+
+        with pytest.raises(NotImplementedError, match="base_distribution"):
+            dist.sample(seed=jax.random.key(1))
 
 
 class TestCensoredDistributionCorrectness:
@@ -166,6 +232,30 @@ class TestCensoredDistributionCorrectness:
             dist.log_prob(right_censored(value)), base.log_survival_function(value)
         )
 
+    def test_specialized_distributions_match_base_formulas(self):
+        base = tfd.Normal(loc=0.0, scale=1.0)
+        left = LeftCensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
+        right = RightCensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
+        interval = IntervalCensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
+        value = jnp.array([-1.0, 0.0, 1.0])
+        interval_value = jnp.stack((value - 0.5, value + 0.5), axis=-1)
+
+        assert jnp.allclose(left.log_prob(value), base.log_cdf(value))
+        assert jnp.allclose(right.log_prob(value), base.log_survival_function(value))
+        assert jnp.allclose(
+            interval.log_prob(interval_value),
+            jnp.log(base.cdf(value + 0.5) - base.cdf(value - 0.5)),
+        )
+
+    def test_specialized_distributions_do_not_evaluate_uncensored_branch(self):
+        left = LeftCensoredDistribution(BranchSentinelDistribution)
+        right = RightCensoredDistribution(BranchSentinelDistribution)
+        interval = IntervalCensoredDistribution(BranchSentinelDistribution)
+
+        assert jnp.isfinite(left.log_prob(0.0))
+        assert jnp.isfinite(right.log_prob(0.0))
+        assert jnp.isfinite(interval.log_prob(jnp.array([-1.0, 1.0])))
+
 
 class TestCensoredDistributionJaxCompatibility:
     def test_jit_mixed_log_prob(self):
@@ -231,6 +321,17 @@ class TestCensoredDistributionJaxCompatibility:
         assert grad.shape == coef.shape
         assert jnp.all(jnp.isfinite(grad))
 
+    def test_jit_and_grad_specialized_right_censoring(self):
+        values = jnp.array([-1.0, 0.0, 1.0])
+
+        def objective(loc):
+            dist = RightCensoredDistribution(tfd.Normal, loc=loc, scale=1.0)
+            return jnp.sum(jax.jit(dist.log_prob)(values))
+
+        grad = jax.grad(objective)(jnp.array(0.0))
+
+        assert jnp.isfinite(grad)
+
 
 class TestCensoredDistributionNumericalStability:
     def test_extreme_one_sided_censoring_has_no_nan(self):
@@ -288,3 +389,29 @@ class TestCensoredPTMDist:
         assert isinstance(dist, CensoredDistribution)
         assert isinstance(dist.base_distribution, LocScaleTransformationDist)
         assert dist.log_prob(uncensored(0.0)).shape == ()
+
+    def test_specialized_liesel_helpers_build_expected_wrappers(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=10)
+        coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        loc = lsl.Var.new_param(0.0, name="loc")
+        scale = lsl.Var.new_param(1.0, name="scale")
+        shape = lsl.Var.new_param(coef, name="shape")
+        helpers = (
+            (LeftCensoredPTMDist, LeftCensoredDistribution, 0.0),
+            (RightCensoredPTMDist, RightCensoredDistribution, 0.0),
+            (IntervalCensoredPTMDist, IntervalCensoredDistribution, jnp.array([-1.0, 1.0])),
+        )
+
+        for helper, expected_type, value in helpers:
+            dist_node = helper(
+                knots=knots.knots,
+                loc=loc,
+                scale=scale,
+                shape=shape,
+                gauss_legendre_order=4,
+            )
+            dist = dist_node.init_dist()
+
+            assert isinstance(dist, expected_type)
+            assert isinstance(dist.base_distribution, LocScaleTransformationDist)
+            assert dist.log_prob(value).shape == ()
