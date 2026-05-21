@@ -9,6 +9,40 @@ coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
 bs = OnionSpline(knots.knots)
 
 
+class TestLowLevelContraction:
+    def test_shared_unbatched_basis_with_batched_shared_coef(self):
+        x = jnp.linspace(-2.0, 2.0, 5)
+        raw_coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        constrained_coef = bs.compute_coef(raw_coef)
+
+        fx, fxd = bs.bspline.dot_and_deriv_n(x, constrained_coef)
+
+        assert fx.shape == (2, 5)
+        assert fxd.shape == (2, 5)
+        assert jnp.all(jnp.isfinite(fx))
+        assert jnp.all(jnp.isfinite(fxd))
+
+    def test_rowwise_unbatched_basis_with_batched_rowwise_coef(self):
+        x = jnp.linspace(-2.0, 2.0, 5)
+        raw_coef = jax.random.normal(jax.random.key(2), (2, 5, knots.nparam))
+        constrained_coef = bs.compute_coef(raw_coef)
+
+        fx, fxd = bs.bspline.dot_and_deriv_n(x, constrained_coef)
+
+        assert fx.shape == (2, 5)
+        assert fxd.shape == (2, 5)
+        assert jnp.all(jnp.isfinite(fx))
+        assert jnp.all(jnp.isfinite(fxd))
+
+    def test_mismatched_rowwise_coef_axis_raises(self):
+        x = jnp.linspace(-2.0, 2.0, 5)
+        raw_coef = jax.random.normal(jax.random.key(3), (2, 4, knots.nparam))
+        constrained_coef = bs.compute_coef(raw_coef)
+
+        with pytest.raises(ValueError, match="n_coef"):
+            bs.bspline.dot_and_deriv_n(x, constrained_coef)
+
+
 class TestDotAndDeriv:
     def test_scalar_x(self):
         fx, fxd = bs.dot_and_deriv(1.0, coef)
@@ -32,7 +66,7 @@ class TestDotAndDeriv:
 
     def test_rowwise_coef_requires_matching_observation_axis(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
-        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        bs = OnionSpline(knots.knots)
         coef = jax.random.normal(jax.random.key(1), (4, knots.nparam))
 
         with pytest.raises(ValueError, match="n_coef"):
@@ -40,6 +74,19 @@ class TestDotAndDeriv:
 
         with pytest.raises(ValueError, match="n_coef"):
             bs.dot_inverse(jnp.zeros((3,)), coef)
+
+    def test_subscripts_argument_is_accepted_as_compatibility_noop(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs_default = OnionSpline(knots.knots)
+        bs_compat = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        x = jnp.linspace(-2.0, 2.0, 5)
+        coef = jax.random.normal(jax.random.key(2), (5, knots.nparam))
+
+        fx_default, fxd_default = bs_default.dot_and_deriv(x, coef)
+        fx_compat, fxd_compat = bs_compat.dot_and_deriv(x, coef)
+
+        assert jnp.allclose(fx_default, fx_compat)
+        assert jnp.allclose(fxd_default, fxd_compat)
 
     def test_vector_x(self):
         x = jnp.linspace(-8.0, 8.0, 300)
@@ -374,7 +421,7 @@ class TestDotAndDerivNFullBatch:
         knots = OnionKnots(-4.0, 4.0, nparam=11)
         k1 = jax.random.key(1)
         k1, k2 = jax.random.split(k1)
-        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        bs = OnionSpline(knots.knots)
 
         n = 17
 
@@ -404,7 +451,7 @@ class TestDotAndDerivNFullBatch:
         knots = OnionKnots(-4.0, 4.0, nparam=11)
         k1 = jax.random.key(1)
         k1, k2 = jax.random.split(k1)
-        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        bs = OnionSpline(knots.knots)
 
         n = 17
 
@@ -430,7 +477,7 @@ class TestDotAndDerivNFullBatch:
 class TestPublicMethodEquivalence:
     def test_forward_methods_agree_rowwise(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
-        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        bs = OnionSpline(knots.knots)
         n = 5
         x = jnp.linspace(-2.0, 2.0, n)
         coef = jax.random.normal(jax.random.key(2), (n, knots.nparam))
@@ -446,7 +493,7 @@ class TestPublicMethodEquivalence:
 
     def test_inverse_methods_agree_rowwise(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
-        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        bs = OnionSpline(knots.knots)
         n = 5
         x = jnp.linspace(-2.0, 2.0, n)
         coef = jax.random.normal(jax.random.key(2), (n, knots.nparam))
@@ -463,7 +510,7 @@ class TestPublicMethodEquivalence:
 
     def test_jvp_through_rowwise_forward(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
-        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        bs = OnionSpline(knots.knots)
         n = 5
         x = jnp.linspace(-2.0, 2.0, n)
         coef = jax.random.normal(jax.random.key(2), (n, knots.nparam))
@@ -477,6 +524,37 @@ class TestPublicMethodEquivalence:
         assert jnp.isfinite(primal)
         assert jnp.isfinite(tangent)
 
+    def test_grad_through_shared_coef_forward(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots)
+        x = jnp.linspace(-2.0, 2.0, 5)
+        coef = jax.random.normal(jax.random.key(2), (3, 1, knots.nparam))
+
+        def fn(raw_coef):
+            fx, fxd = bs.dot_and_deriv(x, raw_coef)
+            return jnp.sum(fx + 0.01 * fxd)
+
+        grad = jax.grad(fn)(coef)
+
+        assert grad.shape == coef.shape
+        assert jnp.all(jnp.isfinite(grad))
+
+    def test_grad_through_rowwise_coef_forward(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots)
+        n = 5
+        x = jnp.linspace(-2.0, 2.0, n)
+        coef = jax.random.normal(jax.random.key(2), (n, knots.nparam))
+
+        def fn(raw_coef):
+            fx, fxd = bs.dot_and_deriv(x, raw_coef)
+            return jnp.sum(fx + 0.01 * fxd)
+
+        grad = jax.grad(fn)(coef)
+
+        assert grad.shape == coef.shape
+        assert jnp.all(jnp.isfinite(grad))
+
 
 class TestTfpLayout:
     def _assert_tfp_roundtrip(
@@ -487,7 +565,7 @@ class TestTfpLayout:
         batch_shape=None,
     ):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
-        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        bs = OnionSpline(knots.knots)
 
         fx, fxd = bs.dot_and_deriv_tfp(value, coef, batch_shape=batch_shape)
 

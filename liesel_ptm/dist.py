@@ -12,7 +12,7 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 from tensorflow_probability.python.internal import reparameterization
 from tensorflow_probability.substrates.jax import tf2jax as tf
 
-from .bspline import OnionSpline, PTMSpline
+from .bspline import OnionKnots, OnionSpline, PTMSpline
 
 KeyArray = Any
 Array = Any
@@ -144,6 +144,33 @@ def _identity_moment_quadrature_diagnostic(dtype: Any) -> dict[str, Array]:
         "variance_rel_error": zero,
         "ok": jnp.asarray(True),
     }
+
+
+def onion_dist(
+    a: float = -4.0,
+    b: float = 4.0,
+    nparam: int = 20,
+    *,
+    knots: Array | OnionKnots | None = None,
+    order: int = 3,
+    loc_scale: bool = True,
+    **kwargs,
+) -> Callable[..., "TransformationDist"]:
+    """
+    Return a reusable constructor for an OnionSpline transformation distribution.
+
+    The OnionSpline is instantiated once in this factory and then reused by each
+    distribution created by the returned constructor.
+    """
+    if knots is None:
+        knots = OnionKnots(a, b, nparam=nparam, order=order).knots
+    elif isinstance(knots, OnionKnots):
+        knots = knots.knots
+
+    bspline = OnionSpline(knots)
+    dist_class = LocScaleTransformationDist if loc_scale else TransformationDist
+
+    return partial(dist_class, bspline=bspline, **kwargs)
 
 
 class TransformationDist(tfd.Distribution):
@@ -382,13 +409,9 @@ class TransformationDist(tfd.Distribution):
         return self.inverse_transformation_spline(z)
 
     def _event_shape(self):
-        # if self.rowwise_dot:
-        #     return tf.TensorShape([self.coef.shape[-2]])
         return tf.TensorShape([])
 
     def _event_shape_tensor(self):
-        # if self.rowwise_dot:
-        #     return jnp.array([self.coef.shape[-2]], dtype=jnp.int32)
         return jnp.array([], dtype=jnp.int32)
 
     def _batch_shape(self):

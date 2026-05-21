@@ -56,6 +56,7 @@ class TransformationSpline:
             :class:`.BSplineApprox` instance for basis operations.
         """
         self.n_chunks = 1024
+        self.supports_rowwise_coef = False
         self.knots = knots
         self._knots_np = np.asarray(jax.device_get(knots), dtype=float)
 
@@ -182,23 +183,15 @@ class TransformationSpline:
         )
         return jnp.transpose(value, axes)
 
-    def _is_rowwise_spline(self) -> bool:
-        return self.bspline.subscripts == "...nj,...nj->...n"
+    def _coef_uses_rowwise_eval(self, coef: Array) -> bool:
+        return jnp.shape(coef)[-2] > 1
 
     def _coef_for_eval(self, x: Array, coef: Array) -> Array:
         n_eval = 1 if jnp.ndim(x) == 0 else jnp.shape(x)[-1]
         n_coef = jnp.shape(coef)[-2]
 
         if n_coef == 1:
-            shared_coef = coef[..., 0, :]
-
-            if self._is_rowwise_spline():
-                return jnp.broadcast_to(
-                    jnp.expand_dims(shared_coef, -2),
-                    jnp.shape(shared_coef)[:-1] + (n_eval, jnp.shape(shared_coef)[-1]),
-                )
-
-            return shared_coef
+            return coef
 
         if n_coef != n_eval:
             raise ValueError(
@@ -206,10 +199,10 @@ class TransformationSpline:
                 f"axis length. Got {n_coef=} and {n_eval=}."
             )
 
-        if not self._is_rowwise_spline():
+        if not self.supports_rowwise_coef:
             raise ValueError(
-                "Spline coefficients with n_coef > 1 require a rowwise spline "
-                "with subscripts='...nj,...nj->...n'."
+                "Spline coefficients with n_coef > 1 require a spline that "
+                "supports rowwise coefficients."
             )
 
         return coef
@@ -274,10 +267,10 @@ class TransformationSpline:
                     f"axis length. Got {n_coef=} and {n=}."
                 )
 
-            if not self._is_rowwise_spline():
+            if not self.supports_rowwise_coef:
                 raise ValueError(
-                    "Spline coefficients with n_coef > 1 require a rowwise spline "
-                    "with subscripts='...nj,...nj->...n'."
+                    "Spline coefficients with n_coef > 1 require a spline that "
+                    "supports rowwise coefficients."
                 )
 
         value_flat = jnp.reshape(value, (B, n))
@@ -373,7 +366,7 @@ class TransformationSpline:
             value, batch_shape
         )
 
-        if self._is_rowwise_spline():
+        if self._coef_uses_rowwise_eval(coef):
             return self.dot_and_deriv_n_fullbatch(value, coef)
 
         value = self._tfp_to_legacy_batch_last(
@@ -407,7 +400,7 @@ class TransformationSpline:
             value, batch_shape
         )
 
-        if self._is_rowwise_spline():
+        if self._coef_uses_rowwise_eval(coef):
             return self.dot_inverse_n_fullbatch(value, coef)
 
         value = self._tfp_to_legacy_batch_last(

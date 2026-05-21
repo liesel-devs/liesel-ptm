@@ -92,6 +92,60 @@ class TestPiecewiseGaussLegendreIntegration:
         assert jnp.isfinite(outer_dist.stddev())
 
 
+class TestOnionDistFactory:
+    def test_loc_scale_factory_builds_and_reuses_spline(self):
+        Dist = ptm.onion_dist(
+            a=-4.0,
+            b=4.0,
+            nparam=11,
+            centered=True,
+            scaled=True,
+            gauss_legendre_order=4,
+        )
+        bspline = Dist.keywords["bspline"]
+        coef = jax.random.normal(jax.random.key(1), (1, 11))
+
+        dist1 = Dist(coef=coef, loc=0.0, scale=1.0)
+        dist2 = Dist(coef=coef, loc=1.0, scale=2.0)
+
+        assert isinstance(bspline, OnionSpline)
+        assert isinstance(dist1, ptm.LocScaleTransformationDist)
+        assert dist1.bspline is bspline
+        assert dist2.bspline is bspline
+        assert dist1.centered
+        assert dist1.scaled
+        assert dist1.gauss_legendre_order == 4
+        assert dist1.log_prob(0.0).shape == ()
+        assert jnp.isfinite(dist1.log_prob(0.0))
+
+    def test_factory_can_build_base_transformation_dist_with_custom_knots(self):
+        onion_knots = OnionKnots(-3.0, 3.0, nparam=11)
+        Dist = ptm.onion_dist(
+            knots=onion_knots,
+            loc_scale=False,
+            parametric_distribution=tfd.Exponential,
+        )
+        coef = jax.random.normal(jax.random.key(2), (1, onion_knots.nparam))
+        dist = Dist(coef=coef, rate=jnp.array([1.0, 2.0]))
+
+        assert isinstance(dist, ptm.TransformationDist)
+        assert not isinstance(dist, ptm.LocScaleTransformationDist)
+        assert dist.bspline is Dist.keywords["bspline"]
+        assert jnp.allclose(dist.bspline.knots, onion_knots.knots)
+        assert dist.log_prob(jnp.ones((5, 1))).shape == (5, 2)
+
+    def test_factory_supports_rowwise_onion_batching(self):
+        n = 7
+        Dist = ptm.onion_dist(a=-4.0, b=4.0, nparam=11, gauss_legendre_order=4)
+        coef = jax.random.normal(jax.random.key(3), (n, 11))
+        dist = Dist(coef=coef, loc=0.0, scale=1.0)
+
+        assert dist.bspline is Dist.keywords["bspline"]
+        assert dist.batch_shape == (n,)
+        assert dist.log_prob(jnp.ones((5, 1))).shape == (5, n)
+        assert dist.sample(2, seed=jax.random.key(1)).shape == (2, n)
+
+
 class TestBaseTransformationDist:
     def test_base_distribution_without_parametric_layer(self):
         coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
@@ -538,9 +592,24 @@ class TestPseudoDistributions:
 
 
 class TestDistGPTM:
+    def test_shared_onion_batching_matches_tfp_layout(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots)
+        b = 3
+        coef = jax.random.normal(jax.random.key(1), (b, 1, knots.nparam))
+        dist = ptm.LocScaleTransformationDist(
+            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=False
+        )
+
+        assert dist.batch_shape == (b,)
+        assert dist.log_prob(1.0).shape == (b,)
+        assert dist.log_prob(jnp.ones((5, 1))).shape == (5, b)
+        assert dist.quantile(jnp.full((5, 1), fill_value=0.1)).shape == (5, b)
+        assert dist.sample(2, seed=jax.random.key(1)).shape == (2, b)
+
     def test_rowwise_batching_matches_tfp_layout(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
-        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        bs = OnionSpline(knots.knots)
         n = 17
         k = jax.random.key(1)
 
@@ -573,7 +642,7 @@ class TestDistGPTM:
 
     def test_rowwise_cdf_quantile_roundtrip(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
-        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        bs = OnionSpline(knots.knots)
         n = 7
         b = 3
         coef = jax.random.normal(jax.random.key(1), (b, n, knots.nparam))

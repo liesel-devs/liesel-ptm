@@ -318,6 +318,7 @@ class PTMSpline(TransformationSpline):
             raise ValueError(f"{eps=} is < 1e-6; that is numerically unstable.")
 
         self.n_chunks = 1024
+        self.supports_rowwise_coef = False
         self.knots = knots
         self._knots_np = np.asarray(jax.device_get(knots), dtype=float)
 

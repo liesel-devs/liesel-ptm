@@ -2,6 +2,7 @@ from .bspline import LogIncKnots as LogIncKnots
 from .bspline import PTMKnots as PTMKnots
 from .dist import LocScaleTransformationDist as LocScaleTransformationDist
 from .dist import TransformationDist as TransformationDist
+from .dist import onion_dist as onion_dist
 from .gam import plot_term as plot_term
 from .gam.var import lin as lin
 from .gam.var import ps as ps

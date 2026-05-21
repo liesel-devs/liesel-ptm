@@ -391,10 +391,30 @@ class BSplineApprox:
         self.basis_deriv_grid = basis_grids[1]
         self.basis_deriv2_grid = basis_grids[2]
 
-        self.subscripts = subscripts
-
         self._dot_fn = self._get_dot_fn()
         self._dot_and_deriv_fn = self._get_dot_and_deriv_fn()
+
+    @staticmethod
+    def _contract_basis_coef(basis: Array, coef: Array) -> Array:
+        if jnp.ndim(coef) < 2:
+            raise ValueError(
+                "Spline coefficients must have shape (..., n_coef, n_param). "
+                "Use shape (1, n_param) for shared coefficients."
+            )
+
+        n_eval = jnp.shape(basis)[-2]
+        n_coef = jnp.shape(coef)[-2]
+
+        if n_coef == 1:
+            return jnp.einsum("...nj,...j->...n", basis, coef[..., 0, :])
+
+        if n_coef != n_eval:
+            raise ValueError(
+                "Spline coefficients with n_coef > 1 must match the evaluation "
+                f"axis length. Got {n_coef=} and {n_eval=}."
+            )
+
+        return jnp.einsum("...nj,...nj->...n", basis, coef)
 
     def _compute_basis(self, x: Array) -> jax.Array:
         return bspline_basis(x, self.knots, self.order) @ self.postmultiply_by
@@ -464,7 +484,7 @@ class BSplineApprox:
             coef: Array,
         ) -> Array:
             basis = self.get_basis(x)
-            smooth = jnp.einsum(self.subscripts, basis, coef)
+            smooth = self._contract_basis_coef(basis, coef)
             return smooth
 
         @_dot.defjvp
@@ -473,10 +493,11 @@ class BSplineApprox:
             x_dot, coef_dot = tangents
 
             basis, basis_deriv = self.get_basis_and_deriv(x)
-            smooth = jnp.einsum(self.subscripts, basis, coef)
+            smooth = self._contract_basis_coef(basis, coef)
+            smooth_deriv = self._contract_basis_coef(basis_deriv, coef)
 
-            tangent_x = (basis_deriv * coef) * x_dot
-            tangent_coef = jnp.einsum(self.subscripts, basis, coef_dot)
+            tangent_x = smooth_deriv * x_dot
+            tangent_coef = self._contract_basis_coef(basis, coef_dot)
 
             tangent = tangent_x + tangent_coef
 
@@ -493,13 +514,13 @@ class BSplineApprox:
             coef: Array,
         ) -> tuple[Array, Array]:
             """
-            Assumes x is (,)
-            And coef is (p,)
+            Assumes x has shape ``(..., n)`` and coef has shape
+            ``(..., n_coef, p)``.
             """
-            basis, basis_deriv = self.get_basis_and_deriv(x)  # (p,) and (p,) shapes
-            smooth = jnp.einsum(self.subscripts, basis, coef)
-            smooth_deriv = jnp.einsum(self.subscripts, basis_deriv, coef)
-            return smooth, smooth_deriv  # (,) and (,) shapes
+            basis, basis_deriv = self.get_basis_and_deriv(x)
+            smooth = self._contract_basis_coef(basis, coef)
+            smooth_deriv = self._contract_basis_coef(basis_deriv, coef)
+            return smooth, smooth_deriv
 
         @_dot_and_deriv.defjvp
         def _dot_and_deriv_jvp(primals, tangents):
@@ -507,18 +528,18 @@ class BSplineApprox:
             x_dot, coef_dot = tangents
 
             basis, basis_deriv, basis_deriv2 = self.get_basis_and_deriv2(x)
-            smooth = jnp.einsum(self.subscripts, basis, coef)
-            smooth_deriv = jnp.einsum(self.subscripts, basis_deriv, coef)
-            smooth_deriv2 = jnp.einsum(self.subscripts, basis_deriv2, coef)
+            smooth = self._contract_basis_coef(basis, coef)
+            smooth_deriv = self._contract_basis_coef(basis_deriv, coef)
+            smooth_deriv2 = self._contract_basis_coef(basis_deriv2, coef)
 
             primal_out = (smooth, smooth_deriv)
 
             tangent_bdot_x = smooth_deriv * x_dot
-            tangent_bdot_coef = jnp.einsum(self.subscripts, basis, coef_dot)
+            tangent_bdot_coef = self._contract_basis_coef(basis, coef_dot)
             tangent_bdot = tangent_bdot_x + tangent_bdot_coef
 
             tangent_deriv_x = smooth_deriv2 * x_dot
-            tangent_deriv_coef = jnp.einsum(self.subscripts, basis_deriv, coef_dot)
+            tangent_deriv_coef = self._contract_basis_coef(basis_deriv, coef_dot)
             tangent_deriv = tangent_deriv_x + tangent_deriv_coef
 
             tangent_out = (tangent_bdot, tangent_deriv)

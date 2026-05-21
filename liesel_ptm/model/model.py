@@ -95,7 +95,7 @@ class PTMDist(lsl.Dist):
         centered: bool = False,
         scaled: bool = False,
         trafo_lambda: float = 0.1,
-        bspline: Literal["ptm", "onion", "identity", "onion_nj"] = "ptm",
+        bspline: Literal["ptm", "ptm_nj", "onion", "identity", "onion_nj"] = "ptm",
         trafo_target_slope: Literal["identity", "continue_linearly"] = "identity",
         **kwargs,
     ) -> None:
@@ -113,30 +113,12 @@ class PTMDist(lsl.Dist):
                     scaled=scaled,
                 )
             case "ptm_nj":
-                continue_linearly = trafo_target_slope == "continue_linearly"
-                bspline_inst = PTMSpline(
-                    knots=knots,
-                    eps=trafo_lambda,
-                    continue_linearly=continue_linearly,
-                    subscripts="...nj,...nj->...n",
+                raise ValueError(
+                    "bspline='ptm_nj' is not supported. Use bspline='ptm' with "
+                    "shared coefficients or bspline='onion' for rowwise coefficients."
                 )
-
-                partial_dist_class = partial(
-                    LocScaleTransformationDist,
-                    bspline=bspline_inst,
-                    centered=centered,
-                    scaled=scaled,
-                )
-            case "onion":
+            case "onion" | "onion_nj":
                 bspline_inst = OnionSpline(knots)
-                partial_dist_class = partial(
-                    LocScaleTransformationDist,
-                    bspline=bspline_inst,
-                    centered=centered,
-                    scaled=scaled,
-                )
-            case "onion_nj":
-                bspline_inst = OnionSpline(knots, subscripts="...nj,...nj->...n")
                 partial_dist_class = partial(
                     LocScaleTransformationDist,
                     bspline=bspline_inst,
@@ -312,7 +294,7 @@ class LocScalePTM:
         scaled: bool = False,
         trafo_lambda: float = 0.1,
         trafo_target_slope: Literal["identity", "continue_linearly"] = "identity",
-        bspline: Literal["ptm", "onion", "identity"] = "ptm",
+        bspline: Literal["ptm", "ptm_nj", "onion", "identity", "onion_nj"] = "ptm",
         to_float32: bool = True,
     ) -> None:
         response_name: str = "response"

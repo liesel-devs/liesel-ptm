@@ -134,6 +134,7 @@ class OnionSpline(TransformationSpline):
             Array of spline knots.
         """
         super().__init__(knots, subscripts=subscripts)
+        self.supports_rowwise_coef = True
         self._compute_coef = jax.jit(get_onion_fn(knots))  # type: ignore
 
     def _evaluate_spline(self, x: Array, coef: Array) -> tuple[Array, Array]:
