@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import operator
 from collections.abc import Callable
 from functools import cache, partial
 from typing import Any
@@ -14,6 +15,20 @@ from .bspline import OnionSpline, PTMSpline
 
 KeyArray = Any
 Array = Any
+
+
+def _validate_simpson_integration_n(n: int) -> int:
+    try:
+        n = operator.index(n)
+    except TypeError as err:
+        raise TypeError(
+            "simpson_integration_n must be a positive even integer."
+        ) from err
+
+    if n <= 0 or n % 2:
+        raise ValueError("simpson_integration_n must be a positive even integer.")
+
+    return n
 
 
 def _as_unused_pseudo_coef(coef: Array) -> Array:
@@ -86,6 +101,9 @@ class TransformationDist(tfd.Distribution):
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
+    simpson_integration_n
+        Number of Simpson intervals used for spline moments. Must be positive \
+        and even.
     **parametric_distribution_kwargs
         Additional keyword arguments passed to the parametric distribution.
 
@@ -119,8 +137,14 @@ class TransformationDist(tfd.Distribution):
         centered: bool = False,
         scaled: bool = False,
         batched: bool = True,
+        simpson_integration_n: int = 32,
         **parametric_distribution_kwargs,
     ):
+        coef = jnp.asarray(coef)
+        if not jnp.issubdtype(coef.dtype, jnp.floating):
+            raise TypeError("Spline coefficients must have a floating-point dtype.")
+
+        simpson_integration_n = _validate_simpson_integration_n(simpson_integration_n)
         parameters = dict(locals())
 
         self.coef = coef
@@ -152,7 +176,7 @@ class TransformationDist(tfd.Distribution):
 
         self.batched = batched
 
-        self.simpson_integration_n = 32
+        self.simpson_integration_n = simpson_integration_n
 
         super().__init__(
             dtype=coef.dtype,
@@ -231,7 +255,9 @@ class TransformationDist(tfd.Distribution):
         shape = (n,) + self._batch_shape_tuple()
         # ensure 0 will be > 0 to avoid numerical instability
         eps = jnp.finfo(jnp.dtype(self.coef)).eps
-        u = jax.random.uniform(seed, shape=shape, minval=eps)  # type: ignore
+        u = jax.random.uniform(  # type: ignore
+            seed, shape=shape, minval=eps, maxval=1.0 - eps
+        )
 
         return self._quantile(u)
 
@@ -379,6 +405,20 @@ class TransformationDist(tfd.Distribution):
         deriv = jnp.clip(deriv, min=tiny)  # safeguard against numerical issues
         return transf, jnp.log(deriv)
 
+    def _spline_center_scale(self) -> tuple[Array, Array]:
+        if self.centered:
+            ymean = self.transformation_spline_mean()
+        else:
+            ymean = jnp.array(0.0, dtype=self.dtype)
+
+        if self.scaled:
+            mean_for_variance = ymean if self.centered else None
+            ystd = jnp.sqrt(self.transformation_spline_variance(mean_for_variance))
+        else:
+            ystd = jnp.array(1.0, dtype=self.dtype)
+
+        return ymean, ystd
+
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         """
         Apply spline transformation with centering/scaling and compute logdet.
@@ -392,20 +432,7 @@ class TransformationDist(tfd.Distribution):
         -------
             A pair of transformed values and the corresponding log determinant.
         """
-        if self.centered:
-            ymean = self.transformation_spline_mean()  # intercept / expected val.
-        else:
-            ymean = jnp.array(0.0)
-
-        if self.scaled and not self.centered:
-            _ymean = self.transformation_spline_mean()  # intercept / expected val.
-            # ystd = jnp.sqrt(self.transformation_spline_variance(_ymean))
-            ystd = jnp.sqrt(self.transformation_spline_variance())
-        elif self.scaled and self.centered:
-            # ystd = jnp.sqrt(self.transformation_spline_variance(ymean))
-            ystd = jnp.sqrt(self.transformation_spline_variance())
-        else:
-            ystd = jnp.array(1.0)
+        ymean, ystd = self._spline_center_scale()
 
         value = value * ystd + ymean
         logdet = jnp.log(ystd)
@@ -518,9 +545,9 @@ class TransformationDist(tfd.Distribution):
         return state[1]
 
     # @cache
-    def transformation_spline_variance(self) -> Array:
+    def transformation_spline_variance(self, mean: Array | None = None) -> Array:
         """Variance under the spline transformation."""
-        return self._transformation_spline_variance_simple()
+        return self._transformation_spline_variance_simple(mean=mean)
 
     def _transformation_spline_variance_simple(
         self, mean: Array | None = None
@@ -641,20 +668,7 @@ class TransformationDist(tfd.Distribution):
         -------
             Values on the original scale using the spline inverse.
         """
-        if self.centered:
-            ymean = self.transformation_spline_mean()  # intercept / expected val.
-        else:
-            ymean = jnp.array(0.0)
-
-        if self.scaled and not self.centered:
-            _ymean = self.transformation_spline_mean()  # intercept / expected val.
-            # ystd = jnp.sqrt(self.transformation_spline_variance(_ymean))
-            ystd = jnp.sqrt(self.transformation_spline_variance())
-        elif self.scaled and self.centered:
-            # ystd = jnp.sqrt(self.transformation_spline_variance(ymean))
-            ystd = jnp.sqrt(self.transformation_spline_variance())
-        else:
-            ystd = jnp.array(1.0)
+        ymean, ystd = self._spline_center_scale()
 
         return (self._spline_inverse_tfp(value) - ymean) / ystd
 
@@ -736,6 +750,9 @@ class LocScaleTransformationDist(TransformationDist):
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
+    simpson_integration_n
+        Number of Simpson intervals used for spline moments. Must be positive \
+        and even.
 
     Notes
     -----
@@ -756,6 +773,7 @@ class LocScaleTransformationDist(TransformationDist):
         scaled: bool = False,
         batched: bool = True,
         reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
+        simpson_integration_n: int = 32,
     ) -> None:
         super().__init__(
             coef=coef,
@@ -770,6 +788,7 @@ class LocScaleTransformationDist(TransformationDist):
             centered=centered,
             scaled=scaled,
             batched=batched,
+            simpson_integration_n=simpson_integration_n,
         )
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
@@ -851,6 +870,9 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
+    simpson_integration_n
+        Number of Simpson intervals used for spline moments. Must be positive \
+        and even.
 
     Notes
     -----
@@ -872,6 +894,7 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
         centered: bool = False,
         scaled: bool = False,
         batched: bool = True,
+        simpson_integration_n: int = 32,
     ) -> None:
         super().__init__(
             coef=_as_unused_pseudo_coef(coef),
@@ -884,6 +907,7 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
             centered=centered,
             scaled=scaled,
             batched=batched,
+            simpson_integration_n=simpson_integration_n,
         )
 
     @partial(jax.jit, static_argnums=0)
@@ -899,7 +923,7 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
         return 0.0
 
     @cache
-    def transformation_spline_variance(self) -> Array:
+    def transformation_spline_variance(self, mean: Array | None = None) -> Array:
         return 1.0
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
@@ -940,6 +964,9 @@ class PseudoTransformationDist(TransformationDist):
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
+    simpson_integration_n
+        Number of Simpson intervals used for spline moments. Must be positive \
+        and even.
 
     Notes
     -----
@@ -961,6 +988,7 @@ class PseudoTransformationDist(TransformationDist):
         scaled: bool = False,
         batched: bool = True,
         reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
+        simpson_integration_n: int = 32,
         **parametric_distribution_kwargs,
     ) -> None:
         super().__init__(
@@ -974,6 +1002,7 @@ class PseudoTransformationDist(TransformationDist):
             centered=centered,
             scaled=scaled,
             batched=batched,
+            simpson_integration_n=simpson_integration_n,
             **parametric_distribution_kwargs,
         )
 
@@ -990,7 +1019,7 @@ class PseudoTransformationDist(TransformationDist):
         return 0.0
 
     @cache
-    def transformation_spline_variance(self) -> Array:
+    def transformation_spline_variance(self, mean: Array | None = None) -> Array:
         return 1.0
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
@@ -1025,6 +1054,9 @@ class LocScalePseudoTransformationDist(TransformationDist):
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
+    simpson_integration_n
+        Number of Simpson intervals used for spline moments. Must be positive \
+        and even.
 
     Notes
     -----
@@ -1046,6 +1078,7 @@ class LocScalePseudoTransformationDist(TransformationDist):
         centered: bool = False,
         scaled: bool = False,
         batched: bool = True,
+        simpson_integration_n: int = 32,
     ) -> None:
         super().__init__(
             coef=_as_unused_pseudo_coef(coef),
@@ -1060,6 +1093,7 @@ class LocScalePseudoTransformationDist(TransformationDist):
             centered=centered,
             scaled=scaled,
             batched=batched,
+            simpson_integration_n=simpson_integration_n,
         )
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
@@ -1122,7 +1156,7 @@ class LocScalePseudoTransformationDist(TransformationDist):
         return 0.0
 
     @cache
-    def transformation_spline_variance(self) -> Array:
+    def transformation_spline_variance(self, mean: Array | None = None) -> Array:
         return 1.0
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
