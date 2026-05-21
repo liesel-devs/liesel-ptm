@@ -6,7 +6,7 @@ from liesel_ptm.bspline.onion import OnionKnots, OnionSpline
 from liesel_ptm.bspline.ptm import PTMKnots, PTMSpline
 
 knots = PTMKnots(-4.0, 4.0, nparam=10)
-coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
+coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
 bs = PTMSpline(knots.knots)
 
 
@@ -52,7 +52,7 @@ class TestDistOneCoef:
 
 class TestDistBatchedCoef:
     def test_vector_x(self):
-        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
         )
@@ -64,7 +64,7 @@ class TestDistBatchedCoef:
         assert lp.shape == (2, 30)
 
     def test_scalar_x(self):
-        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
         )
@@ -75,7 +75,7 @@ class TestDistBatchedCoef:
         assert lp.shape == (2,)
 
     def test_batched_x(self):
-        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
         )

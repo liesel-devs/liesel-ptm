@@ -751,7 +751,7 @@ class LocScalePTM:
 
         if self.is_gaussian:
             # assuming no samples are present, just use current values.
-            trafo_samples = self.trafo.value
+            trafo_samples = jnp.reshape(jnp.asarray(self.trafo.value), (1, 1))
         else:
             trafo_samples = self.trafo.predict(samples)
 
@@ -773,9 +773,10 @@ class LocScalePTM:
             loc_ = loc
             scale_ = scale
 
-        if trafo_samples.ndim > 0:
-            # protection  for the Gaussian case, when trafo_samples is 0.0 (scalar)
-            trafo_samples = jnp.expand_dims(trafo_samples, -2)
+        if trafo_samples.ndim < 2:
+            raise ValueError(
+                "Transformation coefficients must have shape (..., n_coef, n_param)."
+            )
 
         loc_ = jnp.asarray(loc_)
         scale_ = jnp.asarray(scale_)

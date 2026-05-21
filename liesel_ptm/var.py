@@ -104,13 +104,15 @@ class PTMCoef(lsl.Var):
             self.latent_coef.dist_node["scale"] = lsl.Value(1.0)
 
             def compute_coef1(latent_coef, scale):
-                return jnp.einsum("pj,...j->...p", self.Z, scale * latent_coef)
+                coef = jnp.einsum("pj,...j->...p", self.Z, scale * latent_coef)
+                return jnp.expand_dims(coef, -2)
 
             coef_calc = lsl.Calc(compute_coef1, self.latent_coef, self.scale)
         else:
 
             def compute_coef2(latent_coef):
-                return jnp.einsum("pj,...j->...p", self.Z, latent_coef)
+                coef = jnp.einsum("pj,...j->...p", self.Z, latent_coef)
+                return jnp.expand_dims(coef, -2)
 
             coef_calc = lsl.Calc(compute_coef2, self.latent_coef)
         super().__init__(coef_calc, name=name)

@@ -52,7 +52,6 @@ class MiCoef:
         self.B = B @ S
         self.B0 = B0 @ S
         self.bijector = bijector
-        self.zeros = jnp.zeros(self.B.shape[-1])
 
         self.step = jnp.diff(knots).mean()
 
@@ -61,10 +60,11 @@ class MiCoef:
         Add intercept and exponentiate log increments.
         """
         exp_coef = self.bijector.forward(log_increments)
-        prelim_coef = self.zeros.at[1:].set(exp_coef)
-        fx_at_zero = (self.B0 @ prelim_coef).squeeze()
+        zeros_shape = jnp.shape(exp_coef)[:-1] + (1,)
+        prelim_coef = jnp.concatenate((jnp.zeros(zeros_shape), exp_coef), axis=-1)
+        fx_at_zero = jnp.einsum("p,...p->...", self.B0.squeeze(0), prelim_coef)
 
-        full_coef = prelim_coef.at[0].set(-fx_at_zero)
+        full_coef = prelim_coef.at[..., 0].set(-fx_at_zero)
         return full_coef
 
 
@@ -200,6 +200,7 @@ class MiSpline(TransformationSpline):
         """
         Compute dot product and derivative for batch.
         """
+        coef = self._coef_for_eval(x, coef)
         fx_n, deriv_n = self.bspline.dot_and_deriv_n(x, coef)
         boundary_values, boundary_derivs = self.bspline.dot_and_deriv_n(
             self._boundaries, coef

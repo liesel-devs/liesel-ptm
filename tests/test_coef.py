@@ -10,7 +10,7 @@ class TestPTMCoef:
         scale = ptm.ScaleWeibull(1.0, scale=1.0, name="scale")
         coef = ptm.PTMCoef.new_ridge(knots=knots.knots, scale=scale, name="coef")
 
-        assert coef.value.shape == (nparam,)
+        assert coef.value.shape == (1, nparam)
         assert jnp.allclose(coef.penalty, jnp.eye(nparam))
 
     def test_init_rw1(self) -> None:
@@ -19,5 +19,5 @@ class TestPTMCoef:
         scale = ptm.ScaleWeibull(1.0, scale=1.0, name="scale")
         coef = ptm.PTMCoef.new_rw1_sumzero(knots=knots.knots, scale=scale, name="coef")
 
-        assert coef.value.shape == (nparam,)
+        assert coef.value.shape == (1, nparam)
         assert jnp.allclose(coef.penalty, jnp.eye(nparam - 1))

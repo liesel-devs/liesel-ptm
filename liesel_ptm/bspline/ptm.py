@@ -255,12 +255,24 @@ class PTMCoef:
 
     def get_ptm_fn_squeeze(self) -> Callable[[Array, Array, Array], Array]:
         """
-        Get function to compute PTM spline coefficients and squeeze output.
+        Get function to compute PTM spline coefficients preserving leading axes.
         """
         fn = self.get_ptm_fn()
 
         def compute_coef(log_increments, intercept, log_slope):
-            return fn(log_increments, intercept, log_slope).squeeze(-2)
+            leading_shape = jnp.shape(log_increments)[:-1]
+            nparam = jnp.shape(log_increments)[-1]
+
+            flat_log_increments = jnp.reshape(log_increments, (-1, nparam))
+            flat_intercept = jnp.reshape(
+                jnp.broadcast_to(intercept, leading_shape), (-1,)
+            )
+            flat_log_slope = jnp.reshape(
+                jnp.broadcast_to(log_slope, leading_shape), (-1,)
+            )
+
+            full_coef = fn(flat_log_increments, flat_intercept, flat_log_slope)
+            return jnp.reshape(full_coef, leading_shape + full_coef.shape[-1:])
 
         return compute_coef
 
@@ -413,6 +425,7 @@ class PTMSpline(TransformationSpline):
         """
         Compute dot product and derivative for batch.
         """
+        coef = self._coef_for_eval(x, coef)
         fx_n, deriv_n = self.bspline.dot_and_deriv_n(x, coef)
         boundary_values, boundary_derivs = self.bspline.dot_and_deriv_n(
             self._boundaries, coef

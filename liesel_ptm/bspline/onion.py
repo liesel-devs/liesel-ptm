@@ -140,6 +140,7 @@ class OnionSpline(TransformationSpline):
         """
         Compute dot product and derivative for batch.
         """
+        coef = self._coef_for_eval(x, coef)
         fx_n, deriv_n = self.bspline.dot_and_deriv_n(x, coef)
         in_core = (x >= self.min_knot) & (x <= self.max_knot)
         fx_n = jnp.where(in_core, fx_n, x)

@@ -5,7 +5,7 @@ import pytest
 from liesel_ptm.bspline.onion import OnionKnots, OnionSpline
 
 knots = OnionKnots(-4.0, 4.0, nparam=10)
-coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
+coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
 bs = OnionSpline(knots.knots)
 
 
@@ -23,6 +23,12 @@ class TestDotAndDeriv:
 
         # increasing
         assert jnp.all(fxd > 0.0)
+
+    def test_rejects_legacy_coef_shape(self):
+        legacy_coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
+
+        with pytest.raises(ValueError, match="n_coef"):
+            bs.dot_and_deriv(1.0, legacy_coef)
 
     def test_vector_x(self):
         x = jnp.linspace(-8.0, 8.0, 300)
@@ -88,7 +94,7 @@ class TestDotAndDeriv:
 
     def test_scalar_x_batched_coef(self):
         x = 1.0
-        coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
         fx, fxd = bs.dot_and_deriv(x, coef)
 
         # shape fits
@@ -104,7 +110,7 @@ class TestDotAndDeriv:
 
     def test_vector_x_batched_coef(self):
         x = jax.random.normal(jax.random.key(1), (200,))
-        coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
         fx, fxd = bs.dot_and_deriv(x, coef)
 
         # shape fits
@@ -126,7 +132,7 @@ class TestDotAndDeriv:
                 200,
             ),
         )
-        coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
         fx, fxd = bs.dot_and_deriv(x, coef)
 
         # shape fits
@@ -149,7 +155,7 @@ class TestDotAndDeriv:
                 200,
             ),
         )
-        coef = jax.random.normal(jax.random.key(1), (2, 3, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, 3, 1, knots.nparam))
         fx, fxd = bs.dot_and_deriv(x, coef)
 
         # shape fits
@@ -221,32 +227,28 @@ class TestDotAndDerivInverse:
 
     def test_scalar_x_batched_coef(self):
         x = 1.0
-        coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
         fx, _ = bs.dot_and_deriv(x, coef)
 
-        # since fx is (3,), this will assume n=3 and batchdim=(3,), so the result is
-        # (3, 3)
-        # to get the original batched inversed, we then need to do jnp.diag(x2)
-        # or vmap the dot inverse explicitly
         x2 = bs.dot_inverse(fx, coef)
 
         # shape fits
-        assert x2.shape == (3, 3)
+        assert x2.shape == (3,)
 
         # no nans
         assert not jnp.any(jnp.isnan(x2))
 
-        assert jnp.allclose(jnp.diag(x2), x, atol=1e-4)
+        assert jnp.allclose(x2, x, atol=1e-4)
 
     def test_vector_x_batched_coef(self):
         x = jax.random.normal(jax.random.key(1), (200,))
-        coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
         fx, _ = bs.dot_and_deriv(x, coef)
 
         x2 = bs.dot_inverse(fx, coef)
 
         # shape fits
-        assert x2.shape == coef.shape[:-1] + x.shape
+        assert x2.shape == (3, 200)
 
         # no nans
         assert not jnp.any(jnp.isnan(x2))
@@ -262,7 +264,7 @@ class TestDotAndDerivInverse:
                 200,
             ),
         )
-        coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
         fx, _ = bs.dot_and_deriv(x, coef)
 
         x2 = bs.dot_inverse(fx, coef)
@@ -285,7 +287,7 @@ class TestDotAndDerivInverse:
                 200,
             ),
         )
-        coef = jax.random.normal(jax.random.key(1), (2, 3, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, 3, 1, knots.nparam))
         fx, _ = bs.dot_and_deriv(x, coef)
 
         x2 = bs.dot_inverse(fx, coef)
@@ -349,12 +351,12 @@ class TestDotAndDerivNFullBatch:
 
     def test_scalar_x_batched_coef(self):
         x = 1.0
-        coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
         bs.dot_and_deriv_n_fullbatch(x, coef)
 
     def test_vector_x_batched_coef(self):
         x = jax.random.normal(jax.random.key(1), (200,))
-        coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
         bs.dot_and_deriv_n_fullbatch(x, coef)
 
     def test_gptm_dot_and_deriv(self):
@@ -412,3 +414,55 @@ class TestDotAndDerivNFullBatch:
         dot = bs.dot_inverse_n_fullbatch(x, coef)
 
         assert dot.shape == (1, b, n)
+
+
+class TestTfpLayout:
+    def _assert_tfp_roundtrip(
+        self,
+        value,
+        coef,
+        expected_shape,
+        batch_shape=None,
+    ):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+
+        fx, fxd = bs.dot_and_deriv_tfp(value, coef, batch_shape=batch_shape)
+
+        assert fx.shape == expected_shape
+        assert fxd.shape == expected_shape
+        assert not jnp.any(jnp.isnan(fx))
+        assert not jnp.any(jnp.isnan(fxd))
+        assert jnp.all(fxd > 0.0)
+
+        x = bs.dot_inverse_tfp(fx, coef, batch_shape=batch_shape)
+
+        assert x.shape == expected_shape
+        assert not jnp.any(jnp.isnan(x))
+
+        expected = jnp.broadcast_to(jnp.asarray(value), expected_shape)
+        assert jnp.allclose(x, expected, atol=1e-4)
+
+    def test_rowwise_coef(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        n = 4
+        coef = jax.random.normal(jax.random.key(2), (n, knots.nparam))
+
+        self._assert_tfp_roundtrip(0.5, coef, (n,))
+        self._assert_tfp_roundtrip(
+            jnp.linspace(-2.0, 2.0, 5).reshape((5, 1)),
+            coef,
+            (5, n),
+        )
+
+    def test_batched_rowwise_coef(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        n = 4
+        coef = jax.random.normal(jax.random.key(3), (2, n, knots.nparam))
+
+        self._assert_tfp_roundtrip(0.5, coef, (2, n))
+        self._assert_tfp_roundtrip(
+            jnp.linspace(-2.0, 2.0, 5).reshape((5, 1, 1)),
+            coef,
+            (5, 2, n),
+        )

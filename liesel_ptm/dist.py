@@ -123,6 +123,7 @@ class TransformationDist(tfd.Distribution):
 
         self.bspline = bspline
         self.knots = self.bspline.knots
+        self.bspline._check_coef_core_shape(coef)
 
         if reference_distribution is None:
             self.reference_distribution = tfd.Normal(loc=0.0, scale=1.0)
@@ -249,9 +250,7 @@ class TransformationDist(tfd.Distribution):
         for param in self.parametric_distribution_kwargs.values():
             shape = tf.broadcast_static_shape(shape, jnp.shape(param))
 
-        coef_shape = self.coef.shape[:-1]
-
-        coef_shape = tf.TensorShape(coef_shape)
+        coef_shape = tf.TensorShape(self.bspline._coef_batch_shape(self.coef))
 
         return tf.broadcast_static_shape(coef_shape, shape)
 
@@ -260,9 +259,7 @@ class TransformationDist(tfd.Distribution):
         for param in self.parametric_distribution_kwargs.values():
             shape = tf.broadcast_static_shape(shape, jnp.shape(param))
 
-        coef_shape = self.coef.shape[:-1]
-
-        coef_shape = tf.TensorShape(coef_shape)
+        coef_shape = tf.TensorShape(self.bspline._coef_batch_shape(self.coef))
 
         return tf.broadcast_dynamic_shape(coef_shape, shape)
 
