@@ -7,6 +7,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import tensorflow_probability.substrates.jax.distributions as tfd
 from tensorflow_probability.python.internal import reparameterization
 from tensorflow_probability.substrates.jax import tf2jax as tf
@@ -17,18 +18,68 @@ KeyArray = Any
 Array = Any
 
 
-def _validate_simpson_integration_n(n: int) -> int:
+def _validate_gauss_legendre_order(order: int) -> int:
     try:
-        n = operator.index(n)
+        order = operator.index(order)
     except TypeError as err:
-        raise TypeError(
-            "simpson_integration_n must be a positive even integer."
-        ) from err
+        raise TypeError("gauss_legendre_order must be a positive integer.") from err
 
-    if n <= 0 or n % 2:
-        raise ValueError("simpson_integration_n must be a positive even integer.")
+    if order <= 0:
+        raise ValueError("gauss_legendre_order must be a positive integer.")
 
-    return n
+    return order
+
+
+def _as_scalar_float(value: float | Array, name: str) -> float:
+    value_array = np.asarray(value)
+    if value_array.ndim != 0:
+        raise ValueError(f"{name} must be a scalar.")
+
+    value = float(value_array)
+    if not np.isfinite(value):
+        raise ValueError(f"{name} must be finite.")
+
+    return value
+
+
+def _validate_integration_bounds(
+    bounds: tuple[float, float] | None,
+    default_bounds: tuple[float, float],
+) -> tuple[float, float]:
+    if bounds is None:
+        lower = _as_scalar_float(default_bounds[0], "integration lower bound")
+        upper = _as_scalar_float(default_bounds[1], "integration upper bound")
+    else:
+        if len(bounds) != 2:
+            raise ValueError("integration_bounds must contain exactly two values.")
+        lower = _as_scalar_float(bounds[0], "integration lower bound")
+        upper = _as_scalar_float(bounds[1], "integration upper bound")
+
+    if not lower < upper:
+        raise ValueError("integration_bounds must satisfy lower < upper.")
+
+    return lower, upper
+
+
+def _integration_breaks_from_knots(
+    knots: Array,
+    bounds: tuple[float, float],
+    dtype: Any,
+) -> Array:
+    lower, upper = bounds
+    knots_np = np.asarray(knots, dtype=float)
+    internal = knots_np[(knots_np > lower) & (knots_np < upper)]
+    breaks_np = np.concatenate((np.asarray([lower]), internal, np.asarray([upper])))
+    breaks_np = np.unique(breaks_np)
+    breaks_np.sort()
+
+    return jnp.asarray(breaks_np, dtype=dtype)
+
+
+def _gauss_legendre_nodes_and_weights(order: int, dtype: Any) -> tuple[Array, Array]:
+    order = _validate_gauss_legendre_order(order)
+    nodes, weights = np.polynomial.legendre.leggauss(order)
+    return jnp.asarray(nodes, dtype=dtype), jnp.asarray(weights, dtype=dtype)
 
 
 def _as_unused_pseudo_coef(coef: Array) -> Array:
@@ -38,32 +89,61 @@ def _as_unused_pseudo_coef(coef: Array) -> Array:
     return coef
 
 
-def integrate_simpson(
+def integrate_piecewise_gauss_legendre(
     f: Callable[[Array], Array],
-    a: float | Array,
-    b: float | Array,
-    N: int = 20,
-    batch_dims=(),
+    breaks: Array,
+    nodes: Array,
+    weights: Array,
+    batch_ndims: int = 0,
 ) -> Array:
     """
-    Implementation from:
-    https://jax-cosmo.readthedocs.io/en/latest/_modules/jax_cosmo/scipy/integrate.html#romb
+    Integrate ``f`` with fixed Gauss-Legendre quadrature over piecewise intervals.
+
+    The first axis of ``f`` is the quadrature/sample axis. Additional batch axes
+    are broadcast by expanding the evaluation points with trailing singleton
+    dimensions.
     """
-    if N % 2 == 1:
-        raise ValueError("N must be an even integer.")
-    dx = (b - a) / N
-    x = jnp.linspace(a, b, N + 1)
-    x = jnp.expand_dims(x, batch_dims)
-    y = f(x)
-    y = jnp.moveaxis(y, 0, -1)
-    S = (
-        dx
-        / 3
-        * jnp.sum(
-            y[..., 0:-1:2] + 4 * y[..., 1::2] + y[..., 2::2], axis=-1, keepdims=True
-        )
+    breaks = jnp.asarray(breaks)
+    nodes = jnp.asarray(nodes)
+    weights = jnp.asarray(weights)
+    batch_ndims = operator.index(batch_ndims)
+    if batch_ndims < 0:
+        raise ValueError("batch_ndims must be nonnegative.")
+
+    lower = breaks[:-1]
+    upper = breaks[1:]
+    half_width = 0.5 * (upper - lower)
+    midpoint = 0.5 * (upper + lower)
+    points = midpoint[:, None] + half_width[:, None] * nodes[None, :]
+    flat_points = jnp.reshape(points, (-1,))
+
+    if batch_ndims:
+        flat_points = jnp.reshape(flat_points, flat_points.shape + (1,) * batch_ndims)
+
+    y = f(flat_points)
+    y = jnp.reshape(y, points.shape + jnp.shape(y)[1:])
+    integration_weights = half_width[:, None] * weights[None, :]
+    integration_weights = jnp.reshape(
+        integration_weights, integration_weights.shape + (1,) * (jnp.ndim(y) - 2)
     )
-    return S.squeeze(-1)
+
+    return jnp.sum(y * integration_weights, axis=(0, 1))
+
+
+def _identity_moment_quadrature_diagnostic(dtype: Any) -> dict[str, Array]:
+    zero = jnp.asarray(0.0, dtype=dtype)
+    one = jnp.asarray(1.0, dtype=dtype)
+    return {
+        "mean": zero,
+        "variance": one,
+        "mean_reference": zero,
+        "variance_reference": one,
+        "mean_abs_error": zero,
+        "variance_abs_error": zero,
+        "mean_rel_error": zero,
+        "variance_rel_error": zero,
+        "ok": jnp.asarray(True),
+    }
 
 
 class TransformationDist(tfd.Distribution):
@@ -101,9 +181,11 @@ class TransformationDist(tfd.Distribution):
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
-    simpson_integration_n
-        Number of Simpson intervals used for spline moments. Must be positive \
-        and even.
+    gauss_legendre_order
+        Number of Gauss-Legendre nodes per knot interval for spline moments.
+    integration_bounds
+        Optional lower and upper integration bounds. Defaults to the first and \
+        last spline knot.
     **parametric_distribution_kwargs
         Additional keyword arguments passed to the parametric distribution.
 
@@ -137,14 +219,15 @@ class TransformationDist(tfd.Distribution):
         centered: bool = False,
         scaled: bool = False,
         batched: bool = True,
-        simpson_integration_n: int = 32,
+        gauss_legendre_order: int = 8,
+        integration_bounds: tuple[float, float] | None = None,
         **parametric_distribution_kwargs,
     ):
         coef = jnp.asarray(coef)
         if not jnp.issubdtype(coef.dtype, jnp.floating):
             raise TypeError("Spline coefficients must have a floating-point dtype.")
 
-        simpson_integration_n = _validate_simpson_integration_n(simpson_integration_n)
+        gauss_legendre_order = _validate_gauss_legendre_order(gauss_legendre_order)
         parameters = dict(locals())
 
         self.coef = coef
@@ -155,6 +238,24 @@ class TransformationDist(tfd.Distribution):
         self.bspline = bspline
         self.knots = self.bspline.knots
         self.bspline._check_coef_core_shape(coef)
+        self.gauss_legendre_order = gauss_legendre_order
+        default_integration_bounds = (
+            self.bspline._outer_knot_left,
+            self.bspline._outer_knot_right,
+        )
+        self.integration_bounds = _validate_integration_bounds(
+            integration_bounds, default_integration_bounds
+        )
+        if hasattr(self.bspline, "_knots_np"):
+            knots_np = self.bspline._knots_np
+        else:
+            knots_np = jax.device_get(self.knots)
+        self.integration_breaks = _integration_breaks_from_knots(
+            knots_np, self.integration_bounds, coef.dtype
+        )
+        self._gl_nodes, self._gl_weights = _gauss_legendre_nodes_and_weights(
+            gauss_legendre_order, coef.dtype
+        )
 
         if reference_distribution is None:
             self.reference_distribution = tfd.Normal(loc=0.0, scale=1.0)
@@ -175,8 +276,6 @@ class TransformationDist(tfd.Distribution):
             )
 
         self.batched = batched
-
-        self.simpson_integration_n = simpson_integration_n
 
         super().__init__(
             dtype=coef.dtype,
@@ -455,105 +554,45 @@ class TransformationDist(tfd.Distribution):
 
         return transf_spline, logdet
 
-    # @cache
     def transformation_spline_mean(self) -> Array:
         """Expected value under the spline transformation."""
-        return self._transformation_spline_mean_simple()
+        return self._transformation_spline_mean_gl()
 
-    def _transformation_spline_mean_simple(self) -> Array:
+    def _integrate_piecewise_gauss_legendre(
+        self,
+        fn: Callable[[Array], Array],
+        order: int | None = None,
+    ) -> Array:
+        if order is None:
+            nodes = self._gl_nodes
+            weights = self._gl_weights
+        else:
+            nodes, weights = _gauss_legendre_nodes_and_weights(order, self.dtype)
+
+        return integrate_piecewise_gauss_legendre(
+            fn,
+            breaks=self.integration_breaks,
+            nodes=nodes,
+            weights=weights,
+            batch_ndims=len(self._batch_shape_tuple()),
+        )
+
+    def _transformation_spline_mean_gl(self, order: int | None = None) -> Array:
         def fn(x):
             z, logdet = self._transformation_and_logdet_spline(x)
             return x * self.reference_distribution.prob(z) * jnp.exp(logdet)
 
-        mom = integrate_simpson(
-            fn,
-            a=self.knots[0],
-            b=self.knots[-1],
-            N=self.simpson_integration_n,
-            batch_dims=tuple(range(1, len(self.batch_shape) + 1)),
-        )
+        return self._integrate_piecewise_gauss_legendre(fn, order=order)
 
-        return mom
-
-    def _transformation_spline_mean_for(self) -> Array:
-        state = (
-            jnp.inf,  # convergence criterion
-            jnp.zeros(self.batch_shape),
-            0,  # iteration counter
-        )
-        maxiter = 1
-
-        def body_fun(state):
-            m_before = state[1]
-
-            def fn(x):
-                z, logdet = self._transformation_and_logdet_spline(x + m_before)
-                return x * self.reference_distribution.prob(z) * jnp.exp(logdet)
-
-            m_after = integrate_simpson(
-                fn,
-                a=self.knots[0],
-                b=self.knots[-1],
-                N=self.simpson_integration_n,
-                batch_dims=tuple(range(1, len(self.batch_shape) + 1)),
-            )
-            m_after = jnp.reshape(m_after, self.batch_shape)
-            diff = jnp.abs(m_after).sum()
-
-            return (diff, m_before + m_after, state[2] + 1)
-
-        state = jax.lax.fori_loop(
-            lower=0,
-            upper=maxiter,
-            init_val=state,
-            body_fun=lambda i, val: body_fun(val),
-        )
-
-        return state[1]
-
-    def _transformation_spline_mean_while(self) -> Array:
-        """
-        Potentially more accurate, but cannot be differentiated in reverse mode by jax.
-        Unused for now, kept for reference.
-        """
-        state = (
-            jnp.inf,  # convergence criterion
-            jnp.zeros(self.batch_shape),
-            0,  # iteration counter
-        )
-        tol = 1e-3
-        maxiter = 20
-
-        def cond_fun(state):
-            return jnp.logical_and(state[0] > tol, state[2] <= maxiter)
-
-        def body_fun(state):
-            m_before = state[1]
-
-            def fn(x):
-                z, logdet = self._transformation_and_logdet_spline(x + m_before)
-                return x * self.reference_distribution.prob(z) * jnp.exp(logdet)
-
-            m_after = integrate_simpson(fn, a=self.knots[0], b=self.knots[-1], N=1024)
-            m_after = jnp.reshape(m_after, self.batch_shape)
-            diff = jnp.abs(m_after).sum()
-
-            return (diff, m_before + m_after, state[2] + 1)
-
-        state = jax.lax.while_loop(body_fun=body_fun, cond_fun=cond_fun, init_val=state)
-
-        return state[1]
-
-    # @cache
     def transformation_spline_variance(self, mean: Array | None = None) -> Array:
         """Variance under the spline transformation."""
-        return self._transformation_spline_variance_simple(mean=mean)
+        return self._transformation_spline_variance_gl(mean=mean)
 
-    def _transformation_spline_variance_simple(
-        self, mean: Array | None = None
+    def _transformation_spline_variance_gl(
+        self, mean: Array | None = None, order: int | None = None
     ) -> Array:
         if mean is None:
-            mean = self.transformation_spline_mean()
+            mean = self._transformation_spline_mean_gl(order=order)
 
         def fn(x):
             z, logdet = self._transformation_and_logdet_spline(x)
@@ -561,99 +600,59 @@ class TransformationDist(tfd.Distribution):
                 (x - mean) ** 2 * self.reference_distribution.prob(z) * jnp.exp(logdet)
             )
 
-        var = integrate_simpson(
-            fn,
-            a=self.knots[0],
-            b=self.knots[-1],
-            N=self.simpson_integration_n,
-            batch_dims=tuple(range(1, len(self.batch_shape) + 1)),
-        )
+        return self._integrate_piecewise_gauss_legendre(fn, order=order)
 
-        return var
-
-    def _transformation_spline_variance_for(self) -> Array:
-        mean = self.transformation_spline_mean()
-
-        state = (
-            jnp.inf,  # convergence criterion
-            jnp.ones(self.batch_shape),
-            0,  # iteration counter
-        )
-
-        maxiter = 2
-
-        def pdf(x, v):
-            s = jnp.sqrt(v)
-            zt = s * x + mean
-            z, logdet = self._transformation_and_logdet_spline(zt)
-            return self.reference_distribution.prob(z) * jnp.exp(logdet) * s
-
-        def body_fun(state):
-            v_before = state[1]
-
-            def fn(x):
-                return x**2 * pdf(x, v_before)
-
-            v_after = integrate_simpson(
-                fn, a=self.knots[0], b=self.knots[-1], N=self.simpson_integration_n
-            )
-            v_after = jnp.reshape(v_after, self.batch_shape)
-            diff = jnp.abs(1.0 - v_after).sum()
-            state = (diff, v_before * v_after, state[2] + 1)
-
-            return state
-
-        state = jax.lax.fori_loop(
-            lower=0,
-            upper=maxiter,
-            init_val=state,
-            body_fun=lambda i, val: body_fun(val),
-        )
-
-        return state[1]
-
-    def _transformation_spline_variance_while(self) -> Array:
+    def moment_quadrature_diagnostic(
+        self,
+        reference_order: int | None = None,
+        rtol: float = 1e-4,
+        atol: float = 1e-5,
+    ) -> dict[str, Array]:
         """
-        Potentially more accurate, but cannot be differentiated in reverse mode by jax.
-        Unused for now, kept for reference.
+        Compare spline moments at the configured order against a higher-order rule.
+
+        This diagnostic is opt-in and intentionally separate from likelihood and
+        moment computation so it does not add work.
         """
-        mean = self.transformation_spline_mean()
-
-        state = (
-            jnp.inf,  # convergence criterion
-            jnp.ones(self.batch_shape),
-            0,  # iteration counter
-        )
-        tol = 1e-3
-        maxiter = 20
-
-        def cond_fun(state):
-            return jnp.logical_and(state[0] > tol, state[2] <= maxiter)
-
-        def pdf(x, v):
-            s = jnp.sqrt(v)
-            zt = s * x + mean
-            z, logdet = self._transformation_and_logdet_spline(zt)
-            return self.reference_distribution.prob(z) * jnp.exp(logdet) * s
-
-        def body_fun(state):
-            v_before = state[1]
-
-            def fn(x):
-                return x**2 * pdf(x, v_before)
-
-            v_after = integrate_simpson(
-                fn, a=self.knots[0], b=self.knots[-1], N=self.simpson_integration_n
+        if reference_order is None:
+            reference_order = max(
+                2 * self.gauss_legendre_order, self.gauss_legendre_order + 8
             )
-            v_after = jnp.reshape(v_after, self.batch_shape)
-            diff = jnp.abs(1.0 - v_after).sum()
-            state = (diff, v_before * v_after, state[2] + 1)
+        reference_order = _validate_gauss_legendre_order(reference_order)
+        if reference_order <= self.gauss_legendre_order:
+            raise ValueError("reference_order must exceed gauss_legendre_order.")
 
-            return state
+        mean = self._transformation_spline_mean_gl(order=self.gauss_legendre_order)
+        mean_reference = self._transformation_spline_mean_gl(order=reference_order)
+        variance = self._transformation_spline_variance_gl(
+            mean=mean, order=self.gauss_legendre_order
+        )
+        variance_reference = self._transformation_spline_variance_gl(
+            mean=mean_reference, order=reference_order
+        )
 
-        state = jax.lax.while_loop(body_fun=body_fun, cond_fun=cond_fun, init_val=state)
+        mean_abs_error = jnp.abs(mean - mean_reference)
+        variance_abs_error = jnp.abs(variance - variance_reference)
+        mean_rel_error = mean_abs_error / jnp.maximum(
+            jnp.abs(mean_reference), jnp.asarray(atol, dtype=self.dtype)
+        )
+        variance_rel_error = variance_abs_error / jnp.maximum(
+            jnp.abs(variance_reference), jnp.asarray(atol, dtype=self.dtype)
+        )
+        mean_ok = mean_abs_error <= atol + rtol * jnp.abs(mean_reference)
+        variance_ok = variance_abs_error <= atol + rtol * jnp.abs(variance_reference)
 
-        return state[1]
+        return {
+            "mean": mean,
+            "variance": variance,
+            "mean_reference": mean_reference,
+            "variance_reference": variance_reference,
+            "mean_abs_error": mean_abs_error,
+            "variance_abs_error": variance_abs_error,
+            "mean_rel_error": mean_rel_error,
+            "variance_rel_error": variance_rel_error,
+            "ok": jnp.all(mean_ok & variance_ok),
+        }
 
     def inverse_transformation_spline(self, value: Array) -> Array:
         """
@@ -750,9 +749,11 @@ class LocScaleTransformationDist(TransformationDist):
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
-    simpson_integration_n
-        Number of Simpson intervals used for spline moments. Must be positive \
-        and even.
+    gauss_legendre_order
+        Number of Gauss-Legendre nodes per knot interval for spline moments.
+    integration_bounds
+        Optional lower and upper integration bounds. Defaults to the first and \
+        last spline knot.
 
     Notes
     -----
@@ -773,7 +774,8 @@ class LocScaleTransformationDist(TransformationDist):
         scaled: bool = False,
         batched: bool = True,
         reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
-        simpson_integration_n: int = 32,
+        gauss_legendre_order: int = 8,
+        integration_bounds: tuple[float, float] | None = None,
     ) -> None:
         super().__init__(
             coef=coef,
@@ -788,7 +790,8 @@ class LocScaleTransformationDist(TransformationDist):
             centered=centered,
             scaled=scaled,
             batched=batched,
-            simpson_integration_n=simpson_integration_n,
+            gauss_legendre_order=gauss_legendre_order,
+            integration_bounds=integration_bounds,
         )
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
@@ -870,9 +873,11 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
-    simpson_integration_n
-        Number of Simpson intervals used for spline moments. Must be positive \
-        and even.
+    gauss_legendre_order
+        Number of Gauss-Legendre nodes per knot interval for spline moments.
+    integration_bounds
+        Optional lower and upper integration bounds. Defaults to the first and \
+        last spline knot.
 
     Notes
     -----
@@ -894,7 +899,8 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
         centered: bool = False,
         scaled: bool = False,
         batched: bool = True,
-        simpson_integration_n: int = 32,
+        gauss_legendre_order: int = 8,
+        integration_bounds: tuple[float, float] | None = None,
     ) -> None:
         super().__init__(
             coef=_as_unused_pseudo_coef(coef),
@@ -907,7 +913,8 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
             centered=centered,
             scaled=scaled,
             batched=batched,
-            simpson_integration_n=simpson_integration_n,
+            gauss_legendre_order=gauss_legendre_order,
+            integration_bounds=integration_bounds,
         )
 
     @partial(jax.jit, static_argnums=0)
@@ -926,6 +933,14 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
     def transformation_spline_variance(self, mean: Array | None = None) -> Array:
         return 1.0
 
+    def moment_quadrature_diagnostic(
+        self,
+        reference_order: int | None = None,
+        rtol: float = 1e-4,
+        atol: float = 1e-5,
+    ) -> dict[str, Array]:
+        return _identity_moment_quadrature_diagnostic(self.dtype)
+
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         return value, tf.zeros_like(value)
 
@@ -935,7 +950,7 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
 
 class PseudoTransformationDist(TransformationDist):
     """
-    Oseudo-transformation distribution.
+    Pseudo-transformation distribution.
 
     A simplified version of :class:`TransformationDist` with
     identity spline behavior. This class is used to be compatible in interface to
@@ -964,9 +979,11 @@ class PseudoTransformationDist(TransformationDist):
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
-    simpson_integration_n
-        Number of Simpson intervals used for spline moments. Must be positive \
-        and even.
+    gauss_legendre_order
+        Number of Gauss-Legendre nodes per knot interval for spline moments.
+    integration_bounds
+        Optional lower and upper integration bounds. Defaults to the first and \
+        last spline knot.
 
     Notes
     -----
@@ -988,7 +1005,8 @@ class PseudoTransformationDist(TransformationDist):
         scaled: bool = False,
         batched: bool = True,
         reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
-        simpson_integration_n: int = 32,
+        gauss_legendre_order: int = 8,
+        integration_bounds: tuple[float, float] | None = None,
         **parametric_distribution_kwargs,
     ) -> None:
         super().__init__(
@@ -1002,7 +1020,8 @@ class PseudoTransformationDist(TransformationDist):
             centered=centered,
             scaled=scaled,
             batched=batched,
-            simpson_integration_n=simpson_integration_n,
+            gauss_legendre_order=gauss_legendre_order,
+            integration_bounds=integration_bounds,
             **parametric_distribution_kwargs,
         )
 
@@ -1021,6 +1040,14 @@ class PseudoTransformationDist(TransformationDist):
     @cache
     def transformation_spline_variance(self, mean: Array | None = None) -> Array:
         return 1.0
+
+    def moment_quadrature_diagnostic(
+        self,
+        reference_order: int | None = None,
+        rtol: float = 1e-4,
+        atol: float = 1e-5,
+    ) -> dict[str, Array]:
+        return _identity_moment_quadrature_diagnostic(self.dtype)
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         return value, tf.zeros_like(value)
@@ -1054,9 +1081,11 @@ class LocScalePseudoTransformationDist(TransformationDist):
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
-    simpson_integration_n
-        Number of Simpson intervals used for spline moments. Must be positive \
-        and even.
+    gauss_legendre_order
+        Number of Gauss-Legendre nodes per knot interval for spline moments.
+    integration_bounds
+        Optional lower and upper integration bounds. Defaults to the first and \
+        last spline knot.
 
     Notes
     -----
@@ -1078,7 +1107,8 @@ class LocScalePseudoTransformationDist(TransformationDist):
         centered: bool = False,
         scaled: bool = False,
         batched: bool = True,
-        simpson_integration_n: int = 32,
+        gauss_legendre_order: int = 8,
+        integration_bounds: tuple[float, float] | None = None,
     ) -> None:
         super().__init__(
             coef=_as_unused_pseudo_coef(coef),
@@ -1093,7 +1123,8 @@ class LocScalePseudoTransformationDist(TransformationDist):
             centered=centered,
             scaled=scaled,
             batched=batched,
-            simpson_integration_n=simpson_integration_n,
+            gauss_legendre_order=gauss_legendre_order,
+            integration_bounds=integration_bounds,
         )
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
@@ -1158,6 +1189,14 @@ class LocScalePseudoTransformationDist(TransformationDist):
     @cache
     def transformation_spline_variance(self, mean: Array | None = None) -> Array:
         return 1.0
+
+    def moment_quadrature_diagnostic(
+        self,
+        reference_order: int | None = None,
+        rtol: float = 1e-4,
+        atol: float = 1e-5,
+    ) -> dict[str, Array]:
+        return _identity_moment_quadrature_diagnostic(self.dtype)
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         return value, tf.zeros_like(value)

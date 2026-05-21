@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 import jax
@@ -11,6 +13,8 @@ from liesel_ptm.dist import (
     GaussianPseudoTransformationDist,
     LocScalePseudoTransformationDist,
     PseudoTransformationDist,
+    _gauss_legendre_nodes_and_weights,
+    integrate_piecewise_gauss_legendre,
 )
 
 
@@ -38,12 +42,60 @@ def assert_both_raise_for_shape(dist, normal, method_name: str, value):
         getattr(dist, method_name)(value)
 
 
+def random_walk_coef(key, batch_shape: tuple[int, ...], nparam: int, scale=0.35):
+    innovations = jax.random.normal(key, batch_shape + (nparam,)) * scale
+    coef = jnp.cumsum(innovations, axis=-1)
+    coef = coef - jnp.mean(coef, axis=-1, keepdims=True)
+    return coef[..., None, :]
+
+
+class TestPiecewiseGaussLegendreIntegration:
+    def test_integrates_polynomial_over_multiple_pieces_with_batching(self):
+        nodes, weights = _gauss_legendre_nodes_and_weights(3, jnp.float32)
+        breaks = jnp.array([-2.0, -1.0, 0.5, 3.0])
+        scales = jnp.array([1.0, 2.0])
+
+        def antiderivative(x):
+            return x**5 / 5 + 2 * x**3 / 3 + x
+
+        def fn(x):
+            return (x**4 + 2 * x**2 + 1) * scales
+
+        value = integrate_piecewise_gauss_legendre(
+            fn, breaks=breaks, nodes=nodes, weights=weights, batch_ndims=1
+        )
+        expected = (antiderivative(breaks[-1]) - antiderivative(breaks[0])) * scales
+
+        assert value.shape == (2,)
+        assert jnp.allclose(value, expected, atol=1e-5)
+
+    def test_distribution_builds_default_and_custom_breaks_from_knots(self):
+        default_dist = ptm.TransformationDist(coef=coef, bspline=bs)
+        inner_dist = ptm.TransformationDist(
+            coef=coef, bspline=bs, integration_bounds=(-2.5, 2.5)
+        )
+        outer_dist = ptm.TransformationDist(
+            coef=coef, bspline=bs, integration_bounds=(-8.0, 8.0)
+        )
+
+        assert default_dist.integration_bounds == (
+            float(knots.knots[0]),
+            float(knots.knots[-1]),
+        )
+        assert jnp.allclose(default_dist.integration_breaks, knots.knots)
+        assert float(inner_dist.integration_breaks[0]) == pytest.approx(-2.5)
+        assert float(inner_dist.integration_breaks[-1]) == pytest.approx(2.5)
+        assert float(outer_dist.integration_breaks[0]) == pytest.approx(-8.0)
+        assert float(outer_dist.integration_breaks[-1]) == pytest.approx(8.0)
+
+        assert jnp.isfinite(inner_dist.mean())
+        assert jnp.isfinite(outer_dist.stddev())
+
+
 class TestBaseTransformationDist:
     def test_base_distribution_without_parametric_layer(self):
         coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
-        dist = ptm.TransformationDist(
-            coef=coef, bspline=bs, simpson_integration_n=8
-        )
+        dist = ptm.TransformationDist(coef=coef, bspline=bs, gauss_legendre_order=8)
 
         assert dist.batch_shape == (2,)
         assert dist.event_shape == ()
@@ -86,20 +138,30 @@ class TestBaseTransformationDist:
                 coef=jnp.ones((1, knots.nparam), dtype=jnp.int32), bspline=bs
             )
 
-    def test_simpson_integration_n_api(self):
+    def test_gauss_legendre_integration_api(self):
         default_dist = ptm.TransformationDist(coef=coef, bspline=bs)
         custom_dist = ptm.TransformationDist(
-            coef=coef, bspline=bs, simpson_integration_n=8
+            coef=coef, bspline=bs, gauss_legendre_order=12
         )
 
-        assert default_dist.simpson_integration_n == 32
-        assert custom_dist.simpson_integration_n == 8
+        assert default_dist.gauss_legendre_order == 8
+        assert custom_dist.gauss_legendre_order == 12
         assert jnp.isfinite(custom_dist.mean())
 
-        for invalid in (0, -2, 3):
-            with pytest.raises(ValueError, match="positive even"):
+        for invalid in (0, -2):
+            with pytest.raises(ValueError, match="positive integer"):
                 ptm.TransformationDist(
-                    coef=coef, bspline=bs, simpson_integration_n=invalid
+                    coef=coef, bspline=bs, gauss_legendre_order=invalid
+                )
+
+        with pytest.raises(TypeError, match="positive integer"):
+            ptm.TransformationDist(coef=coef, bspline=bs, gauss_legendre_order=2.5)
+
+    def test_invalid_integration_bounds_raise(self):
+        for invalid in ((1.0, 1.0), (2.0, 1.0), (jnp.nan, 1.0), (0.0, 1.0, 2.0)):
+            with pytest.raises(ValueError, match="integration"):
+                ptm.TransformationDist(
+                    coef=coef, bspline=bs, integration_bounds=invalid
                 )
 
     def test_extreme_probabilities_remain_finite(self):
@@ -126,7 +188,7 @@ class TestBaseTransformationDist:
                 loc=0.0,
                 scale=1.0,
                 bspline=bs,
-                simpson_integration_n=8,
+                gauss_legendre_order=8,
             )
             return jnp.sum(dist.log_prob(jnp.ones((5, 1))))
 
@@ -134,6 +196,138 @@ class TestBaseTransformationDist:
 
         assert grad.shape == coef.shape
         assert jnp.all(jnp.isfinite(grad))
+
+
+class TestSplineMomentQuadrature:
+    def test_random_walk_coefficients_match_higher_order_reference(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=20)
+        bs = PTMSpline(knots.knots)
+        coef = random_walk_coef(jax.random.key(11), (16,), knots.nparam)
+
+        dist = ptm.TransformationDist(
+            coef=coef, bspline=bs, gauss_legendre_order=8
+        )
+        reference = ptm.TransformationDist(
+            coef=coef, bspline=bs, gauss_legendre_order=32
+        )
+
+        mean = dist.transformation_spline_mean()
+        reference_mean = reference.transformation_spline_mean()
+        variance = dist.transformation_spline_variance(mean=mean)
+        reference_variance = reference.transformation_spline_variance(
+            mean=reference_mean
+        )
+
+        mean_abs = jnp.max(jnp.abs(mean - reference_mean))
+        variance_abs = jnp.max(jnp.abs(variance - reference_variance))
+        mean_rel = jnp.max(
+            jnp.abs(mean - reference_mean) / jnp.maximum(jnp.abs(reference_mean), 1e-5)
+        )
+        variance_rel = jnp.max(
+            jnp.abs(variance - reference_variance)
+            / jnp.maximum(jnp.abs(reference_variance), 1e-5)
+        )
+
+        assert mean.shape == (16,)
+        assert variance.shape == (16,)
+        assert mean_abs < 5e-4
+        assert variance_abs < 5e-4
+        assert mean_rel < 5e-4
+        assert variance_rel < 5e-4
+
+    def test_moment_quadrature_diagnostic_reports_batch_errors(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=20)
+        bs = PTMSpline(knots.knots)
+        coef = random_walk_coef(jax.random.key(12), (8,), knots.nparam)
+        dist = ptm.TransformationDist(
+            coef=coef, bspline=bs, gauss_legendre_order=8
+        )
+
+        diagnostic = dist.moment_quadrature_diagnostic(
+            reference_order=24, rtol=5e-4, atol=5e-5
+        )
+
+        assert set(diagnostic) == {
+            "mean",
+            "variance",
+            "mean_reference",
+            "variance_reference",
+            "mean_abs_error",
+            "variance_abs_error",
+            "mean_rel_error",
+            "variance_rel_error",
+            "ok",
+        }
+        assert diagnostic["mean_abs_error"].shape == (8,)
+        assert diagnostic["variance_abs_error"].shape == (8,)
+        assert bool(diagnostic["ok"])
+
+    def test_pseudo_diagnostic_is_exact_identity(self):
+        dist = GaussianPseudoTransformationDist(
+            coef=jnp.array([[0.0]]), loc=0.0, scale=1.0
+        )
+
+        diagnostic = dist.moment_quadrature_diagnostic()
+
+        assert diagnostic["mean"] == 0.0
+        assert diagnostic["variance"] == 1.0
+        assert bool(diagnostic["ok"])
+
+    def test_autodiff_through_centered_scaled_moments(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=14)
+        bs = PTMSpline(knots.knots)
+        coef = random_walk_coef(jax.random.key(13), (3,), knots.nparam)
+
+        def objective(coef):
+            dist = ptm.LocScaleTransformationDist(
+                coef=coef,
+                loc=0.0,
+                scale=1.0,
+                bspline=bs,
+                centered=True,
+                scaled=True,
+                gauss_legendre_order=8,
+            )
+            return jnp.sum(dist.log_prob(jnp.ones((5, 1))))
+
+        grad = jax.grad(objective)(coef)
+
+        assert grad.shape == coef.shape
+        assert jnp.all(jnp.isfinite(grad))
+
+    def test_piecewise_gl_moment_speed_smoke(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=20)
+        bs = PTMSpline(knots.knots)
+        coef = random_walk_coef(jax.random.key(14), (16,), knots.nparam)
+        dist = ptm.TransformationDist(
+            coef=coef, bspline=bs, gauss_legendre_order=8
+        )
+
+        n_eval = (dist.integration_breaks.size - 1) * dist.gauss_legendre_order
+        assert n_eval <= 200
+
+        @jax.jit
+        def moments(coef):
+            dist = ptm.TransformationDist(
+                coef=coef, bspline=bs, gauss_legendre_order=8
+            )
+            mean = dist.transformation_spline_mean()
+            variance = dist.transformation_spline_variance(mean=mean)
+            return mean, variance
+
+        warm_mean, warm_variance = moments(coef)
+        warm_mean.block_until_ready()
+        warm_variance.block_until_ready()
+
+        start = time.perf_counter()
+        mean, variance = moments(coef)
+        mean.block_until_ready()
+        variance.block_until_ready()
+        elapsed = time.perf_counter() - start
+
+        assert mean.shape == (16,)
+        assert variance.shape == (16,)
+        assert elapsed < 2.0
 
 
 class TestDistOneCoef:
@@ -242,10 +436,10 @@ class TestDistBatchedCoef:
             bspline=bs,
             centered=True,
             scaled=True,
-            simpson_integration_n=8,
+            gauss_legendre_order=8,
         )
 
-        assert dist.simpson_integration_n == 8
+        assert dist.gauss_legendre_order == 8
         assert dist.batch_shape == (2,)
         assert dist.log_prob(jnp.ones((5, 1))).shape == (5, 2)
         assert dist.mean().shape == (2,)
@@ -291,11 +485,11 @@ class TestPseudoDistributions:
             coef=jnp.array([[0.0]]),
             loc=loc,
             scale=scale,
-            simpson_integration_n=8,
+            gauss_legendre_order=8,
         )
         normal = tfd.Normal(loc=loc, scale=scale)
 
-        assert dist.simpson_integration_n == 8
+        assert dist.gauss_legendre_order == 8
         value = jnp.ones((5, 1))
         probs = jnp.full((5, 1), 0.25)
 

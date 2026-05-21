@@ -57,6 +57,7 @@ class TransformationSpline:
         """
         self.n_chunks = 1024
         self.knots = knots
+        self._knots_np = np.asarray(jax.device_get(knots), dtype=float)
 
         self._nparam = knots.size - 4  # len(knots) - order - 1; order is fixed to 3
         S = jnp.tril(jnp.ones((self._nparam, self._nparam)))
