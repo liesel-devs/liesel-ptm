@@ -30,6 +30,17 @@ class TestDotAndDeriv:
         with pytest.raises(ValueError, match="n_coef"):
             bs.dot_and_deriv(1.0, legacy_coef)
 
+    def test_rowwise_coef_requires_matching_observation_axis(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        coef = jax.random.normal(jax.random.key(1), (4, knots.nparam))
+
+        with pytest.raises(ValueError, match="n_coef"):
+            bs.dot_and_deriv(jnp.zeros((3,)), coef)
+
+        with pytest.raises(ValueError, match="n_coef"):
+            bs.dot_inverse(jnp.zeros((3,)), coef)
+
     def test_vector_x(self):
         x = jnp.linspace(-8.0, 8.0, 300)
         fx, fxd = bs.dot_and_deriv(x, coef)
@@ -414,6 +425,57 @@ class TestDotAndDerivNFullBatch:
         dot = bs.dot_inverse_n_fullbatch(x, coef)
 
         assert dot.shape == (1, b, n)
+
+
+class TestPublicMethodEquivalence:
+    def test_forward_methods_agree_rowwise(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        n = 5
+        x = jnp.linspace(-2.0, 2.0, n)
+        coef = jax.random.normal(jax.random.key(2), (n, knots.nparam))
+
+        fx, fxd = bs.dot_and_deriv(x, coef)
+        fx_n, fxd_n = bs.dot_and_deriv_n(x, coef)
+        fx_full, fxd_full = bs.dot_and_deriv_n_fullbatch(x, coef)
+
+        assert jnp.allclose(fx, fx_n)
+        assert jnp.allclose(fxd, fxd_n)
+        assert jnp.allclose(fx, fx_full)
+        assert jnp.allclose(fxd, fxd_full)
+
+    def test_inverse_methods_agree_rowwise(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        n = 5
+        x = jnp.linspace(-2.0, 2.0, n)
+        coef = jax.random.normal(jax.random.key(2), (n, knots.nparam))
+        fx, _ = bs.dot_and_deriv(x, coef)
+
+        x_inv = bs.dot_inverse(fx, coef)
+        x_inv_n = bs.dot_inverse_n(fx, coef)
+        x_inv_full = bs.dot_inverse_n_fullbatch(fx, coef)
+
+        assert x_inv.shape == x.shape
+        assert jnp.allclose(x_inv, x, atol=1e-4)
+        assert jnp.allclose(x_inv, x_inv_n)
+        assert jnp.allclose(x_inv, x_inv_full)
+
+    def test_jvp_through_rowwise_forward(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots, subscripts="...nj,...nj->...n")
+        n = 5
+        x = jnp.linspace(-2.0, 2.0, n)
+        coef = jax.random.normal(jax.random.key(2), (n, knots.nparam))
+
+        def fn(value):
+            fx, fxd = bs.dot_and_deriv(value, coef)
+            return jnp.sum(fx + 0.01 * fxd)
+
+        primal, tangent = jax.jvp(fn, (x,), (jnp.ones_like(x),))
+
+        assert jnp.isfinite(primal)
+        assert jnp.isfinite(tangent)
 
 
 class TestTfpLayout:

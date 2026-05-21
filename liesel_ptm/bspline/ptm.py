@@ -351,13 +351,6 @@ class PTMSpline(TransformationSpline):
 
         self._boundaries = jnp.array([self.min_knot, self.max_knot])
 
-        self._dot_and_deriv_n = self._vmap_over_n_chunked(
-            self._dot_and_deriv_n_fullbatch
-        )
-        self._dot_and_deriv = self._batch_in_chunks(self.dot_and_deriv_n)
-
-        self._dot_inverse = self._batch_in_chunks_inverse(self.dot_inverse_n)
-
     def _left_transition_and_deriv(self, x, coef, value_left, deriv_left):
         """
         Compute left transition value and derivative.
@@ -421,9 +414,9 @@ class PTMSpline(TransformationSpline):
         val = fx_at_linear_start + target_slope_right * (x - self.max_eps)
         return val, target_slope_right
 
-    def _dot_and_deriv_n_fullbatch(self, x: Array, coef: Array) -> tuple[Array, Array]:
+    def _evaluate_spline(self, x: Array, coef: Array) -> tuple[Array, Array]:
         """
-        Compute dot product and derivative for batch.
+        Compute dot product and derivative for broadcasted values and coefficients.
         """
         coef = self._coef_for_eval(x, coef)
         fx_n, deriv_n = self.bspline.dot_and_deriv_n(x, coef)
@@ -431,61 +424,59 @@ class PTMSpline(TransformationSpline):
             self._boundaries, coef
         )
 
-        left_transition = partial(
-            self._left_transition_and_deriv,
-            value_left=boundary_values[0],
-            deriv_left=boundary_derivs[0],
+        value_left = jnp.expand_dims(boundary_values[..., 0], -1)
+        deriv_left = jnp.expand_dims(boundary_derivs[..., 0], -1)
+        value_right = jnp.expand_dims(boundary_values[..., 1], -1)
+        deriv_right = jnp.expand_dims(boundary_derivs[..., 1], -1)
+
+        left_transition, left_transition_deriv = self._left_transition_and_deriv(
+            x, coef, value_left=value_left, deriv_left=deriv_left
+        )
+        right_transition, right_transition_deriv = self._right_transition_and_deriv(
+            x, coef, value_right=value_right, deriv_right=deriv_right
         )
 
-        right_transition = partial(
-            self._right_transition_and_deriv,
-            value_right=boundary_values[1],
-            deriv_right=boundary_derivs[1],
+        fx_left_start = self._left_transition_and_deriv(
+            self.min_eps, coef, value_left=value_left, deriv_left=deriv_left
+        )[0]
+        fx_right_start = self._right_transition_and_deriv(
+            self.max_eps, coef, value_right=value_right, deriv_right=deriv_right
+        )[0]
+
+        left_tail, left_tail_deriv = self._left_tail_and_deriv(
+            x, coef, fx_at_linear_start=fx_left_start
+        )
+        right_tail, right_tail_deriv = self._right_tail_and_deriv(
+            x, coef, fx_at_linear_start=fx_right_start
         )
 
-        left_tail = partial(
-            self._left_tail_and_deriv,
-            fx_at_linear_start=left_transition(self.min_eps, coef)[0],
-        )
-
-        right_tail = partial(
-            self._right_tail_and_deriv,
-            fx_at_linear_start=right_transition(self.max_eps, coef)[0],
-        )
-
-        def branches(x, fx_n, deriv_n):
-            def fxderiv(x, coef):
-                return fx_n, deriv_n
-
-            code = jnp.where(
-                # check most common case first
-                (x >= self.min_knot) & (x <= self.max_knot),
-                2,
+        in_core = (x >= self.min_knot) & (x <= self.max_knot)
+        value = jnp.where(
+            in_core,
+            fx_n,
+            jnp.where(
+                x < self.min_eps,
+                left_tail,
                 jnp.where(
-                    x < self.min_eps,
-                    0,
+                    x < self.min_knot,
+                    left_transition,
+                    jnp.where(x < self.max_eps, right_transition, right_tail),
+                ),
+            ),
+        )
+        deriv = jnp.where(
+            in_core,
+            deriv_n,
+            jnp.where(
+                x < self.min_eps,
+                left_tail_deriv,
+                jnp.where(
+                    x < self.min_knot,
+                    left_transition_deriv,
                     jnp.where(
-                        x < self.min_knot,
-                        1,
-                        jnp.where(x < self.max_eps, 3, 4),
+                        x < self.max_eps, right_transition_deriv, right_tail_deriv
                     ),
                 ),
-            )
-
-            value, deriv = jax.lax.switch(
-                code,
-                (
-                    left_tail,
-                    left_transition,
-                    fxderiv,
-                    right_transition,
-                    right_tail,
-                ),
-                x,
-                coef,
-            )
-
-            return value, deriv
-
-        value, deriv = jax.vmap(branches)(x, fx_n, deriv_n)
+            ),
+        )
         return value, deriv

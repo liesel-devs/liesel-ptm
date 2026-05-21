@@ -13,13 +13,6 @@ from .approx import BSplineApprox
 inv1d = jax.jit(inv1d, static_argnums=(1, 2, 3, 4, 5))
 
 
-def _broadcast_leading(x, target_batch_shape):
-    """
-    Prepend singleton axes so x can broadcast to target_batch_shape + x.shape[-1:].
-    """
-    return _broadcast_leading_core(x, target_batch_shape, core_ndims=1)
-
-
 def _broadcast_leading_core(x, target_batch_shape, core_ndims):
     """
     Prepend singleton axes so x can broadcast to target_batch_shape + core dims.
@@ -52,8 +45,7 @@ class TransformationSpline:
         Attributes
         ----------
         n_chunks
-            Chunk size for batching operations when streaming over large numbers of
-            observations.
+            Compatibility attribute; no longer controls evaluation chunking.
         knots
             Spline knot sequence.
         min_knot
@@ -74,13 +66,6 @@ class TransformationSpline:
 
         self.min_knot = self.bspline.min_knot
         self.max_knot = self.bspline.max_knot
-
-        self._dot_and_deriv_n = self._vmap_over_n_chunked(
-            self._dot_and_deriv_n_fullbatch
-        )
-        self._dot_and_deriv = self._batch_in_chunks(self.dot_and_deriv_n)
-
-        self._dot_inverse = self._batch_in_chunks_inverse(self.dot_inverse_n)
 
         self._outer_knot_left = float(self.bspline.knots[0])
         self._outer_knot_right = float(self.bspline.knots[-1])
@@ -220,106 +205,81 @@ class TransformationSpline:
 
         return coef
 
-    def _dot_and_deriv_n_fullbatch(self, x: Array, coef: Array) -> tuple[Array, Array]:
-        """
-        Assumes coef is already computed.
-        """
-        raise NotImplementedError
-
-    def dot_and_deriv_n_fullbatch(self, x: Array, coef: Array) -> tuple[Array, Array]:
-        """
-        Compute dot product and derivative without batching over observation axis.
-        """
-        was_scalar = jnp.ndim(x) == 0
+    def _broadcast_value_and_coef(
+        self, value: Array, coef: Array
+    ) -> tuple[Array, Array, bool]:
+        value = jnp.asarray(value)
+        was_scalar = jnp.ndim(value) == 0
         if was_scalar:
-            x = jnp.atleast_1d(x)
+            value = jnp.reshape(value, (1,))
+
         coef = self.compute_coef(raw_coef=coef)
 
-        if self._value_matches_shared_coef_batch(x, coef):
-            x = jnp.expand_dims(x, -1)
+        if self._value_matches_shared_coef_batch(value, coef):
+            value = jnp.expand_dims(value, -1)
             was_scalar = True
 
-        batch_x = x.shape[:-1]
-        batch_c = self._coef_leading_batch_shape(coef)
-        target_batch = jnp.broadcast_shapes(batch_x, batch_c)
+        batch_value = value.shape[:-1]
+        batch_coef = self._coef_leading_batch_shape(coef)
+        target_batch = jnp.broadcast_shapes(batch_value, batch_coef)
 
-        x_bt = _broadcast_leading_core(x, target_batch, core_ndims=1)
-        coef_bt = _broadcast_leading_core(coef, target_batch, core_ndims=2)
+        value = _broadcast_leading_core(value, target_batch, core_ndims=1)
+        coef = _broadcast_leading_core(coef, target_batch, core_ndims=2)
 
-        B = int(np.prod(target_batch)) if target_batch else 1
-        n = x_bt.shape[-1]
-        n_coef, p = coef_bt.shape[-2:]
+        return value, coef, was_scalar
 
-        x_flat = jnp.reshape(x_bt, (B, n))
-        coef_flat = jnp.reshape(coef_bt, (B, n_coef, p))
-
-        def body(carry, inputs):
-            x_row, coef_row = inputs
-            dot_row, deriv_row = self._dot_and_deriv_n_fullbatch(x_row, coef_row)
-            return carry, (dot_row, deriv_row)
-
-        _, (dot_flat, deriv_flat) = jax.lax.scan(body, None, (x_flat, coef_flat))
-        dot = jnp.reshape(dot_flat, target_batch + (n,))
-        deriv = jnp.reshape(deriv_flat, target_batch + (n,))
-
+    def _squeeze_scalar_result(self, value: Array, was_scalar: bool) -> Array:
         if was_scalar:
-            return dot.squeeze(axis=-1), deriv.squeeze(axis=-1)
+            return value.squeeze(axis=-1)
+        return value
 
-        return dot, deriv
-
-    def dot_inverse_n(self, y: Array, coef: Array) -> Array:
+    def _evaluate_spline(self, value: Array, coef: Array) -> tuple[Array, Array]:
         """
-        Compute inverse spline for y with shape (n,).
+        Evaluate constrained, broadcasted spline coefficients at broadcasted values.
         """
+        coef = self._coef_for_eval(value, coef)
+        return self.bspline.dot_and_deriv_n(value, coef)
 
-        def fn(x):
-            return self.dot_and_deriv_n(x, coef)[0]
-
-        x = inv1d(
-            y,
-            fn,
-            self._outer_knot_left,
-            self._outer_knot_right,
-            self._ngrid_inverse,
-            "monotonic",
+    def _dot_and_deriv_broadcast(
+        self, value: Array, coef: Array
+    ) -> tuple[Array, Array]:
+        value, coef, was_scalar = self._broadcast_value_and_coef(value, coef)
+        dot, deriv = self._evaluate_spline(value, coef)
+        return (
+            self._squeeze_scalar_result(dot, was_scalar),
+            self._squeeze_scalar_result(deriv, was_scalar),
         )
 
-        return x
+    def _dot_inverse_broadcast(self, value: Array, coef: Array) -> Array:
+        value, coef, was_scalar = self._broadcast_value_and_coef(value, coef)
 
-    def dot_inverse_n_fullbatch(self, x: Array, coef: Array) -> Array:
-        """
-        Compute inverse spline for y with shape (n,).
-        """
-        was_scalar = jnp.ndim(x) == 0
-        if was_scalar:
-            y = jnp.atleast_1d(x)
-
-        coef = self.compute_coef(raw_coef=coef)
-
-        if self._value_matches_shared_coef_batch(y, coef):
-            y = jnp.expand_dims(y, -1)
-            was_scalar = True
-
-        batch_y = y.shape[:-1]
-        batch_c = self._coef_leading_batch_shape(coef)
-        target_batch = jnp.broadcast_shapes(batch_y, batch_c)
-
-        y_bt = _broadcast_leading_core(y, target_batch, core_ndims=1)
-        coef_bt = _broadcast_leading_core(coef, target_batch, core_ndims=2)
-
+        target_batch = value.shape[:-1]
+        n = value.shape[-1]
+        n_coef, p = coef.shape[-2:]
         B = int(np.prod(target_batch)) if target_batch else 1
-        n = y_bt.shape[-1]
-        n_coef, p = coef_bt.shape[-2:]
 
-        y_flat = jnp.reshape(y_bt, (B, n))
-        coef_flat = jnp.reshape(coef_bt, (B, n_coef, p))
+        if n_coef != 1:
+            if n_coef != n:
+                raise ValueError(
+                    "Spline coefficients with n_coef > 1 must match the evaluation "
+                    f"axis length. Got {n_coef=} and {n=}."
+                )
 
-        def _inv(y: Array, coef: Array) -> Array:
+            if not self._is_rowwise_spline():
+                raise ValueError(
+                    "Spline coefficients with n_coef > 1 require a rowwise spline "
+                    "with subscripts='...nj,...nj->...n'."
+                )
+
+        value_flat = jnp.reshape(value, (B, n))
+        coef_flat = jnp.reshape(coef, (B, n_coef, p))
+
+        def inv_shared(value_row: Array, coef_row: Array) -> Array:
             def fn(x):
-                return self._dot_and_deriv_n_fullbatch(jnp.atleast_1d(x), coef)[0]
+                return self._evaluate_spline(jnp.atleast_1d(x), coef_row)[0]
 
-            x = inv1d(
-                y,
+            return inv1d(
+                value_row,
                 fn,
                 self._outer_knot_left,
                 self._outer_knot_right,
@@ -327,200 +287,43 @@ class TransformationSpline:
                 "monotonic",
             )
 
-            return x
+        def inv_rowwise(value_row: Array, coef_row: Array) -> Array:
+            if coef_row.shape[-2] == 1:
+                return inv_shared(value_row, coef_row)
 
-        def _inv_row(y: Array, coef: Array) -> Array:
-            if coef.shape[-2] == 1:
-                return _inv(y, coef)
+            def inv_one(value_i: Array, coef_i: Array) -> Array:
+                coef_i = jnp.expand_dims(coef_i, axis=0)
+                return inv_shared(jnp.atleast_1d(value_i), coef_i)[0]
 
-            def _inv_one(y_i: Array, coef_i: Array) -> Array:
-                return _inv(jnp.atleast_1d(y_i), jnp.expand_dims(coef_i, 0))[0]
+            return jax.vmap(inv_one)(value_row, coef_row)
 
-            return jax.vmap(_inv_one)(y, coef)
+        inverse_flat = jax.vmap(inv_rowwise)(value_flat, coef_flat)
+        inverse = jnp.reshape(inverse_flat, target_batch + (n,))
+        return self._squeeze_scalar_result(inverse, was_scalar)
 
-        def body(carry, inputs):
-            y_row, coef_row = inputs
-            return carry, _inv_row(y_row, coef_row)
+    def dot_and_deriv_n_fullbatch(self, x: Array, coef: Array) -> tuple[Array, Array]:
+        """
+        Compute dot product and derivative without chunking over observations.
+        """
+        return self._dot_and_deriv_broadcast(x, coef)
 
-        _, out_flat = jax.lax.scan(body, None, (y_flat, coef_flat))
-        out = jnp.reshape(out_flat, target_batch + (n,))
+    def dot_inverse_n(self, x: Array, coef: Array) -> Array:
+        """
+        Compute inverse spline values for x.
+        """
+        return self._dot_inverse_broadcast(x, coef)
 
-        if was_scalar:
-            return out.squeeze(axis=-1)
-
-        return out
+    def dot_inverse_n_fullbatch(self, x: Array, coef: Array) -> Array:
+        """
+        Compute inverse spline values without chunking over observations.
+        """
+        return self._dot_inverse_broadcast(x, coef)
 
     def dot_and_deriv_n(self, x: Array, coef: Array) -> tuple[Array, Array]:
         """
-        Compute dot product and derivative for x with shape (n,).
+        Compute dot product and derivative for x.
         """
-        coef = self.compute_coef(raw_coef=coef)
-        return self._dot_and_deriv_n(x, coef)
-
-    def _vmap_over_n_chunked(self, fn):
-        """
-        Vectorize function over chunks.
-        """
-        n_chunk = self.n_chunks
-
-        # vmap over a small chunk of length n_chunk
-        bdd_over_chunk = fn
-
-        def bdd_over_n_chunked(x_row: jnp.ndarray, coef_row: jnp.ndarray):
-            """
-            x_row:    (n,) or scalar (())
-            coef_row: (p,)
-            returns:  (n,), (n,)  or  scalar (), scalar () if x_row is scalar
-            """
-            # Accept scalars and vectors
-            was_scalar = jnp.ndim(x_row) == 0
-            x_vec = jnp.atleast_1d(x_row)
-
-            n = x_vec.shape[0]  # static at trace-time
-            pad = (-n) % n_chunk  # static int
-
-            if pad:
-                x_vec = jnp.pad(x_vec, (0, pad))
-
-            num_blocks = x_vec.shape[0] // n_chunk  # static int
-
-            # (num_blocks, n_chunk)
-            x_blocks = x_vec.reshape((num_blocks, n_chunk))
-
-            # map chunk-by-chunk; avoids a single (n, p) intermediate
-            dot_blocks, der_blocks = jax.vmap(bdd_over_chunk, in_axes=(0, None))(
-                x_blocks, coef_row
-            )  # -> (num_blocks, n_chunk) each
-
-            # stitch blocks back together and drop padding
-            dot = dot_blocks.reshape((num_blocks * n_chunk,))[:n]
-            deriv = der_blocks.reshape((num_blocks * n_chunk,))[:n]
-
-            # If the input was scalar, return scalars
-            if was_scalar:
-                return dot[0], deriv[0]
-            return dot, deriv
-
-        return bdd_over_n_chunked
-
-    def _batch_in_chunks(self, fn):
-        """
-        Batch function in chunks.
-        """
-        """
-        x:    (...Bx..., n)
-        coef: (...Bc..., p)
-        Returns:
-        dot, deriv with shape broadcast(...Bx..., ...Bc...) + (n,)
-        """
-        bdd_over_n = fn
-
-        def batched_fn(x, coef):
-            # Allow scalar x by promoting to length-1 vector so a trailing axis exists
-            x_was_scalar = jnp.ndim(x) == 0
-            if x_was_scalar:
-                x = jnp.reshape(x, (1,))  # n = 1
-
-            self._check_coef_core_shape(coef)
-
-            if self._value_matches_shared_coef_batch(x, coef):
-                x = jnp.expand_dims(x, -1)
-                x_was_scalar = True
-
-            # Extract leading (batch) shapes
-            batch_x = x.shape[:-1]
-            batch_c = coef.shape[:-2]
-
-            # Compute common leading batch shape via broadcasting rules
-            target_batch = jnp.broadcast_shapes(batch_x, batch_c)  # tuple
-
-            # Broadcast both to the same leading batch shape
-            x_bt = _broadcast_leading(x, target_batch)  # target_batch + (n,)
-            coef_bt = _broadcast_leading_core(
-                coef, target_batch, core_ndims=2
-            )  # target_batch + (n_coef, p)
-
-            # Flatten the leading batch to a single dimension B
-            B = int(np.prod(target_batch)) if target_batch else 1
-            n_coef, p = coef_bt.shape[-2:]
-            x_flat = jnp.reshape(x_bt, (B, x.shape[-1]))  # (B, n)
-            coef_flat = jnp.reshape(coef_bt, (B, n_coef, p))  # (B, n_coef, p)
-
-            # Scan over the flattened batch to avoid (B, n, p) temporaries
-            def body(carry, inputs):
-                x_row, coef_row = inputs
-                dot_row, deriv_row = bdd_over_n(x_row, coef_row)  # (n,), (n,)
-                return carry, (dot_row, deriv_row)
-
-            carry = None
-            carry, (dot_flat, deriv_flat) = jax.lax.scan(
-                body, carry, (x_flat, coef_flat)
-            )  # (B, n)
-
-            # Reshape back to the broadcast batch shape
-            out_shape = target_batch + (x.shape[-1],)  # (..., n)
-            dot = jnp.reshape(dot_flat, out_shape)
-            deriv = jnp.reshape(deriv_flat, out_shape)
-            if x_was_scalar:
-                return dot.squeeze(axis=-1), deriv.squeeze(axis=-1)
-            return dot, deriv
-
-        return batched_fn
-
-    def _batch_in_chunks_inverse(self, fn):
-        """
-        Batch inverse function in chunks.
-        """
-        bdd_over_n = fn
-
-        def batched_fn(x, coef):
-            # Allow scalar x by promoting to length-1 vector so a trailing axis exists
-            x_was_scalar = jnp.ndim(x) == 0
-            if x_was_scalar:
-                x = jnp.reshape(x, (1,))  # n = 1
-
-            self._check_coef_core_shape(coef)
-
-            if self._value_matches_shared_coef_batch(x, coef):
-                x = jnp.expand_dims(x, -1)
-                x_was_scalar = True
-
-            # Leading (batch) shapes
-            batch_x = x.shape[:-1]  # possibly ()
-            batch_c = coef.shape[:-2]  # possibly ()
-
-            # Broadcast to common leading batch shape
-            target_batch = jnp.broadcast_shapes(batch_x, batch_c)
-
-            x_bt = _broadcast_leading(x, target_batch)  # target_batch + (n,)
-            coef_bt = _broadcast_leading_core(
-                coef, target_batch, core_ndims=2
-            )  # target_batch + (n_coef, p)
-
-            # Flatten leading batch
-            B = int(np.prod(target_batch)) if target_batch else 1
-            n = x_bt.shape[-1]
-            n_coef, p = coef_bt.shape[-2:]
-
-            x_flat = jnp.reshape(x_bt, (B, n))  # (B, n)
-            coef_flat = jnp.reshape(coef_bt, (B, n_coef, p))  # (B, n_coef, p)
-
-            # Scan over flattened batch (avoids (B, n, p) temporaries)
-            def body(carry, inputs):
-                x_row, coef_row = inputs
-                dot_row = bdd_over_n(x_row, coef_row)  # -> (n,)
-                return carry, dot_row
-
-            _, dot_flat = jax.lax.scan(body, None, (x_flat, coef_flat))  # (B, n)
-
-            # Reshape back to broadcast batch shape
-            out = jnp.reshape(dot_flat, target_batch + (n,))  # (..., n)
-
-            if x_was_scalar:
-                return out.squeeze(axis=-1)
-            return out
-
-        return batched_fn
+        return self._dot_and_deriv_broadcast(x, coef)
 
     def dot_and_deriv(self, x: Array, coef: Array) -> tuple[Array, Array]:
         """
@@ -530,7 +333,7 @@ class TransformationSpline:
         shape ``(...batch, 1, p)``. For rowwise splines, ``x`` has shape
         ``(...batch, n)`` and ``coef`` has shape ``(...batch, n, p)``.
         """
-        return self._dot_and_deriv(x, coef)
+        return self._dot_and_deriv_broadcast(x, coef)
 
     def dot_inverse(self, x: Array, coef: Array) -> Array:
         """
@@ -540,7 +343,7 @@ class TransformationSpline:
         shape ``(...batch, 1, p)``. For rowwise splines, ``x`` has shape
         ``(...batch, n)`` and ``coef`` has shape ``(...batch, n, p)``.
         """
-        return self._dot_inverse(x, coef)
+        return self._dot_inverse_broadcast(x, coef)
 
     def dot_and_deriv_tfp(
         self,

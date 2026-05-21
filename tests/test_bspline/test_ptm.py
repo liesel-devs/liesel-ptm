@@ -30,6 +30,15 @@ class TestDotAndDeriv:
         with pytest.raises(ValueError, match="n_coef"):
             bs.dot_and_deriv(1.0, legacy_coef)
 
+    def test_rejects_rowwise_coef_for_standard_spline(self):
+        rowwise_coef = jax.random.normal(jax.random.key(1), (3, knots.nparam))
+
+        with pytest.raises(ValueError, match="rowwise"):
+            bs.dot_and_deriv(jnp.zeros((3,)), rowwise_coef)
+
+        with pytest.raises(ValueError, match="rowwise"):
+            bs.dot_inverse(jnp.zeros((3,)), rowwise_coef)
+
     def test_vector_x(self):
         x = jnp.linspace(-8.0, 8.0, 300)
         fx, fxd = bs.dot_and_deriv(x, coef)
@@ -365,6 +374,48 @@ class TestDotAndDerivNFullBatch:
         assert not jnp.any(jnp.isnan(fx))
         assert not jnp.any(jnp.isnan(fxd))
         assert jnp.all(fxd > 0.0)
+
+
+class TestPublicMethodEquivalence:
+    def test_forward_methods_agree(self):
+        x = jax.random.normal(jax.random.key(1), (3, 7))
+        coef = jax.random.normal(jax.random.key(2), (3, 1, knots.nparam))
+
+        fx, fxd = bs.dot_and_deriv(x, coef)
+        fx_n, fxd_n = bs.dot_and_deriv_n(x, coef)
+        fx_full, fxd_full = bs.dot_and_deriv_n_fullbatch(x, coef)
+
+        assert jnp.allclose(fx, fx_n)
+        assert jnp.allclose(fxd, fxd_n)
+        assert jnp.allclose(fx, fx_full)
+        assert jnp.allclose(fxd, fxd_full)
+
+    def test_inverse_methods_agree(self):
+        x = jnp.linspace(-2.0, 2.0, 15).reshape((3, 5))
+        coef = jax.random.normal(jax.random.key(2), (3, 1, knots.nparam))
+        fx, _ = bs.dot_and_deriv(x, coef)
+
+        x_inv = bs.dot_inverse(fx, coef)
+        x_inv_n = bs.dot_inverse_n(fx, coef)
+        x_inv_full = bs.dot_inverse_n_fullbatch(fx, coef)
+
+        assert x_inv.shape == x.shape
+        assert jnp.allclose(x_inv, x, atol=1e-4)
+        assert jnp.allclose(x_inv, x_inv_n)
+        assert jnp.allclose(x_inv, x_inv_full)
+
+    def test_jvp_through_batched_forward(self):
+        x = jnp.linspace(-2.0, 2.0, 6).reshape((2, 3))
+        coef = jax.random.normal(jax.random.key(2), (2, 1, knots.nparam))
+
+        def fn(value):
+            fx, fxd = bs.dot_and_deriv(value, coef)
+            return jnp.sum(fx + 0.01 * fxd)
+
+        primal, tangent = jax.jvp(fn, (x,), (jnp.ones_like(x),))
+
+        assert jnp.isfinite(primal)
+        assert jnp.isfinite(tangent)
 
 
 class TestTfpLayout:

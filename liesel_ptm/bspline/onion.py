@@ -136,9 +136,9 @@ class OnionSpline(TransformationSpline):
         super().__init__(knots, subscripts=subscripts)
         self._compute_coef = jax.jit(get_onion_fn(knots))  # type: ignore
 
-    def _dot_and_deriv_n_fullbatch(self, x: Array, coef: Array) -> tuple[Array, Array]:
+    def _evaluate_spline(self, x: Array, coef: Array) -> tuple[Array, Array]:
         """
-        Compute dot product and derivative for batch.
+        Compute dot product and derivative for broadcasted values and coefficients.
         """
         coef = self._coef_for_eval(x, coef)
         fx_n, deriv_n = self.bspline.dot_and_deriv_n(x, coef)
