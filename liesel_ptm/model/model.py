@@ -112,6 +112,21 @@ class PTMDist(lsl.Dist):
                     centered=centered,
                     scaled=scaled,
                 )
+            case "ptm_nj":
+                continue_linearly = trafo_target_slope == "continue_linearly"
+                bspline_inst = PTMSpline(
+                    knots=knots,
+                    eps=trafo_lambda,
+                    continue_linearly=continue_linearly,
+                    subscripts="...nj,...nj->...n",
+                )
+
+                partial_dist_class = partial(
+                    LocScaleTransformationDist,
+                    bspline=bspline_inst,
+                    centered=centered,
+                    scaled=scaled,
+                )
             case "onion":
                 bspline_inst = OnionSpline(knots)
                 partial_dist_class = partial(
