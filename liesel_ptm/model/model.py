@@ -761,7 +761,9 @@ class LocScalePTM:
         if scale is not None and newdata is not None:
             raise ValueError("If scale is not None, newdata is not used.")
 
-        if loc is None or scale is None:
+        uses_predicted_locscale = loc is None or scale is None
+
+        if uses_predicted_locscale:
             locscale = self.graph.predict(
                 samples, predict=[self.loc.name, self.scale.name], newdata=newdata
             )
@@ -781,15 +783,46 @@ class LocScalePTM:
         loc_ = jnp.asarray(loc_)
         scale_ = jnp.asarray(scale_)
 
-        ndim = max(loc_.ndim, scale_.ndim, (trafo_samples.ndim - 1))
+        trafo_samples = jnp.asarray(trafo_samples)
+        coef_batch_ndim = trafo_samples.ndim - 2
+        if trafo_samples.shape[-2] != 1:
+            coef_batch_ndim += 1
 
-        if loc_.ndim < ndim:
+        ndim = max(loc_.ndim, scale_.ndim, coef_batch_ndim)
+        if uses_predicted_locscale:
+            ndim = max(ndim, trafo_samples.ndim - 1)
+            if self.is_gaussian and loc_.ndim <= 2 and scale_.ndim <= 2:
+                ndim = max(ndim, loc_.ndim + 1, scale_.ndim + 1)
+
+        while loc_.ndim < ndim:
             loc_ = jnp.expand_dims(loc_, -1)
-        if scale_.ndim < ndim:
+        while scale_.ndim < ndim:
             scale_ = jnp.expand_dims(scale_, -1)
+        while trafo_samples.shape[-2] == 1 and trafo_samples.ndim - 2 < ndim:
+            trafo_samples = jnp.expand_dims(trafo_samples, trafo_samples.ndim - 2)
 
         return self.response.dist_node.partial_dist_class(  # type: ignore
             loc=loc_, scale=scale_, coef=trafo_samples, batched=True
+        )
+
+    @staticmethod
+    def _grid_to_tfp_sample_layout(grid: Array, batch_shape: Sequence[int]) -> Array:
+        grid = jnp.asarray(grid)
+        if grid.ndim == 0:
+            return grid
+
+        return jnp.reshape(grid, grid.shape + (1,) * len(tuple(batch_shape)))
+
+    @staticmethod
+    def _grid_from_tfp_sample_layout(value: Array, grid_ndim: int) -> Array:
+        if grid_ndim == 0:
+            return value
+
+        value = jnp.asarray(value)
+        return jnp.moveaxis(
+            value,
+            source=tuple(range(grid_ndim)),
+            destination=tuple(range(value.ndim - grid_ndim, value.ndim)),
         )
 
     def summarise_dist(
@@ -823,10 +856,25 @@ class LocScalePTM:
         grid_ = grid if grid is not None else self.response.value
         dist = self.init_dist(samples, loc=loc, scale=scale, newdata=newdata)
 
-        z_samples, _ = dist.transformation_and_logdet(grid_)
-        log_prob_samples = dist.log_prob(grid_)
-        prob_samples = dist.prob(grid_)
-        cdf_samples = dist.cdf(grid_)
+        if grid is None:
+            z_samples, _ = dist.transformation_and_logdet(grid_)
+            log_prob_samples = dist.log_prob(grid_)
+            prob_samples = dist.prob(grid_)
+            cdf_samples = dist.cdf(grid_)
+        else:
+            grid_ndim = jnp.ndim(grid_)
+            grid_tfp = self._grid_to_tfp_sample_layout(grid_, dist.batch_shape)
+            z_samples, _ = dist.transformation_and_logdet(grid_tfp)
+            log_prob_samples = dist.log_prob(grid_tfp)
+            prob_samples = dist.prob(grid_tfp)
+            cdf_samples = dist.cdf(grid_tfp)
+
+            z_samples = self._grid_from_tfp_sample_layout(z_samples, grid_ndim)
+            log_prob_samples = self._grid_from_tfp_sample_layout(
+                log_prob_samples, grid_ndim
+            )
+            prob_samples = self._grid_from_tfp_sample_layout(prob_samples, grid_ndim)
+            cdf_samples = self._grid_from_tfp_sample_layout(cdf_samples, grid_ndim)
 
         return {
             "z": z_samples,
@@ -865,9 +913,16 @@ class LocScalePTM:
         key = jax.random.PRNGKey(key) if isinstance(key, int) else key
         dist = self.init_dist(samples, loc=0.0, scale=1.0)
 
-        z_samples, _ = dist.transformation_and_logdet(grid)
-        pdf_samples = jnp.exp(dist.log_prob(grid))
-        cdf_samples = dist.cdf(grid)
+        grid_ndim = jnp.ndim(grid)
+        grid_tfp = self._grid_to_tfp_sample_layout(grid, dist.batch_shape)
+
+        z_samples, _ = dist.transformation_and_logdet(grid_tfp)
+        pdf_samples = jnp.exp(dist.log_prob(grid_tfp))
+        cdf_samples = dist.cdf(grid_tfp)
+
+        z_samples = self._grid_from_tfp_sample_layout(z_samples, grid_ndim)
+        pdf_samples = self._grid_from_tfp_sample_layout(pdf_samples, grid_ndim)
+        cdf_samples = self._grid_from_tfp_sample_layout(cdf_samples, grid_ndim)
 
         z_df = summarise_by_samples(key, z_samples, "z", n=n)
         cdf_df = summarise_by_samples(key, cdf_samples, "cdf", n=n)
@@ -1504,7 +1559,10 @@ class LocScalePTM:
             else jnp.linspace(min(r_train.min(), -4.0), max(r_train.max(), 4.0), 300)
         )
         dist = self.init_dist(samples, loc=0.0, scale=1.0)
-        z_samples, _ = dist.transformation_and_logdet(grid_)
+        grid_ndim = jnp.ndim(grid_)
+        grid_tfp = self._grid_to_tfp_sample_layout(grid_, dist.batch_shape)
+        z_samples, _ = dist.transformation_and_logdet(grid_tfp)
+        z_samples = self._grid_from_tfp_sample_layout(z_samples, grid_ndim)
         while z_samples.ndim < 3:
             z_samples = jnp.expand_dims(z_samples, 0)
 
@@ -1614,7 +1672,10 @@ class LocScalePTM:
             else jnp.linspace(min(r_train.min(), -4.0), max(r_train.max(), 4.0), 300)
         )
         dist = self.init_dist(samples, loc=0.0, scale=1.0)
-        prob_samples = dist.prob(grid_)
+        grid_ndim = jnp.ndim(grid_)
+        grid_tfp = self._grid_to_tfp_sample_layout(grid_, dist.batch_shape)
+        prob_samples = dist.prob(grid_tfp)
+        prob_samples = self._grid_from_tfp_sample_layout(prob_samples, grid_ndim)
         while prob_samples.ndim < 3:
             prob_samples = jnp.expand_dims(prob_samples, 0)
 
@@ -1721,7 +1782,10 @@ class LocScalePTM:
             else jnp.linspace(min(r_train.min(), -4.0), max(r_train.max(), 4.0), 300)
         )
         dist = self.init_dist(samples, loc=0.0, scale=1.0)
-        cdf_samples = dist.cdf(grid_)
+        grid_ndim = jnp.ndim(grid_)
+        grid_tfp = self._grid_to_tfp_sample_layout(grid_, dist.batch_shape)
+        cdf_samples = dist.cdf(grid_tfp)
+        cdf_samples = self._grid_from_tfp_sample_layout(cdf_samples, grid_ndim)
         while cdf_samples.ndim < 3:
             cdf_samples = jnp.expand_dims(cdf_samples, 0)
 

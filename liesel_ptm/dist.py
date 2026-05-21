@@ -16,6 +16,13 @@ KeyArray = Any
 Array = Any
 
 
+def _as_unused_pseudo_coef(coef: Array) -> Array:
+    coef = jnp.asarray(coef)
+    if coef.ndim < 2:
+        return jnp.reshape(coef, (1, 1))
+    return coef
+
+
 def integrate_simpson(
     f: Callable[[Array], Array],
     a: float | Array,
@@ -77,8 +84,8 @@ class TransformationDist(tfd.Distribution):
         spline transformation might have on the scale of the distribution is \
         negated.
     batched
-        If True, allow for batched computations (might be slightly less efficient in \
-        the scalar case).
+        Accepted for backward compatibility. Computation always follows TFP \
+        scalar-event batching.
     **parametric_distribution_kwargs
         Additional keyword arguments passed to the parametric distribution.
 
@@ -143,12 +150,7 @@ class TransformationDist(tfd.Distribution):
                 **parametric_distribution_kwargs
             )
 
-        if batched:
-            self.dot_and_deriv = self.bspline.dot_and_deriv
-            self._dot_inverse = self.bspline.dot_inverse
-        else:
-            self._dot_inverse = self.bspline.dot_inverse_n_fullbatch
-            self.dot_and_deriv = self.bspline.dot_and_deriv_n_fullbatch
+        self.batched = batched
 
         self.simpson_integration_n = 32
 
@@ -161,30 +163,54 @@ class TransformationDist(tfd.Distribution):
             name=name,
         )
 
+    def _batch_shape_tuple(self) -> tuple[int, ...]:
+        return tuple(int(dim) for dim in tuple(self.batch_shape))
+
+    def _broadcast_to_batch(self, value: Array) -> Array:
+        return jnp.broadcast_to(jnp.asarray(value), self._batch_shape_tuple())
+
+    def _spline_forward_tfp(self, value: Array) -> tuple[Array, Array]:
+        return self.bspline.dot_and_deriv_tfp(
+            value, self.coef, batch_shape=self._batch_shape_tuple()
+        )
+
+    def _spline_inverse_tfp(self, value: Array) -> Array:
+        return self.bspline.dot_inverse_tfp(
+            value, self.coef, batch_shape=self._batch_shape_tuple()
+        )
+
     def _mean(self, **kwargs) -> Array:
         if self.parametric_distribution is None:
-            parametric_mean = 0.0
+            parametric_mean = jnp.array(0.0, dtype=self.dtype)
         else:
             parametric_mean = self.parametric_distribution._mean(**kwargs)
+
+        parametric_mean = self._broadcast_to_batch(parametric_mean)
 
         if self.centered:
             return parametric_mean
 
-        return parametric_mean + self.transformation_spline_mean()
+        return self._broadcast_to_batch(
+            parametric_mean + self.transformation_spline_mean()
+        )
 
     def _stddev(self, **kwargs) -> Array:
         if self.parametric_distribution is None:
-            parametric_stddev: float | Array = 1.0
+            parametric_stddev: float | Array = jnp.array(1.0, dtype=self.dtype)
         else:
             try:
                 parametric_stddev = self.parametric_distribution._stddev(**kwargs)
             except NotImplementedError:
                 parametric_stddev = jnp.sqrt(self.parametric_distribution._variance())
 
+        parametric_stddev = self._broadcast_to_batch(parametric_stddev)
+
         if self.scaled:
             return parametric_stddev
 
-        return parametric_stddev * jnp.sqrt(self.transformation_spline_variance())
+        return self._broadcast_to_batch(
+            parametric_stddev * jnp.sqrt(self.transformation_spline_variance())
+        )
 
     def _cdf(self, value: Array) -> Array | float:
         z, _ = self.transformation_and_logdet(value)
@@ -202,21 +228,16 @@ class TransformationDist(tfd.Distribution):
         return jnp.exp(self._log_prob(value))
 
     def _sample_n(self, n: int | Array, seed: KeyArray | None = None) -> Array:
-        shape = [n] + self.batch_shape + self.event_shape
+        shape = (n,) + self._batch_shape_tuple()
         # ensure 0 will be > 0 to avoid numerical instability
         eps = jnp.finfo(jnp.dtype(self.coef)).eps
         u = jax.random.uniform(seed, shape=shape, minval=eps)  # type: ignore
 
-        shape = [n] + self.batch_shape + self.event_shape
-        return tf.reshape(self._quantile(u), shape)
+        return self._quantile(u)
 
     @partial(jax.jit, static_argnums=0)
     def _quantile(self, value: Array) -> Array:
         z = self.reference_distribution.quantile(value)
-        if jnp.ndim(value) == 0:  # scalar case
-            z = jnp.reshape(z, (1,) * len(self.batch_shape))
-            return self.inverse_transformation(z)
-
         return self.inverse_transformation(z)
 
     def quantile_spline(self, value: Array) -> Array:
@@ -246,22 +267,26 @@ class TransformationDist(tfd.Distribution):
         return jnp.array([], dtype=jnp.int32)
 
     def _batch_shape(self):
-        shape = tuple()
-        for param in self.parametric_distribution_kwargs.values():
-            shape = tf.broadcast_static_shape(shape, jnp.shape(param))
-
         coef_shape = tf.TensorShape(self.bspline._coef_batch_shape(self.coef))
 
-        return tf.broadcast_static_shape(coef_shape, shape)
+        if self.parametric_distribution is None:
+            parametric_shape = tf.TensorShape([])
+        else:
+            parametric_shape = self.parametric_distribution.batch_shape
+
+        return tf.broadcast_static_shape(coef_shape, parametric_shape)
 
     def _batch_shape_tensor(self):
-        shape = tuple()
-        for param in self.parametric_distribution_kwargs.values():
-            shape = tf.broadcast_static_shape(shape, jnp.shape(param))
+        coef_shape = jnp.asarray(
+            self.bspline._coef_batch_shape(self.coef), dtype=jnp.int32
+        )
 
-        coef_shape = tf.TensorShape(self.bspline._coef_batch_shape(self.coef))
+        if self.parametric_distribution is None:
+            parametric_shape = jnp.asarray([], dtype=jnp.int32)
+        else:
+            parametric_shape = self.parametric_distribution.batch_shape_tensor()
 
-        return tf.broadcast_dynamic_shape(coef_shape, shape)
+        return tf.broadcast_dynamic_shape(coef_shape, parametric_shape)
 
     def log_prob_spline(self, value: Array):
         """
@@ -326,6 +351,7 @@ class TransformationDist(tfd.Distribution):
         if self.parametric_distribution is None:
             return value, jnp.zeros_like(value)
 
+        value = jnp.asarray(value, dtype=self.dtype)
         F_apriori = self.parametric_distribution
         Fz = self.reference_distribution
 
@@ -344,8 +370,9 @@ class TransformationDist(tfd.Distribution):
         return transf, logdet
 
     def _transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
+        value = jnp.asarray(value, dtype=self.dtype)
         nan_mask = jnp.isnan(value)
-        transf, deriv = self.dot_and_deriv(value, self.coef)
+        transf, deriv = self._spline_forward_tfp(value)
         transf = jnp.where(nan_mask, jnp.nan, transf)
         deriv = jnp.where(nan_mask, jnp.nan, deriv)
         tiny = jnp.finfo(value.dtype).tiny
@@ -629,7 +656,7 @@ class TransformationDist(tfd.Distribution):
         else:
             ystd = jnp.array(1.0)
 
-        return (self._dot_inverse(value, self.coef) - ymean) / ystd
+        return (self._spline_inverse_tfp(value) - ymean) / ystd
 
     def inverse_transformation_parametric(self, value: Array) -> Array:
         """
@@ -707,7 +734,8 @@ class LocScaleTransformationDist(TransformationDist):
     scaled
         If True, the transformation is scaled.
     batched
-        If True, use batched computations.
+        Accepted for backward compatibility. Computation always follows TFP \
+        scalar-event batching.
 
     Notes
     -----
@@ -821,7 +849,8 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
     scaled
         If True, the transformation is scaled.
     batched
-        If True, use batched computations.
+        Accepted for backward compatibility. Computation always follows TFP \
+        scalar-event batching.
 
     Notes
     -----
@@ -845,7 +874,7 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
         batched: bool = True,
     ) -> None:
         super().__init__(
-            coef=coef,
+            coef=_as_unused_pseudo_coef(coef),
             bspline=self.bspline,
             validate_args=validate_args,
             allow_nan_stats=allow_nan_stats,
@@ -909,7 +938,8 @@ class PseudoTransformationDist(TransformationDist):
     scaled
         If True, the transformation is scaled.
     batched
-        If True, use batched computations.
+        Accepted for backward compatibility. Computation always follows TFP \
+        scalar-event batching.
 
     Notes
     -----
@@ -934,7 +964,7 @@ class PseudoTransformationDist(TransformationDist):
         **parametric_distribution_kwargs,
     ) -> None:
         super().__init__(
-            coef=coef,
+            coef=_as_unused_pseudo_coef(coef),
             bspline=self.bspline,
             validate_args=validate_args,
             allow_nan_stats=allow_nan_stats,
@@ -993,7 +1023,8 @@ class LocScalePseudoTransformationDist(TransformationDist):
     scaled
         If True, the transformation is scaled.
     batched
-        If True, use batched computations.
+        Accepted for backward compatibility. Computation always follows TFP \
+        scalar-event batching.
 
     Notes
     -----
@@ -1017,7 +1048,7 @@ class LocScalePseudoTransformationDist(TransformationDist):
         batched: bool = True,
     ) -> None:
         super().__init__(
-            coef=coef,
+            coef=_as_unused_pseudo_coef(coef),
             parametric_distribution=parametric_distribution,
             reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
             bspline=self.bspline,

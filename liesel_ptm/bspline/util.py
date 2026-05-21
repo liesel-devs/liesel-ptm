@@ -134,17 +134,25 @@ class TransformationSpline:
     @staticmethod
     def _broadcast_tfp_value(
         value: Array, batch_shape: tuple[int, ...]
-    ) -> tuple[Array, tuple[int, ...]]:
+    ) -> tuple[Array, tuple[int, ...], tuple[int, ...]]:
         value = jnp.asarray(value)
-        output_shape = jnp.broadcast_shapes(jnp.shape(value), batch_shape)
+        value_shape = tuple(jnp.shape(value))
+
+        if not batch_shape:
+            sample_shape = value_shape
+            result_batch_shape: tuple[int, ...] = ()
+        elif len(value_shape) > len(batch_shape):
+            sample_shape = value_shape[: -len(batch_shape)]
+            value_batch_shape = value_shape[-len(batch_shape) :]
+            result_batch_shape = jnp.broadcast_shapes(value_batch_shape, batch_shape)
+        else:
+            sample_shape = ()
+            result_batch_shape = jnp.broadcast_shapes(value_shape, batch_shape)
+
+        output_shape = sample_shape + result_batch_shape
         value = jnp.broadcast_to(value, output_shape)
 
-        if batch_shape:
-            sample_shape = output_shape[: -len(batch_shape)]
-        else:
-            sample_shape = output_shape
-
-        return value, sample_shape
+        return value, sample_shape, result_batch_shape
 
     @staticmethod
     def _tfp_to_legacy_batch_last(
@@ -360,16 +368,22 @@ class TransformationSpline:
         ``broadcast(value.shape, batch_shape)``.
         """
         batch_shape = self._tfp_batch_shape(coef, batch_shape)
-        value, sample_shape = self._broadcast_tfp_value(value, batch_shape)
+        value, sample_shape, result_batch_shape = self._broadcast_tfp_value(
+            value, batch_shape
+        )
 
         if self._is_rowwise_spline():
             return self.dot_and_deriv_n_fullbatch(value, coef)
 
-        value = self._tfp_to_legacy_batch_last(value, batch_shape, sample_shape)
+        value = self._tfp_to_legacy_batch_last(
+            value, result_batch_shape, sample_shape
+        )
         dot, deriv = self.dot_and_deriv(value, coef)
 
-        dot = self._legacy_batch_last_to_tfp(dot, batch_shape, sample_shape)
-        deriv = self._legacy_batch_last_to_tfp(deriv, batch_shape, sample_shape)
+        dot = self._legacy_batch_last_to_tfp(dot, result_batch_shape, sample_shape)
+        deriv = self._legacy_batch_last_to_tfp(
+            deriv, result_batch_shape, sample_shape
+        )
 
         return dot, deriv
 
@@ -388,12 +402,18 @@ class TransformationSpline:
         ``broadcast(value.shape, batch_shape)``.
         """
         batch_shape = self._tfp_batch_shape(coef, batch_shape)
-        value, sample_shape = self._broadcast_tfp_value(value, batch_shape)
+        value, sample_shape, result_batch_shape = self._broadcast_tfp_value(
+            value, batch_shape
+        )
 
         if self._is_rowwise_spline():
             return self.dot_inverse_n_fullbatch(value, coef)
 
-        value = self._tfp_to_legacy_batch_last(value, batch_shape, sample_shape)
+        value = self._tfp_to_legacy_batch_last(
+            value, result_batch_shape, sample_shape
+        )
         inverse = self.dot_inverse(value, coef)
 
-        return self._legacy_batch_last_to_tfp(inverse, batch_shape, sample_shape)
+        return self._legacy_batch_last_to_tfp(
+            inverse, result_batch_shape, sample_shape
+        )
