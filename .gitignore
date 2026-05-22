@@ -180,3 +180,8 @@ tests/notebooks/test_mixed_model_pspline.ipynb
 /tests/notebooks/
 tests/data/nigeria_cox.raw
 tests/test_survival.ipynb
+tests/ptm_nigeria.pickle
+tests/sptm2_nigeria.pickle
+tests/sptm_nigeria.pickle
+tests/test_ptm.ipynb
+tests/test_survival2.ipynb
