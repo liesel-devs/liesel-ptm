@@ -3,7 +3,7 @@ from __future__ import annotations
 import operator
 from collections.abc import Callable
 from functools import cache, partial
-from typing import Any
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -14,7 +14,7 @@ from tensorflow_probability.substrates.jax import tf2jax as tf
 
 from .bspline import OnionKnots, OnionSpline, PTMSpline
 
-KeyArray = Any
+KeyArray = jax.Array
 Array = Any
 
 
@@ -155,7 +155,7 @@ def onion_dist(
     order: int = 3,
     loc_scale: bool = True,
     **kwargs,
-) -> Callable[..., "TransformationDist"]:
+) -> Callable[..., TransformationDist]:
     """
     Return a reusable constructor for an OnionSpline transformation distribution.
 
@@ -381,8 +381,8 @@ class TransformationDist(tfd.Distribution):
         shape = (n,) + self._batch_shape_tuple()
         # ensure 0 will be > 0 to avoid numerical instability
         eps = jnp.finfo(jnp.dtype(self.coef)).eps
-        u = jax.random.uniform(  # type: ignore
-            seed, shape=shape, minval=eps, maxval=1.0 - eps
+        u = jax.random.uniform(
+            cast(Array, seed), shape=shape, minval=eps, maxval=1.0 - eps
         )
 
         return self._quantile(u)

@@ -369,15 +369,11 @@ class TransformationSpline:
         if self._coef_uses_rowwise_eval(coef):
             return self.dot_and_deriv_n_fullbatch(value, coef)
 
-        value = self._tfp_to_legacy_batch_last(
-            value, result_batch_shape, sample_shape
-        )
+        value = self._tfp_to_legacy_batch_last(value, result_batch_shape, sample_shape)
         dot, deriv = self.dot_and_deriv(value, coef)
 
         dot = self._legacy_batch_last_to_tfp(dot, result_batch_shape, sample_shape)
-        deriv = self._legacy_batch_last_to_tfp(
-            deriv, result_batch_shape, sample_shape
-        )
+        deriv = self._legacy_batch_last_to_tfp(deriv, result_batch_shape, sample_shape)
 
         return dot, deriv
 
@@ -403,11 +399,7 @@ class TransformationSpline:
         if self._coef_uses_rowwise_eval(coef):
             return self.dot_inverse_n_fullbatch(value, coef)
 
-        value = self._tfp_to_legacy_batch_last(
-            value, result_batch_shape, sample_shape
-        )
+        value = self._tfp_to_legacy_batch_last(value, result_batch_shape, sample_shape)
         inverse = self.dot_inverse(value, coef)
 
-        return self._legacy_batch_last_to_tfp(
-            inverse, result_batch_shape, sample_shape
-        )
+        return self._legacy_batch_last_to_tfp(inverse, result_batch_shape, sample_shape)

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, cast
 
 import jax.numpy as jnp
 import liesel.model as lsl
+import numpy as np
 import tensorflow_probability.substrates.jax.distributions as tfd
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import tf2jax as tf
@@ -532,7 +533,7 @@ class IntervalCensoredPTMDist(lsl.Dist):
         super().__init__(partial_dist_class, loc=loc, scale=scale, coef=shape, **kwargs)
 
 
-def _as_record_value(self, value: ArrayLike) -> Array:
+def _as_record_value(value: ArrayLike) -> Array:
     value = jnp.asarray(value)
     if value.ndim == 0 or value.shape[-1] != 3:
         raise ValueError(
@@ -548,13 +549,27 @@ def subset_var(
     indicators: Array,
     suffix: str,
     dist: lsl.Dist | None = None,
+    transform: Callable[[Array], Array] | None = None,
 ) -> lsl.Var:
-    if not jnp.any(indicators):
+    indicators_np = np.asarray(indicators, dtype=bool)
+    if indicators_np.ndim != 1:
+        raise ValueError("indicators must be a one-dimensional boolean array.")
+
+    n_obs = indicators_np.shape[0]
+    indices = jnp.asarray(np.flatnonzero(indicators_np), dtype=jnp.int32)
+
+    if not np.any(indicators_np):
         return lsl.Var(None, name=value.name + suffix)
 
-    def take(x):
-        if jnp.shape(x)[0] > 1:
-            return jnp.take(x, indicators)
+    if transform is None:
+
+        def transform(x):
+            return x
+
+    def subset_first_axis_if_observed(x):
+        x = jnp.asarray(x)
+        if x.ndim > 0 and x.shape[0] == n_obs:
+            return jnp.take(x, indices, axis=0)
         return x
 
     dist = dist if dist is not None else value.dist_node
@@ -562,13 +577,13 @@ def subset_var(
     if dist is not None:
         _inputs = []
         for iv in dist.inputs:
-            iv_calc = lsl.TransientCalc(take, iv)
+            iv_calc = lsl.TransientCalc(subset_first_axis_if_observed, iv)
             iv_var = lsl.Var(iv_calc, name=iv.name + suffix)
             _inputs.append(iv_var)
 
-        _kwinputs = {}
+        _kwinputs: dict[str, Any] = {}
         for kw, kwiv in dist.kwinputs.items():
-            kwiv_calc = lsl.TransientCalc(take, kwiv)
+            kwiv_calc = lsl.TransientCalc(subset_first_axis_if_observed, kwiv)
             kwiv_var = lsl.Var(kwiv_calc, name=kwiv.name + suffix)
             _kwinputs[kw] = kwiv_var
 
@@ -576,7 +591,10 @@ def subset_var(
     else:
         subset_dist = None
 
-    var_calc = lsl.TransientCalc(take, value)
+    def subset_value(x):
+        return transform(subset_first_axis_if_observed(x))
+
+    var_calc = lsl.TransientCalc(subset_value, value)
     var = lsl.Var(var_calc, distribution=subset_dist, name=value.name + suffix)
     return var
 
@@ -588,12 +606,40 @@ class CensoredVars(NamedTuple):
     interval_censored: lsl.Var
 
 
+def _base_distribution_from_dist(
+    dist: lsl.Dist,
+) -> Callable[..., tfd.Distribution]:
+    distribution = dist.distribution
+
+    if isinstance(distribution, partial) and distribution.func is CensoredDistribution:
+        keywords = distribution.keywords or {}
+        try:
+            base_distribution = keywords["distribution"]
+        except KeyError as err:
+            raise ValueError(
+                "setup_censored_vars requires a CensoredDistribution partial with "
+                "a fixed base 'distribution'."
+            ) from err
+
+        fixed_kwargs = {
+            key: value for key, value in keywords.items() if key != "distribution"
+        }
+        if fixed_kwargs:
+            return partial(base_distribution, **fixed_kwargs)
+        return base_distribution
+
+    return distribution
+
+
 def setup_censored_vars(
     censoring_records: lsl.Var,
     dist: lsl.Dist | None = None,
 ) -> CensoredVars:
     dist = dist if dist is not None else censoring_records.dist_node
     value = _as_record_value(censoring_records.value)
+    if value.ndim != 2:
+        raise ValueError("setup_censored_vars expects records with shape (n, 3).")
+
     time = value[..., 0]
     lower = value[..., 1]
     upper = value[..., 2]
@@ -607,31 +653,45 @@ def setup_censored_vars(
     is_right_censored = time_nan & ~lower_nan & upper_nan
     is_interval_censored = time_nan & ~lower_nan & ~upper_nan
 
-    if dist.inputs:
+    if dist is not None and dist.inputs:
         raise ValueError(
             "Please specify inputs to the distribution only via keyword-inputs."
         )
 
-    left_censored_dist_cls = lsl.Dist(
-        distribution=partial(LeftCensoredDistribution, distribution=dist.distribution),
-        **dist.kwinputs,
-    )
-    right_censored_dist_cls = lsl.Dist(
-        distribution=partial(RightCensoredDistribution, distribution=dist.distribution),
-        **dist.kwinputs,
-    )
-    interval_censored_dist_cls = lsl.Dist(
-        distribution=partial(
-            IntervalCensoredDistribution, distribution=dist.distribution
-        ),
-        **dist.kwinputs,
-    )
+    uncensored_dist_cls = None
+    left_censored_dist_cls = None
+    right_censored_dist_cls = None
+    interval_censored_dist_cls = None
+
+    if dist is not None:
+        base_distribution = _base_distribution_from_dist(dist)
+        kwinputs = cast(dict[str, Any], dict(dist.kwinputs))
+        uncensored_dist_cls = lsl.Dist(base_distribution, **kwinputs)
+        left_censored_dist_cls = lsl.Dist(
+            distribution=partial(
+                LeftCensoredDistribution, distribution=base_distribution
+            ),
+            **kwinputs,
+        )
+        right_censored_dist_cls = lsl.Dist(
+            distribution=partial(
+                RightCensoredDistribution, distribution=base_distribution
+            ),
+            **kwinputs,
+        )
+        interval_censored_dist_cls = lsl.Dist(
+            distribution=partial(
+                IntervalCensoredDistribution, distribution=base_distribution
+            ),
+            **kwinputs,
+        )
 
     uncensored_var = subset_var(
         censoring_records,
         indicators=is_uncensored,
-        dist=dist,
+        dist=uncensored_dist_cls,
         suffix="_uncensored",
+        transform=lambda x: x[..., 0],
     )
 
     left_censored_var = subset_var(
@@ -639,6 +699,7 @@ def setup_censored_vars(
         indicators=is_left_censored,
         dist=left_censored_dist_cls,
         suffix="_left_censored",
+        transform=lambda x: x[..., 2],
     )
 
     right_censored_var = subset_var(
@@ -646,6 +707,7 @@ def setup_censored_vars(
         indicators=is_right_censored,
         dist=right_censored_dist_cls,
         suffix="_right_censored",
+        transform=lambda x: x[..., 1],
     )
 
     interval_censored_var = subset_var(
@@ -653,6 +715,7 @@ def setup_censored_vars(
         indicators=is_interval_censored,
         dist=interval_censored_dist_cls,
         suffix="_interval_censored",
+        transform=lambda x: x[..., 1:3],
     )
 
     return CensoredVars(
