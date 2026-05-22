@@ -72,6 +72,18 @@ def _logdiffexp(log_a: Array, log_b: Array) -> Array:
     return jnp.where(log_a > log_b, value, neg_inf)
 
 
+def _log_from_probability(prob: Array) -> Array:
+    prob = jnp.asarray(prob)
+    neg_inf = jnp.asarray(-jnp.inf, dtype=prob.dtype)
+    nan = jnp.asarray(jnp.nan, dtype=prob.dtype)
+    valid = jnp.isfinite(prob) & (prob >= 0.0) & (prob <= 1.0)
+    positive = valid & (prob > 0.0)
+    zero = valid & (prob == 0.0)
+    safe_prob = jnp.where(positive, prob, 1.0)
+    log_prob = jnp.log(safe_prob)
+    return jnp.where(positive, log_prob, jnp.where(zero, neg_inf, nan))
+
+
 class _BaseCensoringDistribution(tfd.Distribution):
     _event_shape_tuple: tuple[int, ...] = ()
 
@@ -127,20 +139,25 @@ class _BaseCensoringDistribution(tfd.Distribution):
         try:
             return self.base_distribution.log_cdf(value)
         except (AttributeError, NotImplementedError):
+            # If the public log-CDF is unavailable, fall back to the public CDF.
+            # Zero probability stays -inf; it is not clipped to a finite value.
             prob = self.base_distribution.cdf(value)
-            tiny = jnp.finfo(jnp.asarray(prob).dtype).tiny
-            return jnp.log(jnp.clip(prob, tiny, 1.0))
+            return _log_from_probability(prob)
 
     def _base_log_survival_function(self, value: Array) -> Array:
         try:
             return self.base_distribution.log_survival_function(value)
         except (AttributeError, NotImplementedError):
-            if hasattr(self.base_distribution, "survival_function"):
+            # If the public log-survival method is unavailable, fall back to
+            # public probability methods. Returned -inf values from an available
+            # base log-survival method are trusted: the wrapper cannot distinguish
+            # true zero probability from distribution-specific tail underflow
+            # without second-guessing the base distribution.
+            try:
                 prob = self.base_distribution.survival_function(value)
-            else:
+            except (AttributeError, NotImplementedError):
                 prob = 1.0 - self.base_distribution.cdf(value)
-            tiny = jnp.finfo(jnp.asarray(prob).dtype).tiny
-            return jnp.log(jnp.clip(prob, tiny, 1.0))
+            return _log_from_probability(prob)
 
     def _interval_log_prob(self, lower: Array, upper: Array) -> Array:
         log_cdf_lower = self._base_log_cdf(lower)
@@ -444,8 +461,9 @@ def subset_var(
                     raise ValueError("Cannot subset a detached VarValue input.")
                 iv_node = iv.var
             iv_calc = lsl.TransientCalc(subset_first_axis_if_observed, iv_node)
-            iv_var = lsl.Var(iv_calc, name=iv_node.name + suffix)
-            _inputs.append(iv_var)
+            # iv_var = lsl.Var(iv_calc, name=iv_node.name + suffix)
+            # _inputs.append(iv_var)
+            _inputs.append(iv_calc)
 
         _kwinputs: dict[str, Any] = {}
         for kw, kwiv in dist.kwinputs.items():
@@ -455,8 +473,9 @@ def subset_var(
                     raise ValueError("Cannot subset a detached VarValue input.")
                 kwiv_node = kwiv.var
             kwiv_calc = lsl.TransientCalc(subset_first_axis_if_observed, kwiv_node)
-            kwiv_var = lsl.Var(kwiv_calc, name=kwiv_node.name + suffix)
-            _kwinputs[kw] = kwiv_var
+            # kwiv_var = lsl.Var(kwiv_calc, name=kwiv_node.name + suffix)
+            # _kwinputs[kw] = kwiv_var
+            _kwinputs[kw] = kwiv_calc
 
         subset_dist = lsl.Dist(dist.distribution, *_inputs, **_kwinputs)
     else:

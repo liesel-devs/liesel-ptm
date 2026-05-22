@@ -61,6 +61,48 @@ class BranchSentinelDistribution(tfd.Distribution):
         return jnp.zeros((n,), dtype=jnp.float32)
 
 
+class ProbabilityFallbackDistribution(tfd.Distribution):
+    def __init__(self, validate_args=False, allow_nan_stats=True, name="fallback"):
+        super().__init__(
+            dtype=jnp.float32,
+            reparameterization_type=tfd.NOT_REPARAMETERIZED,
+            validate_args=validate_args,
+            allow_nan_stats=allow_nan_stats,
+            parameters=dict(locals()),
+            name=name,
+        )
+
+    def _event_shape(self):
+        return ()
+
+    def _event_shape_tensor(self):
+        return jnp.array([], dtype=jnp.int32)
+
+    def _batch_shape(self):
+        return ()
+
+    def _batch_shape_tensor(self):
+        return jnp.array([], dtype=jnp.int32)
+
+    def _log_prob(self, value):
+        return jnp.zeros_like(value)
+
+    def _cdf(self, value):
+        return jnp.where(value < 0.0, 0.0, 0.25)
+
+    def _log_cdf(self, value):
+        raise NotImplementedError
+
+    def _survival_function(self, value):
+        return jnp.where(value > 0.0, 0.0, 0.25)
+
+    def _log_survival_function(self, value):
+        raise NotImplementedError
+
+    def _sample_n(self, n, seed=None):
+        return jnp.zeros((n,), dtype=jnp.float32)
+
+
 class TestCensoredDistributionApi:
     def test_import_and_distribution_shapes(self):
         dist = CensoredDistribution(
@@ -254,6 +296,18 @@ class TestCensoredDistributionCorrectness:
         assert jnp.isfinite(left.log_prob(0.0))
         assert jnp.isfinite(right.log_prob(0.0))
         assert jnp.isfinite(interval.log_prob(jnp.array([-1.0, 1.0])))
+
+    def test_log_tail_fallbacks_preserve_zero_probability(self):
+        left = LeftCensoredDistribution(ProbabilityFallbackDistribution)
+        right = RightCensoredDistribution(ProbabilityFallbackDistribution)
+
+        left_log_prob = left.log_prob(jnp.array([-1.0, 1.0]))
+        right_log_prob = right.log_prob(jnp.array([-1.0, 1.0]))
+
+        assert jnp.isneginf(left_log_prob[0])
+        assert jnp.allclose(left_log_prob[1], jnp.log(0.25))
+        assert jnp.allclose(right_log_prob[0], jnp.log(0.25))
+        assert jnp.isneginf(right_log_prob[1])
 
 
 class TestCensoredDistributionJaxCompatibility:
