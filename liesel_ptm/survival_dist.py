@@ -9,6 +9,7 @@ import liesel.model as lsl
 import numpy as np
 import tensorflow_probability.substrates.jax.distributions as tfd
 from jax.typing import ArrayLike
+from liesel.model.nodes import VarValue
 from tensorflow_probability.substrates.jax import tf2jax as tf
 
 Array = Any
@@ -437,12 +438,16 @@ def subset_var(
     if dist is not None:
         _inputs = []
         for iv in dist.inputs:
+            if isinstance(iv, VarValue):
+                iv = iv.var
             iv_calc = lsl.TransientCalc(subset_first_axis_if_observed, iv)
             iv_var = lsl.Var(iv_calc, name=iv.name + suffix)
             _inputs.append(iv_var)
 
         _kwinputs: dict[str, Any] = {}
         for kw, kwiv in dist.kwinputs.items():
+            if isinstance(kwiv, VarValue):
+                kwiv = kwiv.var
             kwiv_calc = lsl.TransientCalc(subset_first_axis_if_observed, kwiv)
             kwiv_var = lsl.Var(kwiv_calc, name=kwiv.name + suffix)
             _kwinputs[kw] = kwiv_var
@@ -456,6 +461,7 @@ def subset_var(
 
     var_calc = lsl.TransientCalc(subset_value, value)
     var = lsl.Var(var_calc, distribution=subset_dist, name=value.name + suffix)
+    var.observed = value.observed
     return var
 
 
