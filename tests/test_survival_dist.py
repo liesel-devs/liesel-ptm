@@ -10,13 +10,9 @@ from liesel_ptm.bspline.ptm import PTMKnots, PTMSpline
 from liesel_ptm.dist import LocScaleTransformationDist
 from liesel_ptm.survival_dist import (
     CensoredDistribution,
-    CensoredPTMDist,
     IntervalCensoredDistribution,
-    IntervalCensoredPTMDist,
     LeftCensoredDistribution,
-    LeftCensoredPTMDist,
     RightCensoredDistribution,
-    RightCensoredPTMDist,
     interval_censored,
     left_censored,
     right_censored,
@@ -372,18 +368,20 @@ class TestCensoredDistributionNumericalStability:
         assert jnp.all(jnp.isneginf(log_prob))
 
 
-class TestCensoredPTMDist:
-    def test_liesel_helper_builds_censored_distribution(self):
+class TestCensoredTransformationDistNode:
+    def test_liesel_dist_builds_censored_transformation_distribution(self):
         knots = PTMKnots(-4.0, 4.0, nparam=10)
         coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        bspline = PTMSpline(knots.knots)
         loc = lsl.Var.new_param(0.0, name="loc")
         scale = lsl.Var.new_param(1.0, name="scale")
         shape = lsl.Var.new_param(coef, name="shape")
-        dist_node = CensoredPTMDist(
-            knots=knots.knots,
+        dist_node = lsl.Dist(
+            partial(CensoredDistribution, distribution=LocScaleTransformationDist),
             loc=loc,
             scale=scale,
-            shape=shape,
+            coef=shape,
+            bspline=bspline,
             gauss_legendre_order=4,
         )
 
@@ -392,36 +390,6 @@ class TestCensoredPTMDist:
         assert isinstance(dist, CensoredDistribution)
         assert isinstance(dist.base_distribution, LocScaleTransformationDist)
         assert dist.log_prob(uncensored(0.0)).shape == ()
-
-    def test_specialized_liesel_helpers_build_expected_wrappers(self):
-        knots = PTMKnots(-4.0, 4.0, nparam=10)
-        coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
-        loc = lsl.Var.new_param(0.0, name="loc")
-        scale = lsl.Var.new_param(1.0, name="scale")
-        shape = lsl.Var.new_param(coef, name="shape")
-        helpers = (
-            (LeftCensoredPTMDist, LeftCensoredDistribution, 0.0),
-            (RightCensoredPTMDist, RightCensoredDistribution, 0.0),
-            (
-                IntervalCensoredPTMDist,
-                IntervalCensoredDistribution,
-                jnp.array([-1.0, 1.0]),
-            ),
-        )
-
-        for helper, expected_type, value in helpers:
-            dist_node = helper(
-                knots=knots.knots,
-                loc=loc,
-                scale=scale,
-                shape=shape,
-                gauss_legendre_order=4,
-            )
-            dist = dist_node.init_dist()
-
-            assert isinstance(dist, expected_type)
-            assert isinstance(dist.base_distribution, LocScaleTransformationDist)
-            assert dist.log_prob(value).shape == ()
 
 
 class TestSetupCensoredVars:
@@ -519,6 +487,7 @@ class TestSetupCensoredVars:
     def test_splits_censored_ptm_dist_and_preserves_base_kwargs(self):
         knots = PTMKnots(-4.0, 4.0, nparam=10)
         coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        bspline = PTMSpline(knots.knots)
         loc = lsl.Var.new_param(0.0, name="loc")
         scale = lsl.Var.new_param(1.0, name="scale")
         shape = lsl.Var.new_param(coef, name="shape")
@@ -530,11 +499,12 @@ class TestSetupCensoredVars:
                 [jnp.nan, -1.0, 1.0],
             ]
         )
-        dist = CensoredPTMDist(
-            knots=knots.knots,
+        dist = lsl.Dist(
+            partial(CensoredDistribution, distribution=LocScaleTransformationDist),
             loc=loc,
             scale=scale,
-            shape=shape,
+            coef=shape,
+            bspline=bspline,
             gauss_legendre_order=4,
         )
         response = lsl.Var.new_obs(records, dist, name="response")
@@ -551,6 +521,8 @@ class TestSetupCensoredVars:
             split.left_censored.dist_node.init_dist().base_distribution,
             LocScaleTransformationDist,
         )
+        assert split.uncensored.dist_node.kwinputs["bspline"].value is bspline
+        assert split.left_censored.dist_node.kwinputs["bspline"].value is bspline
 
         mixed_log_prob = response.dist_node.init_dist().log_prob(response.value)
         split_log_prob = (

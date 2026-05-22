@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from functools import partial
-from typing import Any, Literal, NamedTuple, cast
+from typing import Any, NamedTuple, cast
 
 import jax.numpy as jnp
 import liesel.model as lsl
@@ -10,9 +10,6 @@ import numpy as np
 import tensorflow_probability.substrates.jax.distributions as tfd
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import tf2jax as tf
-
-from .bspline import PTMSpline
-from .dist import LocScaleTransformationDist
 
 Array = Any
 KeyArray = Any
@@ -363,176 +360,6 @@ class CensoredDistribution(_BaseCensoringDistribution):
         return jnp.stack((samples, nan, nan), axis=-1)
 
 
-class CensoredPTMDist(lsl.Dist):
-    """
-    Liesel distribution helper for censored location-scale PTMs.
-
-    This wraps :class:`.LocScaleTransformationDist` in :class:`CensoredDistribution`.
-    Observed response values must be censoring records with trailing shape ``(3,)``.
-    """
-
-    def __init__(
-        self,
-        knots: Array,
-        loc: lsl.Var,
-        scale: lsl.Var,
-        shape: lsl.Var,
-        centered: bool = False,
-        scaled: bool = False,
-        trafo_target_slope: Literal["continue_linearly", "identity"] = "identity",
-        trafo_lambda: float | None = None,
-        gauss_legendre_order: int = 8,
-        integration_bounds: tuple[float, float] | None = None,
-        **kwargs,
-    ) -> None:
-        if trafo_target_slope not in ("continue_linearly", "identity"):
-            raise ValueError(
-                "trafo_target_slope must be either 'continue_linearly' or 'identity'."
-            )
-
-        eps = 0.1 if trafo_lambda is None else float(trafo_lambda)
-        bspline = PTMSpline(
-            knots=knots,
-            eps=eps,
-            continue_linearly=trafo_target_slope == "continue_linearly",
-        )
-
-        partial_dist_class = partial(
-            CensoredDistribution,
-            distribution=LocScaleTransformationDist,
-            bspline=bspline,
-            centered=centered,
-            scaled=scaled,
-            gauss_legendre_order=gauss_legendre_order,
-            integration_bounds=integration_bounds,
-        )
-
-        super().__init__(partial_dist_class, loc=loc, scale=scale, coef=shape, **kwargs)
-
-
-def _ptm_censoring_dist_class(
-    censoring_distribution: Callable[..., tfd.Distribution],
-    knots: Array,
-    centered: bool,
-    scaled: bool,
-    trafo_target_slope: Literal["continue_linearly", "identity"],
-    trafo_lambda: float | None,
-    gauss_legendre_order: int,
-    integration_bounds: tuple[float, float] | None,
-) -> Callable[..., tfd.Distribution]:
-    if trafo_target_slope not in ("continue_linearly", "identity"):
-        raise ValueError(
-            "trafo_target_slope must be either 'continue_linearly' or 'identity'."
-        )
-
-    eps = 0.1 if trafo_lambda is None else float(trafo_lambda)
-    bspline = PTMSpline(
-        knots=knots,
-        eps=eps,
-        continue_linearly=trafo_target_slope == "continue_linearly",
-    )
-
-    return partial(
-        censoring_distribution,
-        distribution=LocScaleTransformationDist,
-        bspline=bspline,
-        centered=centered,
-        scaled=scaled,
-        gauss_legendre_order=gauss_legendre_order,
-        integration_bounds=integration_bounds,
-    )
-
-
-class LeftCensoredPTMDist(lsl.Dist):
-    """Liesel helper for PTM observations known to satisfy ``T <= upper``."""
-
-    def __init__(
-        self,
-        knots: Array,
-        loc: lsl.Var,
-        scale: lsl.Var,
-        shape: lsl.Var,
-        centered: bool = False,
-        scaled: bool = False,
-        trafo_target_slope: Literal["continue_linearly", "identity"] = "identity",
-        trafo_lambda: float | None = None,
-        gauss_legendre_order: int = 8,
-        integration_bounds: tuple[float, float] | None = None,
-        **kwargs,
-    ) -> None:
-        partial_dist_class = _ptm_censoring_dist_class(
-            LeftCensoredDistribution,
-            knots,
-            centered,
-            scaled,
-            trafo_target_slope,
-            trafo_lambda,
-            gauss_legendre_order,
-            integration_bounds,
-        )
-        super().__init__(partial_dist_class, loc=loc, scale=scale, coef=shape, **kwargs)
-
-
-class RightCensoredPTMDist(lsl.Dist):
-    """Liesel helper for PTM observations known to satisfy ``T > lower``."""
-
-    def __init__(
-        self,
-        knots: Array,
-        loc: lsl.Var,
-        scale: lsl.Var,
-        shape: lsl.Var,
-        centered: bool = False,
-        scaled: bool = False,
-        trafo_target_slope: Literal["continue_linearly", "identity"] = "identity",
-        trafo_lambda: float | None = None,
-        gauss_legendre_order: int = 8,
-        integration_bounds: tuple[float, float] | None = None,
-        **kwargs,
-    ) -> None:
-        partial_dist_class = _ptm_censoring_dist_class(
-            RightCensoredDistribution,
-            knots,
-            centered,
-            scaled,
-            trafo_target_slope,
-            trafo_lambda,
-            gauss_legendre_order,
-            integration_bounds,
-        )
-        super().__init__(partial_dist_class, loc=loc, scale=scale, coef=shape, **kwargs)
-
-
-class IntervalCensoredPTMDist(lsl.Dist):
-    """Liesel helper for PTM interval observations ``[lower, upper]``."""
-
-    def __init__(
-        self,
-        knots: Array,
-        loc: lsl.Var,
-        scale: lsl.Var,
-        shape: lsl.Var,
-        centered: bool = False,
-        scaled: bool = False,
-        trafo_target_slope: Literal["continue_linearly", "identity"] = "identity",
-        trafo_lambda: float | None = None,
-        gauss_legendre_order: int = 8,
-        integration_bounds: tuple[float, float] | None = None,
-        **kwargs,
-    ) -> None:
-        partial_dist_class = _ptm_censoring_dist_class(
-            IntervalCensoredDistribution,
-            knots,
-            centered,
-            scaled,
-            trafo_target_slope,
-            trafo_lambda,
-            gauss_legendre_order,
-            integration_bounds,
-        )
-        super().__init__(partial_dist_class, loc=loc, scale=scale, coef=shape, **kwargs)
-
-
 def _as_record_value(value: ArrayLike) -> Array:
     value = jnp.asarray(value)
     if value.ndim == 0 or value.shape[-1] != 3:
@@ -556,9 +383,9 @@ def subset_var(
 
     The helper subsets ``value`` along its first axis wherever ``indicators`` is
     true. If a distribution is supplied, its positional inputs and keyword
-    inputs are copied and any input whose first axis has the same length as the
-    indicator vector is subset in the same way. Inputs with different leading
-    dimensions are treated as shared parameters and are left unchanged.
+    inputs are copied and any array-like input whose first axis has the same
+    length as the indicator vector is subset in the same way. Inputs with
+    different leading dimensions and non-array static inputs are left unchanged.
 
     Parameters
     ----------
@@ -596,10 +423,14 @@ def subset_var(
             return x
 
     def subset_first_axis_if_observed(x):
-        x = jnp.asarray(x)
-        if x.ndim > 0 and x.shape[0] == n_obs:
-            return jnp.take(x, indices, axis=0)
-        return x
+        try:
+            x_array = jnp.asarray(x)
+        except (TypeError, ValueError):
+            return x
+
+        if x_array.ndim > 0 and x_array.shape[0] == n_obs:
+            return jnp.take(x_array, indices, axis=0)
+        return x_array
 
     dist = dist if dist is not None else value.dist_node
 
