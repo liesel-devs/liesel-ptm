@@ -178,3 +178,5 @@ tests/notebooks/test_mixed_model_pspline.ipynb
 .DS_Store
 /docs/source/generated
 /tests/notebooks/
+tests/data/nigeria_cox.raw
+tests/test_survival.ipynb
