@@ -84,6 +84,34 @@ def _log_from_probability(prob: Array) -> Array:
     return jnp.where(positive, log_prob, jnp.where(zero, neg_inf, nan))
 
 
+def _distribution_log_cdf(distribution: tfd.Distribution, value: Array) -> Array:
+    try:
+        return distribution.log_cdf(value)
+    except (AttributeError, NotImplementedError):
+        # If the public log-CDF is unavailable, fall back to the public CDF.
+        # Zero probability stays -inf; it is not clipped to a finite value.
+        prob = distribution.cdf(value)
+        return _log_from_probability(prob)
+
+
+def _distribution_log_survival_function(
+    distribution: tfd.Distribution, value: Array
+) -> Array:
+    try:
+        return distribution.log_survival_function(value)
+    except (AttributeError, NotImplementedError):
+        # If the public log-survival method is unavailable, fall back to public
+        # probability methods. Returned -inf values from an available base
+        # log-survival method are trusted: the wrapper cannot distinguish true
+        # zero probability from distribution-specific tail underflow without
+        # second-guessing the base distribution.
+        try:
+            prob = distribution.survival_function(value)
+        except (AttributeError, NotImplementedError):
+            prob = 1.0 - distribution.cdf(value)
+        return _log_from_probability(prob)
+
+
 class _BaseCensoringDistribution(tfd.Distribution):
     _event_shape_tuple: tuple[int, ...] = ()
 
@@ -98,6 +126,8 @@ class _BaseCensoringDistribution(tfd.Distribution):
         parameters = dict(locals())
         self.distribution = distribution
         self.distribution_kwargs = distribution_kwargs
+        self._base_validate_args = validate_args
+        self._base_allow_nan_stats = allow_nan_stats
         self.base_distribution = distribution(
             validate_args=validate_args,
             allow_nan_stats=allow_nan_stats,
@@ -136,28 +166,10 @@ class _BaseCensoringDistribution(tfd.Distribution):
         return jnp.asarray(value, dtype=self.dtype)
 
     def _base_log_cdf(self, value: Array) -> Array:
-        try:
-            return self.base_distribution.log_cdf(value)
-        except (AttributeError, NotImplementedError):
-            # If the public log-CDF is unavailable, fall back to the public CDF.
-            # Zero probability stays -inf; it is not clipped to a finite value.
-            prob = self.base_distribution.cdf(value)
-            return _log_from_probability(prob)
+        return _distribution_log_cdf(self.base_distribution, value)
 
     def _base_log_survival_function(self, value: Array) -> Array:
-        try:
-            return self.base_distribution.log_survival_function(value)
-        except (AttributeError, NotImplementedError):
-            # If the public log-survival method is unavailable, fall back to
-            # public probability methods. Returned -inf values from an available
-            # base log-survival method are trusted: the wrapper cannot distinguish
-            # true zero probability from distribution-specific tail underflow
-            # without second-guessing the base distribution.
-            try:
-                prob = self.base_distribution.survival_function(value)
-            except (AttributeError, NotImplementedError):
-                prob = 1.0 - self.base_distribution.cdf(value)
-            return _log_from_probability(prob)
+        return _distribution_log_survival_function(self.base_distribution, value)
 
     def _interval_log_prob(self, lower: Array, upper: Array) -> Array:
         log_cdf_lower = self._base_log_cdf(lower)
@@ -288,6 +300,12 @@ class CensoredDistribution(_BaseCensoringDistribution):
     - ``[nan, nan, upper]`` for left-censored observations.
     - ``[nan, lower, nan]`` for right-censored observations.
     - ``[nan, lower, upper]`` for interval-censored observations.
+
+    Optionally, pass ``censoring_records`` at construction time to cache the
+    censoring indicators for a fixed observed data set. In cached mode,
+    ``log_prob(value)`` still expects full records with shape ``(n, 3)`` and the
+    same shape as ``censoring_records``; the cached indicators determine which
+    likelihood branch is evaluated for each row.
     """
 
     _event_shape_tuple = (3,)
@@ -295,6 +313,7 @@ class CensoredDistribution(_BaseCensoringDistribution):
     def __init__(
         self,
         distribution: Callable[..., tfd.Distribution],
+        censoring_records: ArrayLike | None = None,
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "CensoredDistribution",
@@ -307,6 +326,81 @@ class CensoredDistribution(_BaseCensoringDistribution):
             name=name,
             **distribution_kwargs,
         )
+        self.censoring_records: Array | None = None
+        self._cached_record_shape: tuple[int, ...] | None = None
+        self._cached_sample_shape: tuple[int, ...] | None = None
+        self._cached_n_observations = 0
+        self._cached_uncensored_indices = jnp.asarray([], dtype=jnp.int32)
+        self._cached_left_censored_indices = jnp.asarray([], dtype=jnp.int32)
+        self._cached_right_censored_indices = jnp.asarray([], dtype=jnp.int32)
+        self._cached_interval_censored_indices = jnp.asarray([], dtype=jnp.int32)
+        self._cached_invalid_indices = jnp.asarray([], dtype=jnp.int32)
+        self._n_cached_uncensored = 0
+        self._n_cached_left_censored = 0
+        self._n_cached_right_censored = 0
+        self._n_cached_interval_censored = 0
+        self._n_cached_invalid = 0
+
+        if censoring_records is not None:
+            self._set_cached_censoring_records(censoring_records)
+
+    def _set_cached_censoring_records(self, censoring_records: ArrayLike) -> None:
+        try:
+            records_np = np.asarray(censoring_records)
+        except Exception as err:
+            raise TypeError(
+                "censoring_records must be a concrete array available at "
+                "distribution construction time."
+            ) from err
+
+        if records_np.ndim != 2 or records_np.shape[-1] != 3:
+            raise ValueError("censoring_records must have shape (n, 3).")
+
+        if not np.issubdtype(records_np.dtype, np.inexact):
+            records_np = records_np.astype(np.float32)
+
+        time = records_np[..., 0]
+        lower = records_np[..., 1]
+        upper = records_np[..., 2]
+        time_nan = np.isnan(time)
+        lower_nan = np.isnan(lower)
+        upper_nan = np.isnan(upper)
+
+        is_uncensored = ~time_nan & lower_nan & upper_nan
+        is_left_censored = time_nan & lower_nan & ~upper_nan
+        is_right_censored = time_nan & ~lower_nan & upper_nan
+        is_interval_censored = time_nan & ~lower_nan & ~upper_nan
+        is_valid = (
+            is_uncensored
+            | is_left_censored
+            | is_right_censored
+            | is_interval_censored
+        )
+
+        self.censoring_records = jnp.asarray(records_np, dtype=self.dtype)
+        self._cached_record_shape = tuple(int(dim) for dim in records_np.shape)
+        self._cached_sample_shape = self._cached_record_shape[:-1]
+        self._cached_n_observations = int(records_np.shape[0])
+        self._cached_uncensored_indices = jnp.asarray(
+            np.flatnonzero(is_uncensored), dtype=jnp.int32
+        )
+        self._cached_left_censored_indices = jnp.asarray(
+            np.flatnonzero(is_left_censored), dtype=jnp.int32
+        )
+        self._cached_right_censored_indices = jnp.asarray(
+            np.flatnonzero(is_right_censored), dtype=jnp.int32
+        )
+        self._cached_interval_censored_indices = jnp.asarray(
+            np.flatnonzero(is_interval_censored), dtype=jnp.int32
+        )
+        self._cached_invalid_indices = jnp.asarray(
+            np.flatnonzero(~is_valid), dtype=jnp.int32
+        )
+        self._n_cached_uncensored = int(np.sum(is_uncensored))
+        self._n_cached_left_censored = int(np.sum(is_left_censored))
+        self._n_cached_right_censored = int(np.sum(is_right_censored))
+        self._n_cached_interval_censored = int(np.sum(is_interval_censored))
+        self._n_cached_invalid = int(np.sum(~is_valid))
 
     def _as_record_value(self, value: Array) -> Array:
         value = self._as_base_value(value)
@@ -328,6 +422,12 @@ class CensoredDistribution(_BaseCensoringDistribution):
 
     def _log_prob(self, value: Array) -> Array:
         value = self._as_record_value(value)
+        if self.censoring_records is not None:
+            return self._log_prob_cached(value)
+
+        return self._log_prob_mixed(value)
+
+    def _log_prob_mixed(self, value: Array) -> Array:
         time = value[..., 0]
         lower = value[..., 1]
         upper = value[..., 2]
@@ -371,6 +471,100 @@ class CensoredDistribution(_BaseCensoringDistribution):
         result = jnp.where(is_interval_censored, interval_censored_log_prob, result)
 
         return result
+
+    def _subset_cached_distribution_kwarg(self, value: Any, indices: Array) -> Any:
+        try:
+            value_array = jnp.asarray(value)
+        except (TypeError, ValueError):
+            return value
+
+        if value_array.ndim > 0 and value_array.shape[0] == self._cached_n_observations:
+            return jnp.take(value_array, indices, axis=0)
+
+        return value
+
+    def _cached_base_distribution(self, indices: Array) -> tfd.Distribution:
+        distribution_kwargs = {
+            key: self._subset_cached_distribution_kwarg(value, indices)
+            for key, value in self.distribution_kwargs.items()
+        }
+        return self.distribution(
+            validate_args=self._base_validate_args,
+            allow_nan_stats=self._base_allow_nan_stats,
+            **distribution_kwargs,
+        )
+
+    def _scatter_cached_log_prob(
+        self, result: Array, indices: Array, branch_log_prob: Array
+    ) -> Array:
+        branch_log_prob = jnp.reshape(jnp.asarray(branch_log_prob), (-1,))
+        return result.at[indices].set(branch_log_prob)
+
+    def _log_prob_cached(self, value: Array) -> Array:
+        if self._cached_record_shape is None or self._cached_sample_shape is None:
+            raise RuntimeError("Cached censoring records are not initialized.")
+
+        if tuple(value.shape) != self._cached_record_shape:
+            raise ValueError(
+                "Cached CensoredDistribution requires value.shape to exactly "
+                f"match censoring_records.shape. Got {tuple(value.shape)} and "
+                f"{self._cached_record_shape}."
+            )
+
+        value_flat = jnp.reshape(value, (self._cached_n_observations, 3))
+        result = jnp.full(
+            (self._cached_n_observations,), -jnp.inf, dtype=value.dtype
+        )
+
+        if self._n_cached_uncensored:
+            indices = self._cached_uncensored_indices
+            branch_distribution = self._cached_base_distribution(indices)
+            branch_value = value_flat[indices, 0]
+            result = self._scatter_cached_log_prob(
+                result, indices, branch_distribution.log_prob(branch_value)
+            )
+
+        if self._n_cached_left_censored:
+            indices = self._cached_left_censored_indices
+            branch_distribution = self._cached_base_distribution(indices)
+            branch_value = value_flat[indices, 2]
+            result = self._scatter_cached_log_prob(
+                result, indices, _distribution_log_cdf(branch_distribution, branch_value)
+            )
+
+        if self._n_cached_right_censored:
+            indices = self._cached_right_censored_indices
+            branch_distribution = self._cached_base_distribution(indices)
+            branch_value = value_flat[indices, 1]
+            result = self._scatter_cached_log_prob(
+                result,
+                indices,
+                _distribution_log_survival_function(branch_distribution, branch_value),
+            )
+
+        if self._n_cached_interval_censored:
+            indices = self._cached_interval_censored_indices
+            branch_distribution = self._cached_base_distribution(indices)
+            lower = value_flat[indices, 1]
+            upper = value_flat[indices, 2]
+            lower_log_cdf = _distribution_log_cdf(branch_distribution, lower)
+            upper_log_cdf = _distribution_log_cdf(branch_distribution, upper)
+            lower_log_sf = _distribution_log_survival_function(
+                branch_distribution, lower
+            )
+            upper_log_sf = _distribution_log_survival_function(
+                branch_distribution, upper
+            )
+            cdf_diff = _logdiffexp(upper_log_cdf, lower_log_cdf)
+            survival_diff = _logdiffexp(lower_log_sf, upper_log_sf)
+            interval_log_prob = jnp.where(
+                upper > lower, jnp.maximum(cdf_diff, survival_diff), -jnp.inf
+            )
+            result = self._scatter_cached_log_prob(
+                result, indices, interval_log_prob
+            )
+
+        return jnp.reshape(result, self._cached_sample_shape)
 
     def _sample_n(self, n: int | Array, seed: KeyArray | None = None) -> Array:
         samples = self.base_distribution.sample(n, seed=seed)
@@ -513,7 +707,9 @@ def _base_distribution_from_dist(
             ) from err
 
         fixed_kwargs = {
-            key: value for key, value in keywords.items() if key != "distribution"
+            key: value
+            for key, value in keywords.items()
+            if key not in ("distribution", "censoring_records")
         }
         if fixed_kwargs:
             return partial(base_distribution, **fixed_kwargs)

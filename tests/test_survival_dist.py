@@ -103,6 +103,42 @@ class ProbabilityFallbackDistribution(tfd.Distribution):
         return jnp.zeros((n,), dtype=jnp.float32)
 
 
+class UncensoredOnlyDistribution(tfd.Distribution):
+    def __init__(self, validate_args=False, allow_nan_stats=True, name="uncensored"):
+        super().__init__(
+            dtype=jnp.float32,
+            reparameterization_type=tfd.NOT_REPARAMETERIZED,
+            validate_args=validate_args,
+            allow_nan_stats=allow_nan_stats,
+            parameters=dict(locals()),
+            name=name,
+        )
+
+    def _event_shape(self):
+        return ()
+
+    def _event_shape_tensor(self):
+        return jnp.array([], dtype=jnp.int32)
+
+    def _batch_shape(self):
+        return ()
+
+    def _batch_shape_tensor(self):
+        return jnp.array([], dtype=jnp.int32)
+
+    def _log_prob(self, value):
+        return jnp.zeros_like(value)
+
+    def _log_cdf(self, value):
+        raise AssertionError("log_cdf branch should not be evaluated")
+
+    def _log_survival_function(self, value):
+        raise AssertionError("log_survival branch should not be evaluated")
+
+    def _sample_n(self, n, seed=None):
+        return jnp.zeros((n,), dtype=jnp.float32)
+
+
 class TestCensoredDistributionApi:
     def test_import_and_distribution_shapes(self):
         dist = CensoredDistribution(
@@ -112,6 +148,22 @@ class TestCensoredDistributionApi:
         assert dist.event_shape == (3,)
         assert dist.batch_shape == (2,)
         assert isinstance(dist.base_distribution, tfd.Normal)
+
+    def test_cached_records_initialize_and_preserve_event_shape(self):
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, 1.0, jnp.nan],
+            ]
+        )
+        dist = CensoredDistribution(
+            tfd.Normal, censoring_records=records, loc=0.0, scale=1.0
+        )
+
+        assert dist.event_shape == (3,)
+        assert dist.batch_shape == ()
+        assert dist.censoring_records.shape == records.shape
+        assert dist.log_prob(records).shape == (2,)
 
     def test_record_helpers_broadcast_and_stack_event_axis(self):
         assert uncensored(jnp.ones((5, 1))).shape == (5, 1, 3)
@@ -156,6 +208,15 @@ class TestCensoredDistributionApi:
 
         with pytest.raises(NotImplementedError, match="base_distribution"):
             dist.quantile(0.5)
+
+    def test_cached_records_require_matrix_shape(self):
+        with pytest.raises(ValueError, match="shape \\(n, 3\\)"):
+            CensoredDistribution(
+                tfd.Normal,
+                censoring_records=uncensored(0.0),
+                loc=0.0,
+                scale=1.0,
+            )
 
     def test_specialized_distribution_shapes(self):
         left = LeftCensoredDistribution(
@@ -238,6 +299,58 @@ class TestCensoredDistributionCorrectness:
 
         assert jnp.allclose(dist.log_prob(records), expected)
 
+    def test_cached_records_match_uncached_mixed_records(self):
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        )
+        uncached = CensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
+        cached = CensoredDistribution(
+            tfd.Normal, censoring_records=records, loc=0.0, scale=1.0
+        )
+
+        assert jnp.allclose(cached.log_prob(records), uncached.log_prob(records))
+
+    def test_cached_shape_mismatch_raises(self):
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, 1.0, jnp.nan],
+            ]
+        )
+        dist = CensoredDistribution(
+            tfd.Normal, censoring_records=records, loc=0.0, scale=1.0
+        )
+
+        with pytest.raises(ValueError, match="exactly match"):
+            dist.log_prob(jnp.concatenate([records, records[:1]], axis=0))
+
+        with pytest.raises(ValueError, match="exactly match"):
+            dist.log_prob(records.reshape(2, 1, 3))
+
+        with pytest.raises(ValueError, match="exactly match"):
+            dist.log_prob(records[0])
+
+    def test_cached_invalid_records_return_negative_infinity(self):
+        records = jnp.array(
+            [
+                [jnp.nan, jnp.nan, jnp.nan],
+                [0.0, jnp.nan, jnp.nan],
+            ]
+        )
+        dist = CensoredDistribution(
+            tfd.Normal, censoring_records=records, loc=0.0, scale=1.0
+        )
+
+        log_prob = dist.log_prob(records)
+
+        assert jnp.isneginf(log_prob[0])
+        assert jnp.isfinite(log_prob[1])
+
     def test_batched_base_distribution_follows_tfp_broadcasting(self):
         loc = jnp.array([0.0, 1.0])
         scale = jnp.array([1.0, 2.0])
@@ -249,6 +362,38 @@ class TestCensoredDistributionCorrectness:
 
         assert log_prob.shape == (5, 2)
         assert jnp.allclose(log_prob, base.log_prob(jnp.ones((5, 1))))
+
+    def test_cached_observation_batched_normal_matches_manual_formulas(self):
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        )
+        loc = jnp.array([0.0, 1.0, 2.0, 3.0])
+        scale = jnp.ones(4)
+        dist = CensoredDistribution(
+            tfd.Normal,
+            censoring_records=records,
+            loc=loc,
+            scale=scale,
+        )
+
+        expected = jnp.array(
+            [
+                tfd.Normal(loc=loc[0], scale=scale[0]).log_prob(0.0),
+                tfd.Normal(loc=loc[1], scale=scale[1]).log_cdf(-1.0),
+                tfd.Normal(loc=loc[2], scale=scale[2]).log_survival_function(1.0),
+                jnp.log(
+                    tfd.Normal(loc=loc[3], scale=scale[3]).cdf(1.0)
+                    - tfd.Normal(loc=loc[3], scale=scale[3]).cdf(-1.0)
+                ),
+            ]
+        )
+
+        assert jnp.allclose(dist.log_prob(records), expected)
 
     def test_wrapping_transformation_distribution_matches_base(self):
         knots = PTMKnots(-4.0, 4.0, nparam=10)
@@ -273,6 +418,42 @@ class TestCensoredDistributionCorrectness:
             dist.log_prob(right_censored(value)), base.log_survival_function(value)
         )
 
+    def test_cached_transformation_distribution_matches_uncached_mixed_records(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=10)
+        bspline = PTMSpline(knots.knots)
+        coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        )
+        loc = jnp.array([0.0, 0.2, -0.1, 0.4])
+        scale = jnp.ones(4)
+        uncached = CensoredDistribution(
+            LocScaleTransformationDist,
+            coef=coef,
+            loc=loc,
+            scale=scale,
+            bspline=bspline,
+            gauss_legendre_order=4,
+        )
+        cached = CensoredDistribution(
+            LocScaleTransformationDist,
+            censoring_records=records,
+            coef=coef,
+            loc=loc,
+            scale=scale,
+            bspline=bspline,
+            gauss_legendre_order=4,
+        )
+
+        assert jnp.allclose(
+            cached.log_prob(records), uncached.log_prob(records), atol=1e-4
+        )
+
     def test_specialized_distributions_match_base_formulas(self):
         base = tfd.Normal(loc=0.0, scale=1.0)
         left = LeftCensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
@@ -287,6 +468,25 @@ class TestCensoredDistributionCorrectness:
             interval.log_prob(interval_value),
             jnp.log(base.cdf(value + 0.5) - base.cdf(value - 0.5)),
         )
+
+    def test_cached_mode_skips_unused_branches(self):
+        left_records = left_censored(jnp.array([-1.0, 0.0]))
+        right_records = right_censored(jnp.array([0.0, 1.0]))
+        uncensored_records = uncensored(jnp.array([0.0, 1.0]))
+
+        left = CensoredDistribution(
+            BranchSentinelDistribution, censoring_records=left_records
+        )
+        right = CensoredDistribution(
+            BranchSentinelDistribution, censoring_records=right_records
+        )
+        uncensored_dist = CensoredDistribution(
+            UncensoredOnlyDistribution, censoring_records=uncensored_records
+        )
+
+        assert jnp.all(jnp.isfinite(left.log_prob(left_records)))
+        assert jnp.all(jnp.isfinite(right.log_prob(right_records)))
+        assert jnp.all(jnp.isfinite(uncensored_dist.log_prob(uncensored_records)))
 
     def test_specialized_distributions_do_not_evaluate_uncensored_branch(self):
         left = LeftCensoredDistribution(BranchSentinelDistribution)
@@ -327,6 +527,24 @@ class TestCensoredDistributionJaxCompatibility:
         assert log_prob.shape == (4,)
         assert_no_nan(log_prob)
 
+    def test_jit_cached_log_prob(self):
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        )
+        dist = CensoredDistribution(
+            tfd.Normal, censoring_records=records, loc=0.0, scale=1.0
+        )
+
+        log_prob = jax.jit(dist.log_prob)(records)
+
+        assert log_prob.shape == (4,)
+        assert_no_nan(log_prob)
+
     def test_grad_through_normal_location(self):
         records = jnp.array(
             [
@@ -339,6 +557,26 @@ class TestCensoredDistributionJaxCompatibility:
 
         def objective(loc):
             dist = CensoredDistribution(tfd.Normal, loc=loc, scale=1.0)
+            return jnp.sum(dist.log_prob(records))
+
+        grad = jax.grad(objective)(jnp.array(0.0))
+
+        assert jnp.isfinite(grad)
+
+    def test_grad_through_cached_normal_location(self):
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        )
+
+        def objective(loc):
+            dist = CensoredDistribution(
+                tfd.Normal, censoring_records=records, loc=loc, scale=1.0
+            )
             return jnp.sum(dist.log_prob(records))
 
         grad = jax.grad(objective)(jnp.array(0.0))
@@ -361,6 +599,36 @@ class TestCensoredDistributionJaxCompatibility:
         def objective(coef):
             dist = CensoredDistribution(
                 LocScaleTransformationDist,
+                coef=coef,
+                loc=0.0,
+                scale=1.0,
+                bspline=bspline,
+                gauss_legendre_order=4,
+            )
+            return jnp.sum(dist.log_prob(records))
+
+        grad = jax.grad(objective)(coef)
+
+        assert grad.shape == coef.shape
+        assert jnp.all(jnp.isfinite(grad))
+
+    def test_grad_through_cached_ptm_coefficients(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=10)
+        bspline = PTMSpline(knots.knots)
+        coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        )
+
+        def objective(coef):
+            dist = CensoredDistribution(
+                LocScaleTransformationDist,
+                censoring_records=records,
                 coef=coef,
                 loc=0.0,
                 scale=1.0,
