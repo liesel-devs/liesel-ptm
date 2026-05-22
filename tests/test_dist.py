@@ -229,6 +229,30 @@ class TestBaseTransformationDist:
         assert jnp.all(jnp.isfinite(dist.log_prob(quantiles)))
         assert jnp.all(jnp.isfinite(samples))
 
+    def test_log_cdf_and_log_survival_function_are_stable_in_tails(self):
+        dist = ptm.LocScaleTransformationDist(
+            coef=coef, loc=0.0, scale=1.0, bspline=bs
+        )
+        values = jnp.array([-20.0, 20.0])
+        z, _ = dist.transformation_and_logdet(values)
+
+        assert dist.cdf(values[1]) == 1.0
+        assert dist.survival_function(values[1]) == 0.0
+        assert jnp.allclose(
+            dist.log_cdf(values),
+            dist.reference_distribution.log_cdf(z),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        assert jnp.allclose(
+            dist.log_survival_function(values),
+            dist.reference_distribution.log_survival_function(z),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        assert jnp.all(jnp.isfinite(dist.log_cdf(values)))
+        assert jnp.all(jnp.isfinite(dist.log_survival_function(values)))
+
     def test_log_prob_autodiff_wrt_coefficients(self):
         coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
 

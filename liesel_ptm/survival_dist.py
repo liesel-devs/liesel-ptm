@@ -438,18 +438,24 @@ def subset_var(
     if dist is not None:
         _inputs = []
         for iv in dist.inputs:
+            iv_node: Any = iv
             if isinstance(iv, VarValue):
-                iv = iv.var
-            iv_calc = lsl.TransientCalc(subset_first_axis_if_observed, iv)
-            iv_var = lsl.Var(iv_calc, name=iv.name + suffix)
+                if iv.var is None:
+                    raise ValueError("Cannot subset a detached VarValue input.")
+                iv_node = iv.var
+            iv_calc = lsl.TransientCalc(subset_first_axis_if_observed, iv_node)
+            iv_var = lsl.Var(iv_calc, name=iv_node.name + suffix)
             _inputs.append(iv_var)
 
         _kwinputs: dict[str, Any] = {}
         for kw, kwiv in dist.kwinputs.items():
+            kwiv_node: Any = kwiv
             if isinstance(kwiv, VarValue):
-                kwiv = kwiv.var
-            kwiv_calc = lsl.TransientCalc(subset_first_axis_if_observed, kwiv)
-            kwiv_var = lsl.Var(kwiv_calc, name=kwiv.name + suffix)
+                if kwiv.var is None:
+                    raise ValueError("Cannot subset a detached VarValue input.")
+                kwiv_node = kwiv.var
+            kwiv_calc = lsl.TransientCalc(subset_first_axis_if_observed, kwiv_node)
+            kwiv_var = lsl.Var(kwiv_calc, name=kwiv_node.name + suffix)
             _kwinputs[kw] = kwiv_var
 
         subset_dist = lsl.Dist(dist.distribution, *_inputs, **_kwinputs)

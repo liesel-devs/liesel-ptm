@@ -345,6 +345,30 @@ class TestCensoredDistributionNumericalStability:
         assert_no_nan(log_prob)
         assert jnp.all(jnp.isfinite(log_prob))
 
+    def test_right_censored_transformation_distribution_tail_is_finite(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=10)
+        bspline = PTMSpline(knots.knots)
+        coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        dist = RightCensoredDistribution(
+            LocScaleTransformationDist,
+            coef=coef,
+            loc=0.0,
+            scale=1.0,
+            bspline=bspline,
+        )
+        values = jnp.array([8.0, 10.0, 20.0])
+
+        log_prob = dist.log_prob(values)
+
+        assert_no_nan(log_prob)
+        assert jnp.all(jnp.isfinite(log_prob))
+        assert jnp.allclose(
+            log_prob,
+            dist.base_distribution.log_survival_function(values),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
     def test_far_tail_interval_is_finite_or_negative_infinity(self):
         dist = CensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
         log_prob = dist.log_prob(interval_censored(8.0, 8.1))

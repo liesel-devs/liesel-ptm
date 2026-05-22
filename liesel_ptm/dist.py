@@ -367,7 +367,32 @@ class TransformationDist(tfd.Distribution):
         return self.reference_distribution.cdf(z)
 
     def _log_cdf(self, value: Array) -> Array | float:
-        return jnp.log(self._cdf(value))
+        z, _ = self.transformation_and_logdet(value)
+        try:
+            return self.reference_distribution.log_cdf(z)
+        except (AttributeError, NotImplementedError):
+            prob = self.reference_distribution.cdf(z)
+            tiny = jnp.finfo(jnp.asarray(prob).dtype).tiny
+            return jnp.log(jnp.clip(prob, tiny, 1.0))
+
+    def _survival_function(self, value: Array) -> Array | float:
+        z, _ = self.transformation_and_logdet(value)
+        try:
+            return self.reference_distribution.survival_function(z)
+        except (AttributeError, NotImplementedError):
+            return 1.0 - self.reference_distribution.cdf(z)
+
+    def _log_survival_function(self, value: Array) -> Array | float:
+        z, _ = self.transformation_and_logdet(value)
+        try:
+            return self.reference_distribution.log_survival_function(z)
+        except (AttributeError, NotImplementedError):
+            try:
+                prob = self.reference_distribution.survival_function(z)
+            except (AttributeError, NotImplementedError):
+                prob = 1.0 - self.reference_distribution.cdf(z)
+            tiny = jnp.finfo(jnp.asarray(prob).dtype).tiny
+            return jnp.log(jnp.clip(prob, tiny, 1.0))
 
     @partial(jax.jit, static_argnums=0)
     def _log_prob(self, value: Array) -> Array | float:
