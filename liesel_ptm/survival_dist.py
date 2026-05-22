@@ -551,6 +551,35 @@ def subset_var(
     dist: lsl.Dist | None = None,
     transform: Callable[[Array], Array] | None = None,
 ) -> lsl.Var:
+    """
+    Return a Liesel variable restricted to selected observations.
+
+    The helper subsets ``value`` along its first axis wherever ``indicators`` is
+    true. If a distribution is supplied, its positional inputs and keyword
+    inputs are copied and any input whose first axis has the same length as the
+    indicator vector is subset in the same way. Inputs with different leading
+    dimensions are treated as shared parameters and are left unchanged.
+
+    Parameters
+    ----------
+    value
+        Variable whose value is subset along the observation axis.
+    indicators
+        One-dimensional boolean mask selecting observations.
+    suffix
+        Suffix appended to the names of the returned variable and copied inputs.
+    dist
+        Optional distribution to attach to the returned variable. Defaults to
+        ``value.dist_node``.
+    transform
+        Optional transformation applied after subsetting the variable value.
+
+    Returns
+    -------
+    lsl.Var
+        A variable backed by a transient calculation. If no observations are
+        selected, the returned variable has value ``None`` and no distribution.
+    """
     indicators_np = np.asarray(indicators, dtype=bool)
     if indicators_np.ndim != 1:
         raise ValueError("indicators must be a one-dimensional boolean array.")
@@ -635,6 +664,38 @@ def setup_censored_vars(
     censoring_records: lsl.Var,
     dist: lsl.Dist | None = None,
 ) -> CensoredVars:
+    """
+    Split mixed censoring records into specialized Liesel variables.
+
+    ``censoring_records`` must contain records with shape ``(n, 3)`` and layout
+    ``[time, lower, upper]``. Missing entries are encoded as ``nan``:
+    ``[time, nan, nan]`` is uncensored, ``[nan, nan, upper]`` is left censored,
+    ``[nan, lower, nan]`` is right censored, and ``[nan, lower, upper]`` is
+    interval censored.
+
+    If ``dist`` is a ``CensoredDistribution`` Liesel distribution, this helper
+    unwraps its base distribution and creates four specialized variables:
+    uncensored observations use the base distribution directly, while left,
+    right, and interval censored observations use the corresponding specialized
+    censoring distribution. Keyword inputs of the original distribution are
+    preserved and subset along the first axis when they are observation-shaped.
+
+    Parameters
+    ----------
+    censoring_records
+        Variable containing the mixed censoring records.
+    dist
+        Optional distribution node to split. Defaults to
+        ``censoring_records.dist_node``. Positional distribution inputs are not
+        supported because observation-aligned inputs must be identifiable by
+        keyword.
+
+    Returns
+    -------
+    CensoredVars
+        Named tuple with variables for uncensored, left-censored,
+        right-censored, and interval-censored observations.
+    """
     dist = dist if dist is not None else censoring_records.dist_node
     value = _as_record_value(censoring_records.value)
     if value.ndim != 2:
