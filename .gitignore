@@ -182,3 +182,4 @@ tests/data/nigeria_cox.raw
 *.pickle
 tests/test_survival.ipynb
 tests/test_survival2.ipynb
+tests/test_ptm.ipynb
