@@ -564,13 +564,11 @@ class TestTfpLayout:
             value, batch_shape
         )
 
-        if bs._coef_uses_rowwise_eval(coef):
-            return bs.dot_and_deriv_n_fullbatch(value, coef)
-
         value = bs._tfp_to_legacy_batch_last(
             value, result_batch_shape, sample_shape
         )
-        fx, fxd = bs.dot_and_deriv(value, coef)
+        legacy_coef = jnp.expand_dims(coef, axis=-2)
+        fx, fxd = bs.dot_and_deriv(value, legacy_coef)
 
         fx = bs._legacy_batch_last_to_tfp(fx, result_batch_shape, sample_shape)
         fxd = bs._legacy_batch_last_to_tfp(fxd, result_batch_shape, sample_shape)
@@ -584,13 +582,11 @@ class TestTfpLayout:
             value, batch_shape
         )
 
-        if bs._coef_uses_rowwise_eval(coef):
-            return bs.dot_inverse_n_fullbatch(value, coef)
-
         value = bs._tfp_to_legacy_batch_last(
             value, result_batch_shape, sample_shape
         )
-        inverse = bs.dot_inverse(value, coef)
+        legacy_coef = jnp.expand_dims(coef, axis=-2)
+        inverse = bs.dot_inverse(value, legacy_coef)
 
         return bs._legacy_batch_last_to_tfp(
             inverse, result_batch_shape, sample_shape
@@ -632,7 +628,14 @@ class TestTfpLayout:
         expected = jnp.broadcast_to(jnp.asarray(value), expected_shape)
         assert jnp.allclose(x, expected, atol=1e-4)
 
-    def test_rowwise_coef(self):
+    def test_single_coef(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        coef = jax.random.normal(jax.random.key(8), (knots.nparam,))
+
+        self._assert_tfp_roundtrip(0.5, coef, ())
+        self._assert_tfp_roundtrip(jnp.linspace(-2.0, 2.0, 5), coef, (5,))
+
+    def test_batched_coef(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
         n = 4
         coef = jax.random.normal(jax.random.key(2), (n, knots.nparam))
@@ -644,7 +647,14 @@ class TestTfpLayout:
             (5, n),
         )
 
-    def test_batched_rowwise_coef(self):
+    def test_batch_one_coef_broadcasts_observations(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        coef = jax.random.normal(jax.random.key(7), (1, knots.nparam))
+        value = jnp.linspace(-2.0, 2.0, 5)
+
+        self._assert_tfp_roundtrip(value, coef, (5,))
+
+    def test_two_dimensional_batched_coef(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
         n = 4
         coef = jax.random.normal(jax.random.key(3), (2, n, knots.nparam))
