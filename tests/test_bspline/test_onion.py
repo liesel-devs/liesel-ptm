@@ -557,6 +557,45 @@ class TestPublicMethodEquivalence:
 
 
 class TestTfpLayout:
+    @staticmethod
+    def _full_broadcast_forward_reference(bs, value, coef, batch_shape=None):
+        batch_shape = bs._tfp_batch_shape(coef, batch_shape)
+        value, sample_shape, result_batch_shape = bs._broadcast_tfp_value(
+            value, batch_shape
+        )
+
+        if bs._coef_uses_rowwise_eval(coef):
+            return bs.dot_and_deriv_n_fullbatch(value, coef)
+
+        value = bs._tfp_to_legacy_batch_last(
+            value, result_batch_shape, sample_shape
+        )
+        fx, fxd = bs.dot_and_deriv(value, coef)
+
+        fx = bs._legacy_batch_last_to_tfp(fx, result_batch_shape, sample_shape)
+        fxd = bs._legacy_batch_last_to_tfp(fxd, result_batch_shape, sample_shape)
+
+        return fx, fxd
+
+    @staticmethod
+    def _full_broadcast_inverse_reference(bs, value, coef, batch_shape=None):
+        batch_shape = bs._tfp_batch_shape(coef, batch_shape)
+        value, sample_shape, result_batch_shape = bs._broadcast_tfp_value(
+            value, batch_shape
+        )
+
+        if bs._coef_uses_rowwise_eval(coef):
+            return bs.dot_inverse_n_fullbatch(value, coef)
+
+        value = bs._tfp_to_legacy_batch_last(
+            value, result_batch_shape, sample_shape
+        )
+        inverse = bs.dot_inverse(value, coef)
+
+        return bs._legacy_batch_last_to_tfp(
+            inverse, result_batch_shape, sample_shape
+        )
+
     def _assert_tfp_roundtrip(
         self,
         value,
@@ -575,10 +614,20 @@ class TestTfpLayout:
         assert not jnp.any(jnp.isnan(fxd))
         assert jnp.all(fxd > 0.0)
 
+        fx_ref, fxd_ref = self._full_broadcast_forward_reference(
+            bs, value, coef, batch_shape=batch_shape
+        )
+        assert jnp.allclose(fx, fx_ref)
+        assert jnp.allclose(fxd, fxd_ref)
+
         x = bs.dot_inverse_tfp(fx, coef, batch_shape=batch_shape)
+        x_ref = self._full_broadcast_inverse_reference(
+            bs, fx, coef, batch_shape=batch_shape
+        )
 
         assert x.shape == expected_shape
         assert not jnp.any(jnp.isnan(x))
+        assert jnp.allclose(x, x_ref, atol=1e-4)
 
         expected = jnp.broadcast_to(jnp.asarray(value), expected_shape)
         assert jnp.allclose(x, expected, atol=1e-4)
@@ -606,3 +655,58 @@ class TestTfpLayout:
             coef,
             (5, 2, n),
         )
+        self._assert_tfp_roundtrip(
+            jnp.broadcast_to(
+                jnp.linspace(-2.0, 2.0, n),
+                (5, 1, n),
+            ),
+            coef,
+            (5, 2, n),
+        )
+
+    def test_inverse_tail_values_match_full_broadcast_reference(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots)
+        n = 4
+        coef = jax.random.normal(jax.random.key(6), (2, n, knots.nparam))
+        value = jnp.asarray([-8.0, -4.0, 0.0, 4.0, 8.0]).reshape((5, 1, 1))
+
+        x = bs.dot_inverse_tfp(value, coef, batch_shape=(2, n))
+        x_ref = self._full_broadcast_inverse_reference(
+            bs, value, coef, batch_shape=(2, n)
+        )
+
+        assert x.shape == (5, 2, n)
+        assert jnp.allclose(x, x_ref, atol=1e-4)
+
+    def test_jvp_through_rowwise_shared_grid_tfp(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots)
+        n = 4
+        coef = jax.random.normal(jax.random.key(4), (2, n, knots.nparam))
+        value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1, 1))
+
+        def fn(value):
+            fx, fxd = bs.dot_and_deriv_tfp(value, coef, batch_shape=(2, n))
+            return jnp.sum(fx + 0.01 * fxd)
+
+        primal, tangent = jax.jvp(fn, (value,), (jnp.ones_like(value),))
+
+        assert jnp.isfinite(primal)
+        assert jnp.isfinite(tangent)
+
+    def test_grad_through_rowwise_shared_grid_tfp_coef(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots)
+        n = 4
+        coef = jax.random.normal(jax.random.key(5), (2, n, knots.nparam))
+        value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1, 1))
+
+        def fn(coef):
+            fx, fxd = bs.dot_and_deriv_tfp(value, coef, batch_shape=(2, n))
+            return jnp.sum(fx + 0.01 * fxd)
+
+        grad = jax.grad(fn)(coef)
+
+        assert grad.shape == coef.shape
+        assert jnp.all(jnp.isfinite(grad))

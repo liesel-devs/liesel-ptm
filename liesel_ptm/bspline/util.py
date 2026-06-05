@@ -5,6 +5,7 @@ from typing import Literal
 import jax
 import jax.numpy as jnp
 import numpy as np
+from interpax import interp1d
 from jax import Array
 
 from ..util.inverse_interpax import inv1d
@@ -157,6 +158,49 @@ class TransformationSpline:
         return value, sample_shape, result_batch_shape
 
     @staticmethod
+    def _tfp_value_layout(
+        value: Array, batch_shape: tuple[int, ...]
+    ) -> tuple[Array, tuple[int, ...], tuple[int, ...], tuple[int, ...]]:
+        value = jnp.asarray(value)
+        value_shape = tuple(jnp.shape(value))
+
+        if not batch_shape:
+            sample_shape = value_shape
+            value_batch_shape: tuple[int, ...] = ()
+            result_batch_shape: tuple[int, ...] = ()
+        elif len(value_shape) > len(batch_shape):
+            sample_shape = value_shape[: -len(batch_shape)]
+            value_batch_shape = value_shape[-len(batch_shape) :]
+            result_batch_shape = jnp.broadcast_shapes(value_batch_shape, batch_shape)
+        else:
+            sample_shape = ()
+            value_batch_shape = value_shape
+            result_batch_shape = jnp.broadcast_shapes(value_batch_shape, batch_shape)
+
+        padded_value_batch_shape = (1,) * (
+            len(batch_shape) - len(value_batch_shape)
+        ) + value_batch_shape
+
+        return value, sample_shape, padded_value_batch_shape, result_batch_shape
+
+    @staticmethod
+    def _compact_tfp_to_legacy_batch_last(
+        value: Array,
+        value_batch_shape: tuple[int, ...],
+        sample_shape: tuple[int, ...],
+    ) -> Array:
+        sample_rank = len(sample_shape)
+        batch_rank = len(value_batch_shape)
+        sample_size = int(np.prod(sample_shape)) if sample_shape else 1
+
+        value = jnp.reshape(value, sample_shape + value_batch_shape)
+        axes = tuple(range(sample_rank, sample_rank + batch_rank)) + tuple(
+            range(sample_rank)
+        )
+        value = jnp.transpose(value, axes)
+        return jnp.reshape(value, value_batch_shape + (sample_size,))
+
+    @staticmethod
     def _tfp_to_legacy_batch_last(
         value: Array, batch_shape: tuple[int, ...], sample_shape: tuple[int, ...]
     ) -> Array:
@@ -242,6 +286,19 @@ class TransformationSpline:
         coef = self._coef_for_eval(value, coef)
         return self.bspline.dot_and_deriv_n(value, coef)
 
+    def _evaluate_rowwise_shared_value(
+        self, value: Array, coef: Array
+    ) -> tuple[Array, Array]:
+        """
+        Evaluate rowwise coefficients at values shared along the rowwise axis.
+        """
+        basis, basis_deriv = self.bspline.get_basis_and_deriv(value)
+        basis = jnp.squeeze(basis, axis=-2)
+        basis_deriv = jnp.squeeze(basis_deriv, axis=-2)
+        dot = jnp.einsum("...j,...nj->...n", basis, coef)
+        deriv = jnp.einsum("...j,...nj->...n", basis_deriv, coef)
+        return dot, deriv
+
     def _dot_and_deriv_broadcast(
         self, value: Array, coef: Array
     ) -> tuple[Array, Array]:
@@ -303,6 +360,98 @@ class TransformationSpline:
         inverse = jnp.reshape(inverse_flat, target_batch + (n,))
         return self._squeeze_scalar_result(inverse, was_scalar)
 
+    def _inverse_rows_with_shared_grid(
+        self, value_rows: Array, coef_rows: Array
+    ) -> Array:
+        value_min = jnp.min(value_rows, axis=-1)
+        value_max = jnp.max(value_rows, axis=-1)
+        dtype = jnp.asarray(value_rows).dtype
+
+        def fn(x: Array) -> Array:
+            return self._evaluate_spline(jnp.atleast_1d(x), coef_rows)[0]
+
+        xlo_start = jnp.asarray(self._outer_knot_left, dtype=dtype)
+        left_shift = jnp.asarray(0.1, dtype=dtype)
+        min_grid = jnp.min(fn(xlo_start - left_shift), axis=-1)
+
+        def left_cond(val):
+            _, min_grid = val
+            return jnp.any(min_grid >= value_min)
+
+        def left_body(val):
+            left_shift, _ = val
+            left_shift = left_shift + jnp.asarray(0.5, dtype=dtype)
+            min_grid = jnp.min(fn(xlo_start - left_shift), axis=-1)
+            return left_shift, min_grid
+
+        left_shift, _ = jax.lax.while_loop(
+            left_cond, left_body, (left_shift, min_grid)
+        )
+        xlo = xlo_start - left_shift
+
+        xhi_start = jnp.asarray(self._outer_knot_right, dtype=dtype)
+        right_shift = jnp.asarray(0.1, dtype=dtype)
+        max_grid = jnp.max(fn(xhi_start + right_shift), axis=-1)
+
+        def right_cond(val):
+            _, max_grid = val
+            return jnp.any(max_grid <= value_max)
+
+        def right_body(val):
+            right_shift, _ = val
+            right_shift = right_shift + jnp.asarray(0.5, dtype=dtype)
+            max_grid = jnp.max(fn(xhi_start + right_shift), axis=-1)
+            return right_shift, max_grid
+
+        right_shift, _ = jax.lax.while_loop(
+            right_cond, right_body, (right_shift, max_grid)
+        )
+        xhi = xhi_start + right_shift
+
+        xgrid = jnp.linspace(xlo, xhi, self._ngrid_inverse)
+        ygrid = fn(xgrid)
+
+        return jax.vmap(
+            lambda value_row, ygrid_row: interp1d(
+                value_row, ygrid_row, xgrid, method="monotonic"
+            )
+        )(value_rows, ygrid)
+
+    def _inverse_rows_chunked(self, value_rows: Array, coef_rows: Array) -> Array:
+        B, n = value_rows.shape
+        n_coef, p = coef_rows.shape[-2:]
+
+        if n_coef != 1:
+            raise ValueError(
+                "Chunked inverse rows require coefficients with shape "
+                f"(B, 1, p). Got {n_coef=}."
+            )
+
+        chunk_size = min(int(self.n_chunks), 256, B)
+        pad = (-B) % chunk_size
+
+        if pad:
+            value_pad = jnp.broadcast_to(value_rows[:1, :], (pad, n))
+            coef_pad = jnp.broadcast_to(coef_rows[:1, :, :], (pad, n_coef, p))
+            value_rows = jnp.concatenate((value_rows, value_pad), axis=0)
+            coef_rows = jnp.concatenate((coef_rows, coef_pad), axis=0)
+
+        n_blocks = value_rows.shape[0] // chunk_size
+        value_blocks = jnp.reshape(value_rows, (n_blocks, chunk_size, n))
+        coef_blocks = jnp.reshape(coef_rows, (n_blocks, chunk_size, n_coef, p))
+
+        def body(carry, inputs):
+            value_block, coef_block = inputs
+            inverse_block = self._inverse_rows_with_shared_grid(
+                value_block, coef_block
+            )
+            return carry, inverse_block
+
+        _, inverse_blocks = jax.lax.scan(body, None, (value_blocks, coef_blocks))
+        inverse_rows = jnp.reshape(inverse_blocks, (n_blocks * chunk_size, n))
+
+        return inverse_rows[:B, :]
+
     def dot_and_deriv_n_fullbatch(self, x: Array, coef: Array) -> tuple[Array, Array]:
         """
         Compute dot product and derivative without chunking over observations.
@@ -362,20 +511,64 @@ class TransformationSpline:
         ``broadcast(value.shape, batch_shape)``.
         """
         batch_shape = self._tfp_batch_shape(coef, batch_shape)
-        value, sample_shape, result_batch_shape = self._broadcast_tfp_value(
-            value, batch_shape
+        value, sample_shape, value_batch_shape, result_batch_shape = (
+            self._tfp_value_layout(value, batch_shape)
         )
+        coef = self.compute_coef(raw_coef=coef)
+        n_coef = jnp.shape(coef)[-2]
 
-        if self._coef_uses_rowwise_eval(coef):
-            return self.dot_and_deriv_n_fullbatch(value, coef)
+        if n_coef == 1:
+            value = self._compact_tfp_to_legacy_batch_last(
+                value, value_batch_shape, sample_shape
+            )
+            coef = _broadcast_leading_core(coef, result_batch_shape, core_ndims=2)
+            dot, deriv = self._evaluate_spline(value, coef)
 
-        value = self._tfp_to_legacy_batch_last(value, result_batch_shape, sample_shape)
-        dot, deriv = self.dot_and_deriv(value, coef)
+            dot = self._legacy_batch_last_to_tfp(
+                dot, result_batch_shape, sample_shape
+            )
+            deriv = self._legacy_batch_last_to_tfp(
+                deriv, result_batch_shape, sample_shape
+            )
 
-        dot = self._legacy_batch_last_to_tfp(dot, result_batch_shape, sample_shape)
-        deriv = self._legacy_batch_last_to_tfp(deriv, result_batch_shape, sample_shape)
+            return dot, deriv
 
-        return dot, deriv
+        if not self.supports_rowwise_coef:
+            raise ValueError(
+                "Spline coefficients with n_coef > 1 require a spline that "
+                "supports rowwise coefficients."
+            )
+
+        if not result_batch_shape:
+            raise ValueError(
+                "Spline coefficients with n_coef > 1 require a non-empty "
+                "batch shape."
+            )
+
+        if n_coef != result_batch_shape[-1]:
+            raise ValueError(
+                "Spline coefficients with n_coef > 1 must match the final "
+                f"batch dimension. Got {n_coef=} and "
+                f"{result_batch_shape[-1]=}."
+            )
+
+        coef = _broadcast_leading_core(
+            coef, result_batch_shape[:-1], core_ndims=2
+        )
+        coef = jnp.reshape(coef, (1,) * len(sample_shape) + jnp.shape(coef))
+        value = jnp.reshape(value, sample_shape + value_batch_shape)
+        n_eval = jnp.shape(value)[-1]
+
+        if n_eval == 1:
+            return self._evaluate_rowwise_shared_value(value, coef)
+
+        if n_eval != n_coef:
+            raise ValueError(
+                "Spline coefficients with n_coef > 1 must match the value "
+                f"rowwise axis length. Got {n_coef=} and {n_eval=}."
+            )
+
+        return self._evaluate_spline(value, coef)
 
     def dot_inverse_tfp(
         self,
@@ -392,14 +585,55 @@ class TransformationSpline:
         ``broadcast(value.shape, batch_shape)``.
         """
         batch_shape = self._tfp_batch_shape(coef, batch_shape)
-        value, sample_shape, result_batch_shape = self._broadcast_tfp_value(
-            value, batch_shape
+        value, sample_shape, value_batch_shape, result_batch_shape = (
+            self._tfp_value_layout(value, batch_shape)
         )
+        coef = self.compute_coef(raw_coef=coef)
+        n_coef = jnp.shape(coef)[-2]
+        sample_size = int(np.prod(sample_shape)) if sample_shape else 1
 
-        if self._coef_uses_rowwise_eval(coef):
-            return self.dot_inverse_n_fullbatch(value, coef)
+        value = self._compact_tfp_to_legacy_batch_last(
+            value, value_batch_shape, sample_shape
+        )
+        value = _broadcast_leading_core(value, result_batch_shape, core_ndims=1)
+        value_rows = jnp.reshape(value, (-1, sample_size))
 
-        value = self._tfp_to_legacy_batch_last(value, result_batch_shape, sample_shape)
-        inverse = self.dot_inverse(value, coef)
+        if n_coef == 1:
+            coef = _broadcast_leading_core(coef, result_batch_shape, core_ndims=2)
+            _, p = jnp.shape(coef)[-2:]
+            coef_rows = jnp.reshape(coef, (-1, 1, p))
+            inverse_rows = self._inverse_rows_chunked(value_rows, coef_rows)
+            inverse = jnp.reshape(inverse_rows, result_batch_shape + (sample_size,))
+
+            return self._legacy_batch_last_to_tfp(
+                inverse, result_batch_shape, sample_shape
+            )
+
+        if not self.supports_rowwise_coef:
+            raise ValueError(
+                "Spline coefficients with n_coef > 1 require a spline that "
+                "supports rowwise coefficients."
+            )
+
+        if not result_batch_shape:
+            raise ValueError(
+                "Spline coefficients with n_coef > 1 require a non-empty "
+                "batch shape."
+            )
+
+        if n_coef != result_batch_shape[-1]:
+            raise ValueError(
+                "Spline coefficients with n_coef > 1 must match the final "
+                f"batch dimension. Got {n_coef=} and "
+                f"{result_batch_shape[-1]=}."
+            )
+
+        coef = _broadcast_leading_core(
+            coef, result_batch_shape[:-1], core_ndims=2
+        )
+        _, p = jnp.shape(coef)[-2:]
+        coef_rows = jnp.reshape(coef, (-1, 1, p))
+        inverse_rows = self._inverse_rows_chunked(value_rows, coef_rows)
+        inverse = jnp.reshape(inverse_rows, result_batch_shape + (sample_size,))
 
         return self._legacy_batch_last_to_tfp(inverse, result_batch_shape, sample_shape)
