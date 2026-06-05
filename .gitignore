@@ -185,3 +185,5 @@ tests/sptm2_nigeria.pickle
 tests/sptm_nigeria.pickle
 tests/test_ptm.ipynb
 tests/test_survival2.ipynb
+tests/sptm2_nigeria_iwls.pickle
+*.pickle
