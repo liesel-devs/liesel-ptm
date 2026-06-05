@@ -130,9 +130,27 @@ class TransformationSpline:
         self, coef: Array, batch_shape: tuple[int, ...] | None
     ) -> tuple[int, ...]:
         if batch_shape is None:
-            return self._coef_batch_shape(coef)
+            return self._tfp_coef_batch_shape(coef)
 
         return self._shape_tuple(batch_shape)
+
+    @staticmethod
+    def _check_tfp_coef_core_shape(coef: Array) -> None:
+        if jnp.ndim(coef) < 1:
+            raise ValueError(
+                "TFP spline coefficients must have shape (..., n_param). "
+                "Use shape (n_param,) for a shared, unbatched spline."
+            )
+
+    def _tfp_coef_batch_shape(self, coef: Array) -> tuple[int, ...]:
+        self._check_tfp_coef_core_shape(coef)
+        return self._shape_tuple(jnp.shape(coef)[:-1])
+
+    def _compute_tfp_coef_for_eval(self, raw_coef: Array) -> Array:
+        raw_coef = jnp.asarray(raw_coef)
+        self._check_tfp_coef_core_shape(raw_coef)
+        coef = self._compute_coef(raw_coef)
+        return jnp.expand_dims(coef, axis=-2)
 
     @staticmethod
     def _broadcast_tfp_value(
@@ -514,61 +532,20 @@ class TransformationSpline:
         value, sample_shape, value_batch_shape, result_batch_shape = (
             self._tfp_value_layout(value, batch_shape)
         )
-        coef = self.compute_coef(raw_coef=coef)
-        n_coef = jnp.shape(coef)[-2]
+        coef = self._compute_tfp_coef_for_eval(coef)
 
-        if n_coef == 1:
-            value = self._compact_tfp_to_legacy_batch_last(
-                value, value_batch_shape, sample_shape
-            )
-            coef = _broadcast_leading_core(coef, result_batch_shape, core_ndims=2)
-            dot, deriv = self._evaluate_spline(value, coef)
-
-            dot = self._legacy_batch_last_to_tfp(
-                dot, result_batch_shape, sample_shape
-            )
-            deriv = self._legacy_batch_last_to_tfp(
-                deriv, result_batch_shape, sample_shape
-            )
-
-            return dot, deriv
-
-        if not self.supports_rowwise_coef:
-            raise ValueError(
-                "Spline coefficients with n_coef > 1 require a spline that "
-                "supports rowwise coefficients."
-            )
-
-        if not result_batch_shape:
-            raise ValueError(
-                "Spline coefficients with n_coef > 1 require a non-empty "
-                "batch shape."
-            )
-
-        if n_coef != result_batch_shape[-1]:
-            raise ValueError(
-                "Spline coefficients with n_coef > 1 must match the final "
-                f"batch dimension. Got {n_coef=} and "
-                f"{result_batch_shape[-1]=}."
-            )
-
-        coef = _broadcast_leading_core(
-            coef, result_batch_shape[:-1], core_ndims=2
+        value = self._compact_tfp_to_legacy_batch_last(
+            value, value_batch_shape, sample_shape
         )
-        coef = jnp.reshape(coef, (1,) * len(sample_shape) + jnp.shape(coef))
-        value = jnp.reshape(value, sample_shape + value_batch_shape)
-        n_eval = jnp.shape(value)[-1]
+        coef = _broadcast_leading_core(coef, result_batch_shape, core_ndims=2)
+        dot, deriv = self._evaluate_spline(value, coef)
 
-        if n_eval == 1:
-            return self._evaluate_rowwise_shared_value(value, coef)
+        dot = self._legacy_batch_last_to_tfp(dot, result_batch_shape, sample_shape)
+        deriv = self._legacy_batch_last_to_tfp(
+            deriv, result_batch_shape, sample_shape
+        )
 
-        if n_eval != n_coef:
-            raise ValueError(
-                "Spline coefficients with n_coef > 1 must match the value "
-                f"rowwise axis length. Got {n_coef=} and {n_eval=}."
-            )
-
-        return self._evaluate_spline(value, coef)
+        return dot, deriv
 
     def dot_inverse_tfp(
         self,
@@ -588,8 +565,7 @@ class TransformationSpline:
         value, sample_shape, value_batch_shape, result_batch_shape = (
             self._tfp_value_layout(value, batch_shape)
         )
-        coef = self.compute_coef(raw_coef=coef)
-        n_coef = jnp.shape(coef)[-2]
+        coef = self._compute_tfp_coef_for_eval(coef)
         sample_size = int(np.prod(sample_shape)) if sample_shape else 1
 
         value = self._compact_tfp_to_legacy_batch_last(
@@ -598,39 +574,7 @@ class TransformationSpline:
         value = _broadcast_leading_core(value, result_batch_shape, core_ndims=1)
         value_rows = jnp.reshape(value, (-1, sample_size))
 
-        if n_coef == 1:
-            coef = _broadcast_leading_core(coef, result_batch_shape, core_ndims=2)
-            _, p = jnp.shape(coef)[-2:]
-            coef_rows = jnp.reshape(coef, (-1, 1, p))
-            inverse_rows = self._inverse_rows_chunked(value_rows, coef_rows)
-            inverse = jnp.reshape(inverse_rows, result_batch_shape + (sample_size,))
-
-            return self._legacy_batch_last_to_tfp(
-                inverse, result_batch_shape, sample_shape
-            )
-
-        if not self.supports_rowwise_coef:
-            raise ValueError(
-                "Spline coefficients with n_coef > 1 require a spline that "
-                "supports rowwise coefficients."
-            )
-
-        if not result_batch_shape:
-            raise ValueError(
-                "Spline coefficients with n_coef > 1 require a non-empty "
-                "batch shape."
-            )
-
-        if n_coef != result_batch_shape[-1]:
-            raise ValueError(
-                "Spline coefficients with n_coef > 1 must match the final "
-                f"batch dimension. Got {n_coef=} and "
-                f"{result_batch_shape[-1]=}."
-            )
-
-        coef = _broadcast_leading_core(
-            coef, result_batch_shape[:-1], core_ndims=2
-        )
+        coef = _broadcast_leading_core(coef, result_batch_shape, core_ndims=2)
         _, p = jnp.shape(coef)[-2:]
         coef_rows = jnp.reshape(coef, (-1, 1, p))
         inverse_rows = self._inverse_rows_chunked(value_rows, coef_rows)

@@ -1,9 +1,8 @@
 import time
 
-import pytest
-
 import jax
 import jax.numpy as jnp
+import pytest
 import tensorflow_probability.substrates.jax.distributions as tfd
 
 import liesel_ptm as ptm
@@ -17,9 +16,8 @@ from liesel_ptm.dist import (
     integrate_piecewise_gauss_legendre,
 )
 
-
 knots = PTMKnots(-4.0, 4.0, nparam=10)
-coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
 bs = PTMSpline(knots.knots)
 
 
@@ -46,7 +44,7 @@ def random_walk_coef(key, batch_shape: tuple[int, ...], nparam: int, scale=0.35)
     innovations = jax.random.normal(key, batch_shape + (nparam,)) * scale
     coef = jnp.cumsum(innovations, axis=-1)
     coef = coef - jnp.mean(coef, axis=-1, keepdims=True)
-    return coef[..., None, :]
+    return coef
 
 
 class TestPiecewiseGaussLegendreIntegration:
@@ -103,7 +101,7 @@ class TestOnionDistFactory:
             gauss_legendre_order=4,
         )
         bspline = Dist.keywords["bspline"]
-        coef = jax.random.normal(jax.random.key(1), (1, 11))
+        coef = jax.random.normal(jax.random.key(1), (11,))
 
         dist1 = Dist(coef=coef, loc=0.0, scale=1.0)
         dist2 = Dist(coef=coef, loc=1.0, scale=2.0)
@@ -125,7 +123,7 @@ class TestOnionDistFactory:
             loc_scale=False,
             parametric_distribution=tfd.Exponential,
         )
-        coef = jax.random.normal(jax.random.key(2), (1, onion_knots.nparam))
+        coef = jax.random.normal(jax.random.key(2), (onion_knots.nparam,))
         dist = Dist(coef=coef, rate=jnp.array([1.0, 2.0]))
 
         assert isinstance(dist, ptm.TransformationDist)
@@ -148,7 +146,7 @@ class TestOnionDistFactory:
 
 class TestBaseTransformationDist:
     def test_base_distribution_without_parametric_layer(self):
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         dist = ptm.TransformationDist(coef=coef, bspline=bs, gauss_legendre_order=8)
 
         assert dist.batch_shape == (2,)
@@ -162,7 +160,7 @@ class TestBaseTransformationDist:
         assert dist.stddev().shape == (2,)
 
     def test_spline_only_public_methods_use_tfp_layout(self):
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         dist = ptm.TransformationDist(coef=coef, bspline=bs)
 
         value = jnp.ones((5, 1))
@@ -181,7 +179,7 @@ class TestBaseTransformationDist:
         assert jnp.allclose(dist.cdf_spline(quantiles), probs, atol=1e-4)
 
     def test_coefficient_validation(self):
-        coef_list = [[0.0] * knots.nparam]
+        coef_list = [0.0] * knots.nparam
         dist = ptm.TransformationDist(coef=coef_list, bspline=bs)
 
         assert jnp.issubdtype(dist.coef.dtype, jnp.floating)
@@ -189,7 +187,7 @@ class TestBaseTransformationDist:
 
         with pytest.raises(TypeError, match="floating-point"):
             ptm.TransformationDist(
-                coef=jnp.ones((1, knots.nparam), dtype=jnp.int32), bspline=bs
+                coef=jnp.ones((knots.nparam,), dtype=jnp.int32), bspline=bs
             )
 
     def test_gauss_legendre_integration_api(self):
@@ -219,7 +217,7 @@ class TestBaseTransformationDist:
                 )
 
     def test_extreme_probabilities_remain_finite(self):
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bs
         )
@@ -234,7 +232,7 @@ class TestBaseTransformationDist:
         assert jnp.all(jnp.isfinite(samples))
 
     def test_log_prob_autodiff_wrt_coefficients(self):
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
 
         def objective(coef):
             dist = ptm.LocScaleTransformationDist(
@@ -318,7 +316,7 @@ class TestSplineMomentQuadrature:
 
     def test_pseudo_diagnostic_is_exact_identity(self):
         dist = GaussianPseudoTransformationDist(
-            coef=jnp.array([[0.0]]), loc=0.0, scale=1.0
+            coef=jnp.array([0.0]), loc=0.0, scale=1.0
         )
 
         diagnostic = dist.moment_quadrature_diagnostic()
@@ -414,7 +412,7 @@ class TestDistOneCoef:
 
 class TestDistBatchedCoef:
     def test_log_prob_matches_normal_broadcasting(self):
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
         )
@@ -433,7 +431,7 @@ class TestDistBatchedCoef:
         assert_both_raise_for_shape(dist, normal, "log_prob", jnp.ones((5,)))
 
     def test_quantile_matches_normal_broadcasting(self):
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
         )
@@ -452,7 +450,7 @@ class TestDistBatchedCoef:
         assert_both_raise_for_shape(dist, normal, "quantile", jnp.full((5,), 0.5))
 
     def test_cdf_quantile_roundtrip_broadcasting(self):
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
         )
@@ -470,7 +468,7 @@ class TestDistBatchedCoef:
             assert jnp.allclose(cdf, jnp.broadcast_to(prob, q.shape), atol=1e-4)
 
     def test_sample_and_moment_shapes(self):
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
         )
@@ -482,7 +480,7 @@ class TestDistBatchedCoef:
         assert dist.stddev().shape == (2,)
 
     def test_parametric_and_coef_batch_broadcasting(self):
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef,
             loc=jnp.array([0.0, 1.0]),
@@ -499,8 +497,25 @@ class TestDistBatchedCoef:
         assert dist.mean().shape == (2,)
         assert dist.stddev().shape == (2,)
 
+    def test_unbatched_coef_broadcasts_over_parametric_batch(self):
+        loc = jnp.array([0.0, 1.0])
+        scale = jnp.array(1.0)
+        dist = ptm.LocScaleTransformationDist(
+            coef=coef,
+            loc=loc,
+            scale=scale,
+            bspline=bs,
+            gauss_legendre_order=8,
+        )
+        normal = tfd.Normal(loc=loc, scale=scale)
+
+        assert dist.batch_shape == normal.batch_shape
+        assert_same_shape_as_normal(dist, normal, "log_prob", 1.0)
+        assert_same_shape_as_normal(dist, normal, "log_prob", jnp.ones((5, 1)))
+        assert dist.sample(3, seed=jax.random.key(1)).shape == (3, 2)
+
     def test_singleton_batch_axis_expands_like_normal(self):
-        coef = jax.random.normal(jax.random.key(1), (2, 1, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef,
             loc=jnp.zeros((2, 1)),
@@ -516,7 +531,7 @@ class TestDistBatchedCoef:
         assert dist.stddev().shape == (2, 1)
 
     def test_two_dimensional_batch_shape(self):
-        coef = jax.random.normal(jax.random.key(1), (3, 2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (3, 2, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
         )
@@ -536,7 +551,7 @@ class TestPseudoDistributions:
         loc = jnp.array([0.0, 1.0])
         scale = jnp.array([1.0, 2.0])
         dist = GaussianPseudoTransformationDist(
-            coef=jnp.array([[0.0]]),
+            coef=jnp.array([0.0]),
             loc=loc,
             scale=scale,
             gauss_legendre_order=8,
@@ -557,7 +572,7 @@ class TestPseudoDistributions:
     def test_pseudo_transformation_dist_matches_parametric_distribution(self):
         rate = jnp.array([1.0, 2.0])
         dist = PseudoTransformationDist(
-            coef=jnp.array([[0.0]]),
+            coef=jnp.array([0.0]),
             parametric_distribution=tfd.Exponential,
             rate=rate,
         )
@@ -574,7 +589,7 @@ class TestPseudoDistributions:
         loc = jnp.array([0.0, 1.0])
         scale = jnp.array([1.0, 2.0])
         dist = LocScalePseudoTransformationDist(
-            coef=jnp.array([[0.0]]),
+            coef=jnp.array([0.0]),
             loc=loc,
             scale=scale,
             parametric_distribution=tfd.Normal,
@@ -596,7 +611,7 @@ class TestDistGPTM:
         knots = OnionKnots(-4.0, 4.0, nparam=11)
         bs = OnionSpline(knots.knots)
         b = 3
-        coef = jax.random.normal(jax.random.key(1), (b, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (b, knots.nparam))
         dist = ptm.LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=False
         )

@@ -429,7 +429,8 @@ class TestTfpLayout:
         value = bs._tfp_to_legacy_batch_last(
             value, result_batch_shape, sample_shape
         )
-        fx, fxd = bs.dot_and_deriv(value, coef)
+        legacy_coef = jnp.expand_dims(coef, axis=-2)
+        fx, fxd = bs.dot_and_deriv(value, legacy_coef)
 
         fx = bs._legacy_batch_last_to_tfp(fx, result_batch_shape, sample_shape)
         fxd = bs._legacy_batch_last_to_tfp(fxd, result_batch_shape, sample_shape)
@@ -446,7 +447,8 @@ class TestTfpLayout:
         value = bs._tfp_to_legacy_batch_last(
             value, result_batch_shape, sample_shape
         )
-        inverse = bs.dot_inverse(value, coef)
+        legacy_coef = jnp.expand_dims(coef, axis=-2)
+        inverse = bs.dot_inverse(value, legacy_coef)
 
         return bs._legacy_batch_last_to_tfp(
             inverse, result_batch_shape, sample_shape
@@ -486,16 +488,18 @@ class TestTfpLayout:
         assert jnp.allclose(x, expected, atol=1e-4)
 
     def test_single_coef(self):
-        self._assert_tfp_roundtrip(0.5, coef, ())
-        self._assert_tfp_roundtrip(jnp.linspace(-2.0, 2.0, 5), coef, (5,))
+        tfp_coef = jnp.squeeze(coef, axis=0)
+
+        self._assert_tfp_roundtrip(0.5, tfp_coef, ())
+        self._assert_tfp_roundtrip(jnp.linspace(-2.0, 2.0, 5), tfp_coef, (5,))
         self._assert_tfp_roundtrip(
             jnp.linspace(-2.0, 2.0, 6).reshape((2, 3)),
-            coef,
+            tfp_coef,
             (2, 3),
         )
 
     def test_batched_coef(self):
-        coef = jax.random.normal(jax.random.key(2), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(2), (2, knots.nparam))
 
         self._assert_tfp_roundtrip(0.5, coef, (2,))
         self._assert_tfp_roundtrip(
@@ -515,8 +519,14 @@ class TestTfpLayout:
             (5, 2),
         )
 
+    def test_batch_one_coef_broadcasts_observations(self):
+        coef = jax.random.normal(jax.random.key(8), (1, knots.nparam))
+        value = jnp.linspace(-2.0, 2.0, 5)
+
+        self._assert_tfp_roundtrip(value, coef, (5,))
+
     def test_two_dimensional_batched_coef(self):
-        coef = jax.random.normal(jax.random.key(3), (3, 2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(3), (3, 2, knots.nparam))
 
         self._assert_tfp_roundtrip(0.5, coef, (3, 2))
         self._assert_tfp_roundtrip(
@@ -526,7 +536,7 @@ class TestTfpLayout:
         )
 
     def test_explicit_broader_batch_shape(self):
-        coef = jax.random.normal(jax.random.key(4), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(4), (2, knots.nparam))
 
         self._assert_tfp_roundtrip(
             0.5,
@@ -536,7 +546,7 @@ class TestTfpLayout:
         )
 
     def test_inverse_tail_values_match_full_broadcast_reference(self):
-        coef = jax.random.normal(jax.random.key(7), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(7), (2, knots.nparam))
         value = jnp.asarray([-8.0, -4.0, 0.0, 4.0, 8.0]).reshape((5, 1))
 
         x = bs.dot_inverse_tfp(value, coef, batch_shape=(2,))
@@ -548,7 +558,7 @@ class TestTfpLayout:
         assert jnp.allclose(x, x_ref, atol=1e-4)
 
     def test_jvp_through_shared_grid_tfp(self):
-        coef = jax.random.normal(jax.random.key(5), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(5), (2, knots.nparam))
         value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1))
 
         def fn(value):
@@ -561,7 +571,7 @@ class TestTfpLayout:
         assert jnp.isfinite(tangent)
 
     def test_grad_through_shared_grid_tfp_coef(self):
-        coef = jax.random.normal(jax.random.key(6), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(6), (2, knots.nparam))
         value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1))
 
         def fn(coef):

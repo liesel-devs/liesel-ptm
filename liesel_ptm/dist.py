@@ -84,8 +84,8 @@ def _gauss_legendre_nodes_and_weights(order: int, dtype: Any) -> tuple[Array, Ar
 
 def _as_unused_pseudo_coef(coef: Array) -> Array:
     coef = jnp.asarray(coef)
-    if coef.ndim < 2:
-        return jnp.reshape(coef, (1, 1))
+    if coef.ndim < 1:
+        return jnp.reshape(coef, (1,))
     return coef
 
 
@@ -155,7 +155,7 @@ def onion_dist(
     order: int = 3,
     loc_scale: bool = True,
     **kwargs,
-) -> Callable[..., "TransformationDist"]:
+) -> Callable[..., TransformationDist]:
     """
     Return a reusable constructor for an OnionSpline transformation distribution.
 
@@ -184,7 +184,8 @@ class TransformationDist(tfd.Distribution):
     Parameters
     ----------
     coef
-        Coefficients for the spline basis.
+        Coefficients for the spline basis, with shape
+        ``batch_shape + (n_param,)``.
     bspline
         Spline object providing transformation and its inverse/derivative.
     parametric_distribution
@@ -264,7 +265,7 @@ class TransformationDist(tfd.Distribution):
 
         self.bspline = bspline
         self.knots = self.bspline.knots
-        self.bspline._check_coef_core_shape(coef)
+        self.bspline._check_tfp_coef_core_shape(coef)
         self.gauss_legendre_order = gauss_legendre_order
         default_integration_bounds = (
             self.bspline._outer_knot_left,
@@ -415,7 +416,7 @@ class TransformationDist(tfd.Distribution):
         return jnp.array([], dtype=jnp.int32)
 
     def _batch_shape(self):
-        coef_shape = tf.TensorShape(self.bspline._coef_batch_shape(self.coef))
+        coef_shape = tf.TensorShape(self.bspline._tfp_coef_batch_shape(self.coef))
 
         if self.parametric_distribution is None:
             parametric_shape = tf.TensorShape([])
@@ -426,7 +427,7 @@ class TransformationDist(tfd.Distribution):
 
     def _batch_shape_tensor(self):
         coef_shape = jnp.asarray(
-            self.bspline._coef_batch_shape(self.coef), dtype=jnp.int32
+            self.bspline._tfp_coef_batch_shape(self.coef), dtype=jnp.int32
         )
 
         if self.parametric_distribution is None:
