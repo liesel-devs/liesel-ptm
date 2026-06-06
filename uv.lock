@@ -923,7 +923,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "interpax", specifier = ">=0.3.10" },
-    { name = "liesel", specifier = ">=0.4.3" },
+    { name = "liesel", specifier = ">=0.5.0" },
     { name = "plotnine", specifier = ">=0.14.5" },
     { name = "properscoring", specifier = ">=0.1" },
 ]
@@ -2079,7 +2079,7 @@ wheels = [
 
 [[package]]
 name = "tfp-nightly"
-version = "0.26.0.dev20260605"
+version = "0.26.0.dev20260606"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "absl-py" },
@@ -2091,7 +2091,7 @@ dependencies = [
     { name = "six" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c8/e9/501a88b3873e58b42b636d6eb12724e01f57fb82797925b5388ff6819abf/tfp_nightly-0.26.0.dev20260605-py2.py3-none-any.whl", hash = "sha256:7bb1f06e23e2af93ca5f1aa7c8e1f4532f07d10f2bd5585291ad828fd85adf3a", size = 6975582, upload-time = "2026-06-05T08:47:42.783Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/74/3f50e2029b482a0779074bfca30f167fbb98e7eb464b566120bf929ea510/tfp_nightly-0.26.0.dev20260606-py2.py3-none-any.whl", hash = "sha256:8ecacc5c9437995cfa77791305a827eef6e589498765f29d23b6c04916e1b8c3", size = 6975580, upload-time = "2026-06-06T08:43:53.253Z" },
 ]
 
 [[package]]
