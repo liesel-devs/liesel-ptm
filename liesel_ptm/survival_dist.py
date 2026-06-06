@@ -303,9 +303,9 @@ class CensoredDistribution(_BaseCensoringDistribution):
 
     Optionally, pass ``censoring_records`` at construction time to cache the
     censoring indicators for a fixed observed data set. In cached mode,
-    ``log_prob(value)`` still expects full records with shape ``(n, 3)`` and the
-    same shape as ``censoring_records``; the cached indicators determine which
-    likelihood branch is evaluated for each row.
+    ``log_prob(value)`` still expects full records with trailing event shape
+    ``(3,)``; the cached indicators determine which likelihood branch is
+    evaluated along the cached observation axis.
     """
 
     _event_shape_tuple = (3,)
@@ -328,7 +328,10 @@ class CensoredDistribution(_BaseCensoringDistribution):
         )
         self.censoring_records: Array | None = None
         self._cached_record_shape: tuple[int, ...] | None = None
-        self._cached_sample_shape: tuple[int, ...] | None = None
+        self._cached_record_batch_shape: tuple[int, ...] | None = None
+        self._cached_result_batch_shape: tuple[int, ...] | None = None
+        self._cached_padded_record_batch_shape: tuple[int, ...] | None = None
+        self._cached_observation_axis = 0
         self._cached_n_observations = 0
         self._cached_uncensored_indices = jnp.asarray([], dtype=jnp.int32)
         self._cached_left_censored_indices = jnp.asarray([], dtype=jnp.int32)
@@ -353,15 +356,61 @@ class CensoredDistribution(_BaseCensoringDistribution):
                 "distribution construction time."
             ) from err
 
-        if records_np.ndim != 2 or records_np.shape[-1] != 3:
-            raise ValueError("censoring_records must have shape (n, 3).")
-
         if not np.issubdtype(records_np.dtype, np.inexact):
             records_np = records_np.astype(np.float32)
 
-        time = records_np[..., 0]
-        lower = records_np[..., 1]
-        upper = records_np[..., 2]
+        if records_np.ndim < 2 or records_np.shape[-1] != 3:
+            raise ValueError(
+                "censoring_records must have trailing event shape (3,) and "
+                "at least one observation batch axis."
+            )
+
+        record_batch_shape = tuple(int(dim) for dim in records_np.shape[:-1])
+        base_batch_shape = tuple(
+            int(dim) for dim in tuple(self.base_distribution.batch_shape)
+        )
+        try:
+            result_batch_shape = tuple(
+                int(dim)
+                for dim in np.broadcast_shapes(record_batch_shape, base_batch_shape)
+            )
+        except ValueError as err:
+            raise ValueError(
+                "censoring_records batch shape must broadcast with the base "
+                f"distribution batch shape. Got {record_batch_shape} and "
+                f"{base_batch_shape}."
+            ) from err
+
+        rank = len(result_batch_shape)
+        padded_record_batch_shape = (1,) * (
+            rank - len(record_batch_shape)
+        ) + record_batch_shape
+        non_singleton_axes = [
+            axis for axis, dim in enumerate(padded_record_batch_shape) if dim != 1
+        ]
+        if not non_singleton_axes:
+            raise ValueError(
+                "censoring_records must include a non-singleton observation "
+                "batch axis."
+            )
+
+        observation_axis = non_singleton_axes[-1]
+        if any(dim != 1 for dim in padded_record_batch_shape[:observation_axis]):
+            raise ValueError(
+                "Cached censoring records may only vary along one compact "
+                "observation axis; leading record batch axes must be singleton."
+            )
+
+        records_padded = np.reshape(
+            records_np, padded_record_batch_shape + records_np.shape[-1:]
+        )
+        records_compact = np.reshape(
+            np.moveaxis(records_padded, observation_axis, -2), (-1, 3)
+        )
+
+        time = records_compact[..., 0]
+        lower = records_compact[..., 1]
+        upper = records_compact[..., 2]
         time_nan = np.isnan(time)
         lower_nan = np.isnan(lower)
         upper_nan = np.isnan(upper)
@@ -379,8 +428,13 @@ class CensoredDistribution(_BaseCensoringDistribution):
 
         self.censoring_records = jnp.asarray(records_np, dtype=self.dtype)
         self._cached_record_shape = tuple(int(dim) for dim in records_np.shape)
-        self._cached_sample_shape = self._cached_record_shape[:-1]
-        self._cached_n_observations = int(records_np.shape[0])
+        self._cached_record_batch_shape = record_batch_shape
+        self._cached_result_batch_shape = result_batch_shape
+        self._cached_padded_record_batch_shape = padded_record_batch_shape
+        self._cached_observation_axis = observation_axis
+        self._cached_n_observations = int(
+            padded_record_batch_shape[observation_axis]
+        )
         self._cached_uncensored_indices = jnp.asarray(
             np.flatnonzero(is_uncensored), dtype=jnp.int32
         )
@@ -472,20 +526,125 @@ class CensoredDistribution(_BaseCensoringDistribution):
 
         return result
 
-    def _subset_cached_distribution_kwarg(self, value: Any, indices: Array) -> Any:
+    @staticmethod
+    def _left_pad_shape(shape: tuple[int, ...], rank: int) -> tuple[int, ...]:
+        if len(shape) > rank:
+            raise ValueError(
+                f"Cannot left-pad shape {shape} to shorter rank {rank}."
+            )
+
+        return (1,) * (rank - len(shape)) + shape
+
+    def _cached_value_padded(self, value: Array) -> Array:
+        if self._cached_result_batch_shape is None:
+            raise RuntimeError("Cached censoring records are not initialized.")
+
+        value_batch_shape = tuple(int(dim) for dim in value.shape[:-1])
+        try:
+            result_batch_shape = tuple(
+                int(dim)
+                for dim in np.broadcast_shapes(
+                    value_batch_shape, self._cached_result_batch_shape
+                )
+            )
+        except ValueError as err:
+            raise ValueError(
+                "Cached CensoredDistribution requires value batch shape to "
+                "broadcast with cached records and base distribution batch "
+                f"shape. Got {value_batch_shape} and "
+                f"{self._cached_result_batch_shape}."
+            ) from err
+
+        if result_batch_shape != self._cached_result_batch_shape:
+            raise ValueError(
+                "Cached CensoredDistribution does not support additional sample "
+                "axes beyond the cached/base batch shape in this path. Got "
+                f"{value_batch_shape}; expected broadcast result "
+                f"{self._cached_result_batch_shape}."
+            )
+
+        padded_value_batch_shape = self._left_pad_shape(
+            value_batch_shape, len(self._cached_result_batch_shape)
+        )
+        return jnp.reshape(value, padded_value_batch_shape + (3,))
+
+    def _cached_branch_value(
+        self, value_padded: Array, component: int, indices: Array
+    ) -> Array:
+        if value_padded.shape[self._cached_observation_axis] == 1:
+            indices = jnp.zeros_like(indices)
+
+        return jnp.take(
+            value_padded[..., component],
+            indices,
+            axis=self._cached_observation_axis,
+        )
+
+    def _cached_kwarg_batch_shape_and_core_ndims(
+        self, key: str, value_array: Array
+    ) -> tuple[tuple[int, ...], int] | None:
+        if self._cached_result_batch_shape is None:
+            return None
+
+        candidate_core_ndims = (1, 0) if key == "coef" else (0, 1)
+        for core_ndims in candidate_core_ndims:
+            if value_array.ndim < core_ndims:
+                continue
+
+            if core_ndims:
+                batch_shape = tuple(int(dim) for dim in value_array.shape[:-core_ndims])
+            else:
+                batch_shape = tuple(int(dim) for dim in value_array.shape)
+
+            try:
+                broadcast_shape = tuple(
+                    int(dim)
+                    for dim in np.broadcast_shapes(
+                        batch_shape, self._cached_result_batch_shape
+                    )
+                )
+            except ValueError:
+                continue
+
+            if broadcast_shape == self._cached_result_batch_shape:
+                return batch_shape, core_ndims
+
+        return None
+
+    def _subset_cached_distribution_kwarg(
+        self, key: str, value: Any, indices: Array
+    ) -> Any:
         try:
             value_array = jnp.asarray(value)
         except (TypeError, ValueError):
             return value
 
-        if value_array.ndim > 0 and value_array.shape[0] == self._cached_n_observations:
-            return jnp.take(value_array, indices, axis=0)
+        batch_and_core = self._cached_kwarg_batch_shape_and_core_ndims(
+            key, value_array
+        )
+        if batch_and_core is None or self._cached_result_batch_shape is None:
+            return value
 
-        return value
+        batch_shape, _ = batch_and_core
+        padded_batch_shape = self._left_pad_shape(
+            batch_shape, len(self._cached_result_batch_shape)
+        )
+        if padded_batch_shape[self._cached_observation_axis] != (
+            self._cached_n_observations
+        ):
+            return value
+
+        array_axis = self._cached_observation_axis - (
+            len(self._cached_result_batch_shape) - len(batch_shape)
+        )
+        if array_axis < 0:
+            return value
+
+        return jnp.take(value_array, indices, axis=array_axis)
 
     def _cached_base_distribution(self, indices: Array) -> tfd.Distribution:
         distribution_kwargs = {
-            key: self._subset_cached_distribution_kwarg(value, indices)
+            key: self._subset_cached_distribution_kwarg(key, value, indices)
             for key, value in self.distribution_kwargs.items()
         }
         return self.distribution(
@@ -497,29 +656,30 @@ class CensoredDistribution(_BaseCensoringDistribution):
     def _scatter_cached_log_prob(
         self, result: Array, indices: Array, branch_log_prob: Array
     ) -> Array:
-        branch_log_prob = jnp.reshape(jnp.asarray(branch_log_prob), (-1,))
-        return result.at[indices].set(branch_log_prob)
+        branch_shape = (
+            result.shape[: self._cached_observation_axis]
+            + (indices.shape[0],)
+            + result.shape[self._cached_observation_axis + 1 :]
+        )
+        branch_log_prob = jnp.broadcast_to(jnp.asarray(branch_log_prob), branch_shape)
+        result_moved = jnp.moveaxis(result, self._cached_observation_axis, -1)
+        branch_moved = jnp.moveaxis(
+            branch_log_prob, self._cached_observation_axis, -1
+        )
+        result_moved = result_moved.at[..., indices].set(branch_moved)
+        return jnp.moveaxis(result_moved, -1, self._cached_observation_axis)
 
     def _log_prob_cached(self, value: Array) -> Array:
-        if self._cached_record_shape is None or self._cached_sample_shape is None:
+        if self._cached_record_shape is None or self._cached_result_batch_shape is None:
             raise RuntimeError("Cached censoring records are not initialized.")
 
-        if tuple(value.shape) != self._cached_record_shape:
-            raise ValueError(
-                "Cached CensoredDistribution requires value.shape to exactly "
-                f"match censoring_records.shape. Got {tuple(value.shape)} and "
-                f"{self._cached_record_shape}."
-            )
-
-        value_flat = jnp.reshape(value, (self._cached_n_observations, 3))
-        result = jnp.full(
-            (self._cached_n_observations,), -jnp.inf, dtype=value.dtype
-        )
+        value_padded = self._cached_value_padded(value)
+        result = jnp.full(self._cached_result_batch_shape, -jnp.inf, dtype=value.dtype)
 
         if self._n_cached_uncensored:
             indices = self._cached_uncensored_indices
             branch_distribution = self._cached_base_distribution(indices)
-            branch_value = value_flat[indices, 0]
+            branch_value = self._cached_branch_value(value_padded, 0, indices)
             result = self._scatter_cached_log_prob(
                 result, indices, branch_distribution.log_prob(branch_value)
             )
@@ -527,15 +687,17 @@ class CensoredDistribution(_BaseCensoringDistribution):
         if self._n_cached_left_censored:
             indices = self._cached_left_censored_indices
             branch_distribution = self._cached_base_distribution(indices)
-            branch_value = value_flat[indices, 2]
+            branch_value = self._cached_branch_value(value_padded, 2, indices)
             result = self._scatter_cached_log_prob(
-                result, indices, _distribution_log_cdf(branch_distribution, branch_value)
+                result,
+                indices,
+                _distribution_log_cdf(branch_distribution, branch_value),
             )
 
         if self._n_cached_right_censored:
             indices = self._cached_right_censored_indices
             branch_distribution = self._cached_base_distribution(indices)
-            branch_value = value_flat[indices, 1]
+            branch_value = self._cached_branch_value(value_padded, 1, indices)
             result = self._scatter_cached_log_prob(
                 result,
                 indices,
@@ -545,8 +707,8 @@ class CensoredDistribution(_BaseCensoringDistribution):
         if self._n_cached_interval_censored:
             indices = self._cached_interval_censored_indices
             branch_distribution = self._cached_base_distribution(indices)
-            lower = value_flat[indices, 1]
-            upper = value_flat[indices, 2]
+            lower = self._cached_branch_value(value_padded, 1, indices)
+            upper = self._cached_branch_value(value_padded, 2, indices)
             lower_log_cdf = _distribution_log_cdf(branch_distribution, lower)
             upper_log_cdf = _distribution_log_cdf(branch_distribution, upper)
             lower_log_sf = _distribution_log_survival_function(
@@ -564,7 +726,7 @@ class CensoredDistribution(_BaseCensoringDistribution):
                 result, indices, interval_log_prob
             )
 
-        return jnp.reshape(result, self._cached_sample_shape)
+        return result
 
     def _sample_n(self, n: int | Array, seed: KeyArray | None = None) -> Array:
         samples = self.base_distribution.sample(n, seed=seed)

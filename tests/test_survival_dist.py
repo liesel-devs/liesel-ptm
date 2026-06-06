@@ -209,8 +209,16 @@ class TestCensoredDistributionApi:
         with pytest.raises(NotImplementedError, match="base_distribution"):
             dist.quantile(0.5)
 
-    def test_cached_records_require_matrix_shape(self):
-        with pytest.raises(ValueError, match="shape \\(n, 3\\)"):
+    def test_cached_records_require_trailing_event_shape_and_observation_axis(self):
+        with pytest.raises(ValueError, match="trailing event shape"):
+            CensoredDistribution(
+                tfd.Normal,
+                censoring_records=jnp.ones((2,)),
+                loc=0.0,
+                scale=1.0,
+            )
+
+        with pytest.raises(ValueError, match="observation"):
             CensoredDistribution(
                 tfd.Normal,
                 censoring_records=uncensored(0.0),
@@ -315,7 +323,7 @@ class TestCensoredDistributionCorrectness:
 
         assert jnp.allclose(cached.log_prob(records), uncached.log_prob(records))
 
-    def test_cached_shape_mismatch_raises(self):
+    def test_cached_value_shape_mismatch_raises(self):
         records = jnp.array(
             [
                 [0.0, jnp.nan, jnp.nan],
@@ -326,14 +334,13 @@ class TestCensoredDistributionCorrectness:
             tfd.Normal, censoring_records=records, loc=0.0, scale=1.0
         )
 
-        with pytest.raises(ValueError, match="exactly match"):
+        with pytest.raises(ValueError, match="broadcast"):
             dist.log_prob(jnp.concatenate([records, records[:1]], axis=0))
 
-        with pytest.raises(ValueError, match="exactly match"):
+        with pytest.raises(ValueError, match="additional sample"):
             dist.log_prob(records.reshape(2, 1, 3))
 
-        with pytest.raises(ValueError, match="exactly match"):
-            dist.log_prob(records[0])
+        assert dist.log_prob(records[0]).shape == (2,)
 
     def test_cached_invalid_records_return_negative_infinity(self):
         records = jnp.array(
@@ -395,10 +402,61 @@ class TestCensoredDistributionCorrectness:
 
         assert jnp.allclose(dist.log_prob(records), expected)
 
+    def test_cached_matrix_records_broadcast_over_posterior_batch(self):
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        )
+        loc = jnp.arange(2 * 3 * 4, dtype=jnp.float32).reshape(2, 3, 4) / 10.0
+        scale = jnp.ones((1, 3, 1), dtype=jnp.float32)
+        uncached = CensoredDistribution(tfd.Normal, loc=loc, scale=scale)
+        cached = CensoredDistribution(
+            tfd.Normal,
+            censoring_records=records,
+            loc=loc,
+            scale=scale,
+        )
+        value = records.reshape(1, 1, 4, 3)
+
+        log_prob = cached.log_prob(value)
+
+        assert log_prob.shape == (2, 3, 4)
+        assert jnp.allclose(log_prob, uncached.log_prob(value))
+
+    def test_cached_explicit_singleton_record_axes_match_uncached(self):
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        ).reshape(1, 1, 4, 3)
+        loc = jnp.arange(2 * 3 * 4, dtype=jnp.float32).reshape(2, 3, 4) / 10.0
+        uncached = CensoredDistribution(tfd.Normal, loc=loc, scale=1.0)
+        cached = CensoredDistribution(
+            tfd.Normal,
+            censoring_records=records,
+            loc=loc,
+            scale=1.0,
+        )
+
+        assert cached.censoring_records.shape == records.shape
+        assert cached.log_prob(records).shape == (2, 3, 4)
+        assert jnp.allclose(cached.log_prob(records), uncached.log_prob(records))
+        assert jnp.allclose(
+            cached.log_prob(records.reshape(4, 3)),
+            uncached.log_prob(records.reshape(4, 3)),
+        )
+
     def test_wrapping_transformation_distribution_matches_base(self):
         knots = PTMKnots(-4.0, 4.0, nparam=10)
         bspline = PTMSpline(knots.knots)
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         base = LocScaleTransformationDist(
             coef=coef, loc=0.0, scale=1.0, bspline=bspline
         )
@@ -421,7 +479,7 @@ class TestCensoredDistributionCorrectness:
     def test_cached_transformation_distribution_matches_uncached_mixed_records(self):
         knots = PTMKnots(-4.0, 4.0, nparam=10)
         bspline = PTMSpline(knots.knots)
-        coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
         records = jnp.array(
             [
                 [0.0, jnp.nan, jnp.nan],
@@ -452,6 +510,122 @@ class TestCensoredDistributionCorrectness:
 
         assert jnp.allclose(
             cached.log_prob(records), uncached.log_prob(records), atol=1e-4
+        )
+
+    def test_cached_transformation_distribution_broadcasted_coef_layouts(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=10)
+        bspline = PTMSpline(knots.knots)
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        ).reshape(1, 1, 4, 3)
+        loc = jnp.array(
+            [
+                [[0.0, 0.2, -0.1, 0.4], [0.1, 0.3, -0.2, 0.5]],
+                [[-0.1, 0.0, 0.1, 0.2], [0.2, -0.3, 0.4, -0.5]],
+            ],
+            dtype=jnp.float32,
+        )
+        scale = jnp.ones((2, 1, 1), dtype=jnp.float32)
+        key = jax.random.key(2)
+        shared_coef = jax.random.normal(key, (knots.nparam,))
+        posterior_shared_coef = jax.random.normal(
+            jax.random.key(3), (2, 2, 1, knots.nparam)
+        )
+        observation_coef = jax.random.normal(
+            jax.random.key(4), (2, 2, 4, knots.nparam)
+        )
+
+        for coef in (shared_coef, posterior_shared_coef, observation_coef):
+            uncached = CensoredDistribution(
+                LocScaleTransformationDist,
+                coef=coef,
+                loc=loc,
+                scale=scale,
+                bspline=bspline,
+                gauss_legendre_order=4,
+            )
+            cached = CensoredDistribution(
+                LocScaleTransformationDist,
+                censoring_records=records,
+                coef=coef,
+                loc=loc,
+                scale=scale,
+                bspline=bspline,
+                gauss_legendre_order=4,
+            )
+
+            assert cached.log_prob(records).shape == (2, 2, 4)
+            assert jnp.allclose(
+                cached.log_prob(records),
+                uncached.log_prob(records),
+                atol=5e-4,
+                rtol=5e-4,
+            )
+
+    def test_cached_centered_scaled_transformation_distribution_shared_observation_coef(
+        self,
+    ):
+        knots = PTMKnots(-4.0, 4.0, nparam=10)
+        bspline = PTMSpline(knots.knots)
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ],
+            dtype=jnp.float32,
+        ).reshape(1, 1, 4, 3)
+        loc = jnp.array(
+            [
+                [[0.0, 0.2, -0.1, 0.4], [0.1, 0.3, -0.2, 0.5]],
+                [[-0.1, 0.0, 0.1, 0.2], [0.2, -0.3, 0.4, -0.5]],
+            ],
+            dtype=jnp.float32,
+        )
+        scale = jnp.ones((2, 1, 1), dtype=jnp.float32)
+        coef = 0.2 * jax.random.normal(
+            jax.random.key(5), (2, 2, 1, knots.nparam), dtype=jnp.float32
+        )
+
+        uncached = CensoredDistribution(
+            LocScaleTransformationDist,
+            coef=coef,
+            loc=loc,
+            scale=scale,
+            bspline=bspline,
+            centered=True,
+            scaled=True,
+            gauss_legendre_order=4,
+        )
+        cached = CensoredDistribution(
+            LocScaleTransformationDist,
+            censoring_records=records,
+            coef=coef,
+            loc=loc,
+            scale=scale,
+            bspline=bspline,
+            centered=True,
+            scaled=True,
+            gauss_legendre_order=4,
+        )
+
+        assert cached.base_distribution.transformation_spline_mean().shape == (
+            2,
+            2,
+            1,
+        )
+        assert cached.log_prob(records).shape == (2, 2, 4)
+        assert jnp.allclose(
+            cached.log_prob(records),
+            uncached.log_prob(records),
+            atol=5e-4,
+            rtol=5e-4,
         )
 
     def test_specialized_distributions_match_base_formulas(self):
@@ -545,6 +719,28 @@ class TestCensoredDistributionJaxCompatibility:
         assert log_prob.shape == (4,)
         assert_no_nan(log_prob)
 
+    def test_jit_cached_log_prob_with_explicit_singleton_record_axes(self):
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        ).reshape(1, 1, 4, 3)
+        loc = jnp.arange(2 * 3 * 4, dtype=jnp.float32).reshape(2, 3, 4) / 10.0
+        dist = CensoredDistribution(
+            tfd.Normal,
+            censoring_records=records,
+            loc=loc,
+            scale=1.0,
+        )
+
+        log_prob = jax.jit(dist.log_prob)(records)
+
+        assert log_prob.shape == (2, 3, 4)
+        assert_no_nan(log_prob)
+
     def test_grad_through_normal_location(self):
         records = jnp.array(
             [
@@ -583,10 +779,35 @@ class TestCensoredDistributionJaxCompatibility:
 
         assert jnp.isfinite(grad)
 
+    def test_grad_through_cached_posterior_batched_normal_location(self):
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        ).reshape(1, 1, 4, 3)
+
+        def objective(loc):
+            dist = CensoredDistribution(
+                tfd.Normal,
+                censoring_records=records,
+                loc=loc,
+                scale=1.0,
+            )
+            return jnp.sum(dist.log_prob(records))
+
+        loc = jnp.arange(2 * 3 * 4, dtype=jnp.float32).reshape(2, 3, 4) / 10.0
+        grad = jax.grad(objective)(loc)
+
+        assert grad.shape == loc.shape
+        assert jnp.all(jnp.isfinite(grad))
+
     def test_grad_through_ptm_coefficients(self):
         knots = PTMKnots(-4.0, 4.0, nparam=10)
         bspline = PTMSpline(knots.knots)
-        coef = jax.random.normal(jax.random.key(1), (2, 1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         records = jnp.array(
             [
                 [0.0, jnp.nan, jnp.nan],
@@ -615,7 +836,7 @@ class TestCensoredDistributionJaxCompatibility:
     def test_grad_through_cached_ptm_coefficients(self):
         knots = PTMKnots(-4.0, 4.0, nparam=10)
         bspline = PTMSpline(knots.knots)
-        coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
         records = jnp.array(
             [
                 [0.0, jnp.nan, jnp.nan],
@@ -631,6 +852,37 @@ class TestCensoredDistributionJaxCompatibility:
                 censoring_records=records,
                 coef=coef,
                 loc=0.0,
+                scale=1.0,
+                bspline=bspline,
+                gauss_legendre_order=4,
+            )
+            return jnp.sum(dist.log_prob(records))
+
+        grad = jax.grad(objective)(coef)
+
+        assert grad.shape == coef.shape
+        assert jnp.all(jnp.isfinite(grad))
+
+    def test_grad_through_cached_observation_batched_ptm_coefficients(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=10)
+        bspline = PTMSpline(knots.knots)
+        coef = jax.random.normal(jax.random.key(1), (2, 3, 4, knots.nparam))
+        records = jnp.array(
+            [
+                [0.0, jnp.nan, jnp.nan],
+                [jnp.nan, jnp.nan, -1.0],
+                [jnp.nan, 1.0, jnp.nan],
+                [jnp.nan, -1.0, 1.0],
+            ]
+        ).reshape(1, 1, 4, 3)
+        loc = jnp.zeros((2, 3, 4), dtype=jnp.float32)
+
+        def objective(coef):
+            dist = CensoredDistribution(
+                LocScaleTransformationDist,
+                censoring_records=records,
+                coef=coef,
+                loc=loc,
                 scale=1.0,
                 bspline=bspline,
                 gauss_legendre_order=4,
@@ -670,7 +922,7 @@ class TestCensoredDistributionNumericalStability:
     def test_right_censored_transformation_distribution_tail_is_finite(self):
         knots = PTMKnots(-4.0, 4.0, nparam=10)
         bspline = PTMSpline(knots.knots)
-        coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
         dist = RightCensoredDistribution(
             LocScaleTransformationDist,
             coef=coef,
@@ -717,17 +969,18 @@ class TestCensoredDistributionNumericalStability:
 class TestCensoredTransformationDistNode:
     def test_liesel_dist_builds_censored_transformation_distribution(self):
         knots = PTMKnots(-4.0, 4.0, nparam=10)
-        coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
         bspline = PTMSpline(knots.knots)
         loc = lsl.Var.new_param(0.0, name="loc")
         scale = lsl.Var.new_param(1.0, name="scale")
         shape = lsl.Var.new_param(coef, name="shape")
+        bspline_value = lsl.Value(bspline, convert=lambda value: value)
         dist_node = lsl.Dist(
             partial(CensoredDistribution, distribution=LocScaleTransformationDist),
             loc=loc,
             scale=scale,
             coef=shape,
-            bspline=bspline,
+            bspline=bspline_value,
             gauss_legendre_order=4,
         )
 
@@ -832,11 +1085,12 @@ class TestSetupCensoredVars:
 
     def test_splits_censored_ptm_dist_and_preserves_base_kwargs(self):
         knots = PTMKnots(-4.0, 4.0, nparam=10)
-        coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
+        coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
         bspline = PTMSpline(knots.knots)
         loc = lsl.Var.new_param(0.0, name="loc")
         scale = lsl.Var.new_param(1.0, name="scale")
         shape = lsl.Var.new_param(coef, name="shape")
+        bspline_value = lsl.Value(bspline, convert=lambda value: value)
         records = jnp.array(
             [
                 [0.0, jnp.nan, jnp.nan],
@@ -850,7 +1104,7 @@ class TestSetupCensoredVars:
             loc=loc,
             scale=scale,
             coef=shape,
-            bspline=bspline,
+            bspline=bspline_value,
             gauss_legendre_order=4,
         )
         response = lsl.Var.new_obs(records, dist, name="response")
