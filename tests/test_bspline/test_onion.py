@@ -603,17 +603,21 @@ class TestTfpLayout:
         bs = OnionSpline(knots.knots)
 
         fx, fxd = bs.dot_and_deriv_tfp(value, coef, batch_shape=batch_shape)
+        fx_value = bs.dot_tfp(value, coef, batch_shape=batch_shape)
 
         assert fx.shape == expected_shape
         assert fxd.shape == expected_shape
+        assert fx_value.shape == expected_shape
         assert not jnp.any(jnp.isnan(fx))
         assert not jnp.any(jnp.isnan(fxd))
+        assert not jnp.any(jnp.isnan(fx_value))
         assert jnp.all(fxd > 0.0)
 
         fx_ref, fxd_ref = self._full_broadcast_forward_reference(
             bs, value, coef, batch_shape=batch_shape
         )
         assert jnp.allclose(fx, fx_ref)
+        assert jnp.allclose(fx_value, fx_ref)
         assert jnp.allclose(fxd, fxd_ref)
 
         x = bs.dot_inverse_tfp(fx, coef, batch_shape=batch_shape)
@@ -689,6 +693,19 @@ class TestTfpLayout:
         assert x.shape == (5, 2, n)
         assert jnp.allclose(x, x_ref, atol=1e-4)
 
+    def test_value_only_outside_core_identity(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots)
+        n = 4
+        coef = jax.random.normal(jax.random.key(8), (2, n, knots.nparam))
+        value = jnp.asarray([-8.0, 8.0]).reshape((2, 1, 1))
+
+        fx = bs.dot_tfp(value, coef, batch_shape=(2, n))
+        expected = jnp.broadcast_to(value, (2, 2, n))
+
+        assert fx.shape == (2, 2, n)
+        assert jnp.allclose(fx, expected)
+
     def test_jvp_through_rowwise_shared_grid_tfp(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
         bs = OnionSpline(knots.knots)
@@ -705,6 +722,22 @@ class TestTfpLayout:
         assert jnp.isfinite(primal)
         assert jnp.isfinite(tangent)
 
+    def test_jvp_through_value_only_rowwise_shared_grid_tfp(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots)
+        n = 4
+        coef = jax.random.normal(jax.random.key(9), (2, n, knots.nparam))
+        value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1, 1))
+
+        def fn(value):
+            fx = bs.dot_tfp(value, coef, batch_shape=(2, n))
+            return jnp.sum(fx)
+
+        primal, tangent = jax.jvp(fn, (value,), (jnp.ones_like(value),))
+
+        assert jnp.isfinite(primal)
+        assert jnp.isfinite(tangent)
+
     def test_grad_through_rowwise_shared_grid_tfp_coef(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
         bs = OnionSpline(knots.knots)
@@ -715,6 +748,22 @@ class TestTfpLayout:
         def fn(coef):
             fx, fxd = bs.dot_and_deriv_tfp(value, coef, batch_shape=(2, n))
             return jnp.sum(fx + 0.01 * fxd)
+
+        grad = jax.grad(fn)(coef)
+
+        assert grad.shape == coef.shape
+        assert jnp.all(jnp.isfinite(grad))
+
+    def test_grad_through_value_only_rowwise_shared_grid_tfp_coef(self):
+        knots = OnionKnots(-4.0, 4.0, nparam=11)
+        bs = OnionSpline(knots.knots)
+        n = 4
+        coef = jax.random.normal(jax.random.key(10), (2, n, knots.nparam))
+        value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1, 1))
+
+        def fn(coef):
+            fx = bs.dot_tfp(value, coef, batch_shape=(2, n))
+            return jnp.sum(fx)
 
         grad = jax.grad(fn)(coef)
 

@@ -317,13 +317,27 @@ class TransformationDist(tfd.Distribution):
     def _batch_shape_tuple(self) -> tuple[int, ...]:
         return tuple(int(dim) for dim in tuple(self.batch_shape))
 
+    def _spline_coef_batch_shape_tuple(self) -> tuple[int, ...]:
+        return self.bspline._tfp_coef_batch_shape(self.coef)
+
     def _broadcast_to_batch(self, value: Array) -> Array:
         return jnp.broadcast_to(jnp.asarray(value), self._batch_shape_tuple())
 
-    def _spline_forward_tfp(self, value: Array) -> tuple[Array, Array]:
+    def _spline_forward_tfp(
+        self, value: Array, batch_shape: tuple[int, ...] | None = None
+    ) -> tuple[Array, Array]:
+        if batch_shape is None:
+            batch_shape = self._batch_shape_tuple()
         return self.bspline.dot_and_deriv_tfp(
-            value, self.coef, batch_shape=self._batch_shape_tuple()
+            value, self.coef, batch_shape=batch_shape
         )
+
+    def _spline_value_tfp(
+        self, value: Array, batch_shape: tuple[int, ...] | None = None
+    ) -> Array:
+        if batch_shape is None:
+            batch_shape = self._batch_shape_tuple()
+        return self.bspline.dot_tfp(value, self.coef, batch_shape=batch_shape)
 
     def _spline_inverse_tfp(self, value: Array) -> Array:
         return self.bspline.dot_inverse_tfp(
@@ -364,11 +378,11 @@ class TransformationDist(tfd.Distribution):
         )
 
     def _cdf(self, value: Array) -> Array | float:
-        z, _ = self.transformation_and_logdet(value)
+        z = self._transformation(value)
         return self.reference_distribution.cdf(z)
 
     def _log_cdf(self, value: Array) -> Array | float:
-        z, _ = self.transformation_and_logdet(value)
+        z = self._transformation(value)
         try:
             return self.reference_distribution.log_cdf(z)
         except (AttributeError, NotImplementedError):
@@ -377,14 +391,14 @@ class TransformationDist(tfd.Distribution):
             return jnp.log(jnp.clip(prob, tiny, 1.0))
 
     def _survival_function(self, value: Array) -> Array | float:
-        z, _ = self.transformation_and_logdet(value)
+        z = self._transformation(value)
         try:
             return self.reference_distribution.survival_function(z)
         except (AttributeError, NotImplementedError):
             return 1.0 - self.reference_distribution.cdf(z)
 
     def _log_survival_function(self, value: Array) -> Array | float:
-        z, _ = self.transformation_and_logdet(value)
+        z = self._transformation(value)
         try:
             return self.reference_distribution.log_survival_function(z)
         except (AttributeError, NotImplementedError):
@@ -406,7 +420,7 @@ class TransformationDist(tfd.Distribution):
     def _sample_n(self, n: int | Array, seed: KeyArray | None = None) -> Array:
         shape = (n,) + self._batch_shape_tuple()
         # ensure 0 will be > 0 to avoid numerical instability
-        eps = jnp.finfo(jnp.dtype(self.coef)).eps
+        eps = jnp.finfo(self.coef.dtype).eps
         u = jax.random.uniform(
             cast(Array, seed), shape=shape, minval=eps, maxval=1.0 - eps
         )
@@ -506,7 +520,7 @@ class TransformationDist(tfd.Distribution):
         -------
             Cumulative distribution evaluated using the spline transform.
         """
-        z, _ = self.transformation_and_logdet_spline(value)
+        z = self._transformation_spline(value)
         return self.reference_distribution.cdf(z)
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
@@ -543,15 +557,46 @@ class TransformationDist(tfd.Distribution):
 
         return transf, logdet
 
-    def _transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
+    def transformation_parametric(self, value: Array) -> Array:
+        """
+        Apply the parametric transformation without computing its log determinant.
+        """
+        if self.parametric_distribution is None:
+            return value
+
+        value = jnp.asarray(value, dtype=self.dtype)
+        F_apriori = self.parametric_distribution
+        Fz = self.reference_distribution
+
+        eps = jnp.finfo(value.dtype).eps
+        tiny = jnp.finfo(value.dtype).tiny
+        max_float = 1.0 - eps
+
+        u = F_apriori.cdf(value)
+        u = jnp.where(u >= 1.0, max_float, u)
+        u = jnp.where(u <= 0.0, tiny, u)
+
+        return Fz.quantile(u)
+
+    def _transformation_and_logdet_spline(
+        self, value: Array, batch_shape: tuple[int, ...] | None = None
+    ) -> tuple[Array, Array]:
         value = jnp.asarray(value, dtype=self.dtype)
         nan_mask = jnp.isnan(value)
-        transf, deriv = self._spline_forward_tfp(value)
+        transf, deriv = self._spline_forward_tfp(value, batch_shape=batch_shape)
         transf = jnp.where(nan_mask, jnp.nan, transf)
         deriv = jnp.where(nan_mask, jnp.nan, deriv)
         tiny = jnp.finfo(value.dtype).tiny
         deriv = jnp.clip(deriv, min=tiny)  # safeguard against numerical issues
         return transf, jnp.log(deriv)
+
+    def _transformation_spline_value(
+        self, value: Array, batch_shape: tuple[int, ...] | None = None
+    ) -> Array:
+        value = jnp.asarray(value, dtype=self.dtype)
+        nan_mask = jnp.isnan(value)
+        transf = self._spline_value_tfp(value, batch_shape=batch_shape)
+        return jnp.where(nan_mask, jnp.nan, transf)
 
     def _spline_center_scale(self) -> tuple[Array, Array]:
         if self.centered:
@@ -591,6 +636,16 @@ class TransformationDist(tfd.Distribution):
 
         return z, z_logdet
 
+    def _transformation_spline(self, value: Array) -> Array:
+        ymean, ystd = self._spline_center_scale()
+        value = value * ystd + ymean
+        return self._transformation_spline_value(value)
+
+    def _transformation(self, value: Array) -> Array:
+        """Apply parametric then spline transforms without log determinants."""
+        transf_param = self.transformation_parametric(value)
+        return self._transformation_spline(transf_param)
+
     @partial(jax.jit, static_argnums=0)
     def transformation_and_logdet(self, value: Array) -> tuple[Array, Array]:
         """Apply parametric then spline transforms; return value and logdet."""
@@ -611,6 +666,7 @@ class TransformationDist(tfd.Distribution):
         self,
         fn: Callable[[Array], Array],
         order: int | None = None,
+        batch_shape: tuple[int, ...] | None = None,
     ) -> Array:
         if order is None:
             nodes = self._gl_nodes
@@ -618,20 +674,29 @@ class TransformationDist(tfd.Distribution):
         else:
             nodes, weights = _gauss_legendre_nodes_and_weights(order, self.dtype)
 
+        if batch_shape is None:
+            batch_shape = self._batch_shape_tuple()
+
         return integrate_piecewise_gauss_legendre(
             fn,
             breaks=self.integration_breaks,
             nodes=nodes,
             weights=weights,
-            batch_ndims=len(self._batch_shape_tuple()),
+            batch_ndims=len(batch_shape),
         )
 
     def _transformation_spline_mean_gl(self, order: int | None = None) -> Array:
+        batch_shape = self._spline_coef_batch_shape_tuple()
+
         def fn(x):
-            z, logdet = self._transformation_and_logdet_spline(x)
+            z, logdet = self._transformation_and_logdet_spline(
+                x, batch_shape=batch_shape
+            )
             return x * self.reference_distribution.prob(z) * jnp.exp(logdet)
 
-        return self._integrate_piecewise_gauss_legendre(fn, order=order)
+        return self._integrate_piecewise_gauss_legendre(
+            fn, order=order, batch_shape=batch_shape
+        )
 
     def transformation_spline_variance(self, mean: Array | None = None) -> Array:
         """Variance under the spline transformation."""
@@ -640,16 +705,22 @@ class TransformationDist(tfd.Distribution):
     def _transformation_spline_variance_gl(
         self, mean: Array | None = None, order: int | None = None
     ) -> Array:
+        batch_shape = self._spline_coef_batch_shape_tuple()
+
         if mean is None:
             mean = self._transformation_spline_mean_gl(order=order)
 
         def fn(x):
-            z, logdet = self._transformation_and_logdet_spline(x)
+            z, logdet = self._transformation_and_logdet_spline(
+                x, batch_shape=batch_shape
+            )
             return (
                 (x - mean) ** 2 * self.reference_distribution.prob(z) * jnp.exp(logdet)
             )
 
-        return self._integrate_piecewise_gauss_legendre(fn, order=order)
+        return self._integrate_piecewise_gauss_legendre(
+            fn, order=order, batch_shape=batch_shape
+        )
 
     def moment_quadrature_diagnostic(
         self,
@@ -867,6 +938,16 @@ class LocScaleTransformationDist(TransformationDist):
 
         return transf, logdet
 
+    def transformation_parametric(self, value: Array) -> Array:
+        """
+        Apply location–scale normalization without computing its log determinant.
+        """
+        if self.parametric_distribution is None:
+            raise RuntimeError
+
+        sd = self.parametric_distribution.stddev()
+        return (value - self.parametric_distribution.mean()) / sd
+
     def inverse_transformation_parametric(self, value: Array) -> Array:
         """
         Invert the location–scale normalization.
@@ -993,6 +1074,9 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         return value, tf.zeros_like(value)
 
+    def _transformation_spline(self, value: Array) -> Array:
+        return value
+
     def inverse_transformation_spline(self, value: Array) -> Array:
         return value
 
@@ -1101,6 +1185,9 @@ class PseudoTransformationDist(TransformationDist):
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         return value, tf.zeros_like(value)
 
+    def _transformation_spline(self, value: Array) -> Array:
+        return value
+
     def inverse_transformation_spline(self, value: Array) -> Array:
         return value
 
@@ -1200,6 +1287,16 @@ class LocScalePseudoTransformationDist(TransformationDist):
 
         return transf, logdet
 
+    def transformation_parametric(self, value: Array) -> Array:
+        """
+        Apply location–scale normalization without computing its log determinant.
+        """
+        if self.parametric_distribution is None:
+            raise RuntimeError
+
+        sd = self.parametric_distribution.stddev()
+        return (value - self.parametric_distribution.mean()) / sd
+
     def inverse_transformation_parametric(self, value: Array) -> Array:
         """
         Invert the location–scale normalization.
@@ -1249,6 +1346,9 @@ class LocScalePseudoTransformationDist(TransformationDist):
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         return value, tf.zeros_like(value)
+
+    def _transformation_spline(self, value: Array) -> Array:
+        return value
 
     def inverse_transformation_spline(self, value: Array) -> Array:
         return value

@@ -251,6 +251,47 @@ class TestBaseTransformationDist:
         assert jnp.all(jnp.isfinite(dist.log_cdf(values)))
         assert jnp.all(jnp.isfinite(dist.log_survival_function(values)))
 
+    def test_cdf_and_survival_match_transformed_value_reference(self):
+        coef = random_walk_coef(jax.random.key(2), (2, 1), knots.nparam)
+        loc = jnp.linspace(-0.5, 0.5, 8).reshape((2, 4))
+        scale = jnp.ones((2, 1))
+        dist = ptm.LocScaleTransformationDist(
+            coef=coef,
+            loc=loc,
+            scale=scale,
+            bspline=bs,
+            centered=True,
+            scaled=True,
+            gauss_legendre_order=4,
+        )
+        value = jnp.linspace(-1.5, 1.5, 4).reshape((1, 4))
+        z, _ = dist.transformation_and_logdet(value)
+
+        assert jnp.allclose(
+            dist.cdf(value),
+            dist.reference_distribution.cdf(z),
+            rtol=2e-5,
+            atol=2e-5,
+        )
+        assert jnp.allclose(
+            dist.log_cdf(value),
+            dist.reference_distribution.log_cdf(z),
+            rtol=2e-5,
+            atol=2e-5,
+        )
+        assert jnp.allclose(
+            dist.survival_function(value),
+            dist.reference_distribution.survival_function(z),
+            rtol=2e-5,
+            atol=2e-5,
+        )
+        assert jnp.allclose(
+            dist.log_survival_function(value),
+            dist.reference_distribution.log_survival_function(z),
+            rtol=2e-5,
+            atol=2e-5,
+        )
+
     def test_log_prob_autodiff_wrt_coefficients(self):
         coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
 
@@ -392,6 +433,34 @@ class TestSplineMomentQuadrature:
         assert mean.shape == (16,)
         assert variance.shape == (16,)
         assert elapsed < 2.0
+
+    def test_centered_scaled_moments_use_coef_batch_shape(self):
+        knots = PTMKnots(-4.0, 4.0, nparam=10)
+        bs = PTMSpline(knots.knots)
+        coef = random_walk_coef(jax.random.key(15), (2, 3, 1), knots.nparam)
+        loc = jnp.zeros((2, 3, 5))
+        scale = jnp.ones((2, 3, 1))
+        dist = ptm.LocScaleTransformationDist(
+            coef=coef,
+            loc=loc,
+            scale=scale,
+            bspline=bs,
+            centered=True,
+            scaled=True,
+            gauss_legendre_order=4,
+        )
+
+        mean = dist.transformation_spline_mean()
+        variance = dist.transformation_spline_variance(mean=mean)
+        log_survival = dist.log_survival_function(jnp.ones((1, 1, 5)))
+
+        assert dist.batch_shape == (2, 3, 5)
+        assert mean.shape == (2, 3, 1)
+        assert variance.shape == (2, 3, 1)
+        assert dist.mean().shape == (2, 3, 5)
+        assert dist.stddev().shape == (2, 3, 5)
+        assert log_survival.shape == (2, 3, 5)
+        assert jnp.all(jnp.isfinite(log_survival))
 
 
 class TestDistOneCoef:
