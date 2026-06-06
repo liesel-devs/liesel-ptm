@@ -304,6 +304,13 @@ class TransformationSpline:
         coef = self._coef_for_eval(value, coef)
         return self.bspline.dot_and_deriv_n(value, coef)
 
+    def _evaluate_spline_value(self, value: Array, coef: Array) -> Array:
+        """
+        Evaluate constrained, broadcasted spline coefficients at broadcasted values.
+        """
+        coef = self._coef_for_eval(value, coef)
+        return self.bspline.dot_n(value, coef)
+
     def _evaluate_rowwise_shared_value(
         self, value: Array, coef: Array
     ) -> tuple[Array, Array]:
@@ -317,6 +324,14 @@ class TransformationSpline:
         deriv = jnp.einsum("...j,...nj->...n", basis_deriv, coef)
         return dot, deriv
 
+    def _evaluate_rowwise_shared_value_only(self, value: Array, coef: Array) -> Array:
+        """
+        Evaluate rowwise coefficients at values shared along the rowwise axis.
+        """
+        basis = self.bspline.get_basis(value)
+        basis = jnp.squeeze(basis, axis=-2)
+        return jnp.einsum("...j,...nj->...n", basis, coef)
+
     def _dot_and_deriv_broadcast(
         self, value: Array, coef: Array
     ) -> tuple[Array, Array]:
@@ -326,6 +341,11 @@ class TransformationSpline:
             self._squeeze_scalar_result(dot, was_scalar),
             self._squeeze_scalar_result(deriv, was_scalar),
         )
+
+    def _dot_broadcast(self, value: Array, coef: Array) -> Array:
+        value, coef, was_scalar = self._broadcast_value_and_coef(value, coef)
+        dot = self._evaluate_spline_value(value, coef)
+        return self._squeeze_scalar_result(dot, was_scalar)
 
     def _dot_inverse_broadcast(self, value: Array, coef: Array) -> Array:
         value, coef, was_scalar = self._broadcast_value_and_coef(value, coef)
@@ -546,6 +566,36 @@ class TransformationSpline:
         )
 
         return dot, deriv
+
+    def dot_tfp(
+        self,
+        value: Array,
+        coef: Array,
+        batch_shape: tuple[int, ...] | None = None,
+    ) -> Array:
+        """
+        Compute dot product in TFP scalar-event layout.
+
+        ``value`` follows TensorFlow Probability's scalar-event convention:
+        leading axes are sample axes and trailing axes broadcast against
+        ``batch_shape``. The returned array has shape
+        ``broadcast(value.shape, batch_shape)``.
+        """
+        batch_shape = self._tfp_batch_shape(coef, batch_shape)
+        value, sample_shape, value_batch_shape, result_batch_shape = (
+            self._tfp_value_layout(value, batch_shape)
+        )
+        coef = self._compute_tfp_coef_for_eval(coef)
+
+        value = self._compact_tfp_to_legacy_batch_last(
+            value, value_batch_shape, sample_shape
+        )
+        coef = _broadcast_leading_core(coef, result_batch_shape, core_ndims=2)
+        dot = self._evaluate_spline_value(value, coef)
+
+        return self._legacy_batch_last_to_tfp(
+            dot, result_batch_shape, sample_shape
+        )
 
     def dot_inverse_tfp(
         self,

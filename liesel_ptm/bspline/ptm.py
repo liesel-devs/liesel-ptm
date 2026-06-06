@@ -378,6 +378,26 @@ class PTMSpline(TransformationSpline):
         deriv = (1.0 - dist) * deriv_left + target_slope_left * dist
         return value, deriv
 
+    def _left_transition_value(self, x, coef, value_left, deriv_left):
+        """
+        Compute left transition value.
+        """
+        poly = x * self.min_knot - 0.5 * x * x
+
+        target_slope_left = self._target_slope_left(coef)
+
+        unsh = (target_slope_left / self.transition_width) * poly + deriv_left * (
+            x - poly / self.transition_width
+        )
+        x0 = self.min_knot
+        poly0 = x0 * self.min_knot - 0.5 * x0 * x0
+        const = value_left - (
+            (target_slope_left / self.transition_width) * poly0
+            + deriv_left * (x0 - poly0 / self.transition_width)
+        )
+
+        return unsh + const
+
     def _right_transition_and_deriv(self, x, coef, value_right, deriv_right):
         """
         Compute right transition value and derivative.
@@ -401,6 +421,25 @@ class PTMSpline(TransformationSpline):
 
         return value, der
 
+    def _right_transition_value(self, x, coef, value_right, deriv_right):
+        """
+        Compute right transition value.
+        """
+        poly = 0.5 * x * x - x * self.max_knot
+
+        target_slope_right = self._target_slope_right(coef)
+
+        unsh = (target_slope_right / self.transition_width) * poly + deriv_right * (
+            x - poly / self.transition_width
+        )
+        x0 = self.max_knot
+        poly0 = 0.5 * x0 * x0 - x0 * self.max_knot
+        const = value_right - (
+            (target_slope_right / self.transition_width) * poly0
+            + deriv_right * (x0 - poly0 / self.transition_width)
+        )
+        return unsh + const
+
     def _left_tail_and_deriv(self, x, coef, fx_at_linear_start):
         """
         Compute left tail value and derivative.
@@ -409,6 +448,13 @@ class PTMSpline(TransformationSpline):
         val = fx_at_linear_start - target_slope_left * (self.min_eps - x)
         return val, target_slope_left
 
+    def _left_tail_value(self, x, coef, fx_at_linear_start):
+        """
+        Compute left tail value.
+        """
+        target_slope_left = self._target_slope_left(coef)
+        return fx_at_linear_start - target_slope_left * (self.min_eps - x)
+
     def _right_tail_and_deriv(self, x, coef, fx_at_linear_start):
         """
         Compute right tail value and derivative.
@@ -416,6 +462,13 @@ class PTMSpline(TransformationSpline):
         target_slope_right = self._target_slope_right(coef)
         val = fx_at_linear_start + target_slope_right * (x - self.max_eps)
         return val, target_slope_right
+
+    def _right_tail_value(self, x, coef, fx_at_linear_start):
+        """
+        Compute right tail value.
+        """
+        target_slope_right = self._target_slope_right(coef)
+        return fx_at_linear_start + target_slope_right * (x - self.max_eps)
 
     def _evaluate_spline(self, x: Array, coef: Array) -> tuple[Array, Array]:
         """
@@ -483,3 +536,54 @@ class PTMSpline(TransformationSpline):
             ),
         )
         return value, deriv
+
+    def _evaluate_spline_value(self, x: Array, coef: Array) -> Array:
+        """
+        Compute dot product for broadcasted values and coefficients.
+        """
+        coef = self._coef_for_eval(x, coef)
+        fx_n = self.bspline.dot_n(x, coef)
+        boundary_values, boundary_derivs = self.bspline.dot_and_deriv_n(
+            self._boundaries, coef
+        )
+
+        value_left = jnp.expand_dims(boundary_values[..., 0], -1)
+        deriv_left = jnp.expand_dims(boundary_derivs[..., 0], -1)
+        value_right = jnp.expand_dims(boundary_values[..., 1], -1)
+        deriv_right = jnp.expand_dims(boundary_derivs[..., 1], -1)
+
+        left_transition = self._left_transition_value(
+            x, coef, value_left=value_left, deriv_left=deriv_left
+        )
+        right_transition = self._right_transition_value(
+            x, coef, value_right=value_right, deriv_right=deriv_right
+        )
+
+        fx_left_start = self._left_transition_value(
+            self.min_eps, coef, value_left=value_left, deriv_left=deriv_left
+        )
+        fx_right_start = self._right_transition_value(
+            self.max_eps, coef, value_right=value_right, deriv_right=deriv_right
+        )
+
+        left_tail = self._left_tail_value(
+            x, coef, fx_at_linear_start=fx_left_start
+        )
+        right_tail = self._right_tail_value(
+            x, coef, fx_at_linear_start=fx_right_start
+        )
+
+        in_core = (x >= self.min_knot) & (x <= self.max_knot)
+        return jnp.where(
+            in_core,
+            fx_n,
+            jnp.where(
+                x < self.min_eps,
+                left_tail,
+                jnp.where(
+                    x < self.min_knot,
+                    left_transition,
+                    jnp.where(x < self.max_eps, right_transition, right_tail),
+                ),
+            ),
+        )

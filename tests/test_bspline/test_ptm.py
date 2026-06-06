@@ -462,17 +462,21 @@ class TestTfpLayout:
         batch_shape=None,
     ):
         fx, fxd = bs.dot_and_deriv_tfp(value, coef, batch_shape=batch_shape)
+        fx_value = bs.dot_tfp(value, coef, batch_shape=batch_shape)
 
         assert fx.shape == expected_shape
         assert fxd.shape == expected_shape
+        assert fx_value.shape == expected_shape
         assert not jnp.any(jnp.isnan(fx))
         assert not jnp.any(jnp.isnan(fxd))
+        assert not jnp.any(jnp.isnan(fx_value))
         assert jnp.all(fxd > 0.0)
 
         fx_ref, fxd_ref = self._full_broadcast_forward_reference(
             value, coef, batch_shape=batch_shape
         )
         assert jnp.allclose(fx, fx_ref)
+        assert jnp.allclose(fx_value, fx_ref)
         assert jnp.allclose(fxd, fxd_ref)
 
         x = bs.dot_inverse_tfp(fx, coef, batch_shape=batch_shape)
@@ -570,6 +574,19 @@ class TestTfpLayout:
         assert jnp.isfinite(primal)
         assert jnp.isfinite(tangent)
 
+    def test_jvp_through_value_only_shared_grid_tfp(self):
+        coef = jax.random.normal(jax.random.key(15), (2, knots.nparam))
+        value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1))
+
+        def fn(value):
+            fx = bs.dot_tfp(value, coef, batch_shape=(2,))
+            return jnp.sum(fx)
+
+        primal, tangent = jax.jvp(fn, (value,), (jnp.ones_like(value),))
+
+        assert jnp.isfinite(primal)
+        assert jnp.isfinite(tangent)
+
     def test_grad_through_shared_grid_tfp_coef(self):
         coef = jax.random.normal(jax.random.key(6), (2, knots.nparam))
         value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1))
@@ -577,6 +594,19 @@ class TestTfpLayout:
         def fn(coef):
             fx, fxd = bs.dot_and_deriv_tfp(value, coef, batch_shape=(2,))
             return jnp.sum(fx + 0.01 * fxd)
+
+        grad = jax.grad(fn)(coef)
+
+        assert grad.shape == coef.shape
+        assert jnp.all(jnp.isfinite(grad))
+
+    def test_grad_through_value_only_shared_grid_tfp_coef(self):
+        coef = jax.random.normal(jax.random.key(16), (2, knots.nparam))
+        value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1))
+
+        def fn(coef):
+            fx = bs.dot_tfp(value, coef, batch_shape=(2,))
+            return jnp.sum(fx)
 
         grad = jax.grad(fn)(coef)
 

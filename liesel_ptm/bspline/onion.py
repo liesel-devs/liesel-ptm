@@ -148,6 +148,15 @@ class OnionSpline(TransformationSpline):
         deriv_n = jnp.where(in_core, deriv_n, 1.0)
         return fx_n, deriv_n
 
+    def _evaluate_spline_value(self, x: Array, coef: Array) -> Array:
+        """
+        Compute dot product for broadcasted values and coefficients.
+        """
+        coef = self._coef_for_eval(x, coef)
+        fx_n = self.bspline.dot_n(x, coef)
+        in_core = (x >= self.min_knot) & (x <= self.max_knot)
+        return jnp.where(in_core, fx_n, x)
+
     def _evaluate_rowwise_shared_value(
         self, x: Array, coef: Array
     ) -> tuple[Array, Array]:
@@ -159,3 +168,11 @@ class OnionSpline(TransformationSpline):
         fx_n = jnp.where(in_core, fx_n, x)
         deriv_n = jnp.where(in_core, deriv_n, 1.0)
         return fx_n, deriv_n
+
+    def _evaluate_rowwise_shared_value_only(self, x: Array, coef: Array) -> Array:
+        """
+        Evaluate rowwise coefficients at values shared along the rowwise axis.
+        """
+        fx_n = super()._evaluate_rowwise_shared_value_only(x, coef)
+        in_core = (x >= self.min_knot) & (x <= self.max_knot)
+        return jnp.where(in_core, fx_n, x)
