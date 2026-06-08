@@ -194,3 +194,4 @@ tests/test_survival-jinbo.ipynb
 tests/test_survival2b.ipynb
 tests/test_survival3.ipynb
 tests/test_survival_constant_intercepts.ipynb
+tests/test_survival_v0.3.0-dev1.ipynb
