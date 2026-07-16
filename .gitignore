@@ -198,3 +198,4 @@ tests/test_survival_v0.3.0-dev1.ipynb
 tests/nigeria-data/data.raw
 tests/data/nigeria.bnd
 /r46-issue-testing
+tests/test_survival_v0.3.0_multi_covariates.ipynb
