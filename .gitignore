@@ -197,3 +197,4 @@ tests/test_survival_constant_intercepts.ipynb
 tests/test_survival_v0.3.0-dev1.ipynb
 tests/nigeria-data/data.raw
 tests/data/nigeria.bnd
+/r46-issue-testing
