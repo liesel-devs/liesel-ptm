@@ -273,7 +273,7 @@ class TransformationSpline:
     def _broadcast_value_and_coef(
         self, value: ArrayLike, coef: Array
     ) -> tuple[Array, Array, bool]:
-        value = cast(Array, jnp.asarray(value))
+        value = jnp.asarray(value)
         was_scalar = jnp.ndim(value) == 0
         if was_scalar:
             value = jnp.reshape(value, (1,))
