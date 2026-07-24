@@ -101,7 +101,7 @@ class TestOnionDistFactory:
             scaled=True,
             gauss_legendre_order=4,
         )
-        bspline = Dist.keywords["bspline"]
+        bspline = getattr(Dist, "keywords")["bspline"]
         coef = jax.random.normal(jax.random.key(1), (11,))
 
         dist1 = Dist(coef=coef, loc=0.0, scale=1.0)
@@ -129,7 +129,7 @@ class TestOnionDistFactory:
 
         assert isinstance(dist, ptm.TransformationDist)
         assert not isinstance(dist, ptm.LocScaleTransformationDist)
-        assert dist.bspline is Dist.keywords["bspline"]
+        assert dist.bspline is getattr(Dist, "keywords")["bspline"]
         assert jnp.allclose(dist.bspline.knots, onion_knots.knots)
         assert dist.log_prob(jnp.ones((5, 1))).shape == (5, 2)
 
@@ -139,7 +139,7 @@ class TestOnionDistFactory:
         coef = jax.random.normal(jax.random.key(3), (n, 11))
         dist = Dist(coef=coef, loc=0.0, scale=1.0)
 
-        assert dist.bspline is Dist.keywords["bspline"]
+        assert dist.bspline is getattr(Dist, "keywords")["bspline"]
         assert dist.batch_shape == (n,)
         assert dist.log_prob(jnp.ones((5, 1))).shape == (5, n)
         assert dist.sample(2, seed=jax.random.key(1)).shape == (2, n)
