@@ -1,4 +1,5 @@
 import time
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -207,10 +208,19 @@ class TestBaseTransformationDist:
                 )
 
         with pytest.raises(TypeError, match="positive integer"):
-            ptm.TransformationDist(coef=coef, bspline=bs, gauss_legendre_order=2.5)
+            invalid_order: Any = 2.5
+            ptm.TransformationDist(
+                coef=coef, bspline=bs, gauss_legendre_order=invalid_order
+            )
 
     def test_invalid_integration_bounds_raise(self):
-        for invalid in ((1.0, 1.0), (2.0, 1.0), (jnp.nan, 1.0), (0.0, 1.0, 2.0)):
+        invalid_bounds: Any = (
+            (1.0, 1.0),
+            (2.0, 1.0),
+            (jnp.nan, 1.0),
+            (0.0, 1.0, 2.0),
+        )
+        for invalid in invalid_bounds:
             with pytest.raises(ValueError, match="integration"):
                 ptm.TransformationDist(
                     coef=coef, bspline=bs, integration_bounds=invalid
