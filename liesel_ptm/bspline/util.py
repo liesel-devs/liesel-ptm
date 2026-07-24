@@ -422,9 +422,7 @@ class TransformationSpline:
             min_grid = jnp.min(fn(xlo_start - left_shift), axis=-1)
             return left_shift, min_grid
 
-        left_shift, _ = jax.lax.while_loop(
-            left_cond, left_body, (left_shift, min_grid)
-        )
+        left_shift, _ = jax.lax.while_loop(left_cond, left_body, (left_shift, min_grid))
         xlo = xlo_start - left_shift
 
         xhi_start = jnp.asarray(self._outer_knot_right, dtype=dtype)
@@ -480,9 +478,7 @@ class TransformationSpline:
 
         def body(carry, inputs):
             value_block, coef_block = inputs
-            inverse_block = self._inverse_rows_with_shared_grid(
-                value_block, coef_block
-            )
+            inverse_block = self._inverse_rows_with_shared_grid(value_block, coef_block)
             return carry, inverse_block
 
         _, inverse_blocks = jax.lax.scan(body, None, (value_blocks, coef_blocks))
@@ -561,9 +557,7 @@ class TransformationSpline:
         dot, deriv = self._evaluate_spline(value, coef)
 
         dot = self._legacy_batch_last_to_tfp(dot, result_batch_shape, sample_shape)
-        deriv = self._legacy_batch_last_to_tfp(
-            deriv, result_batch_shape, sample_shape
-        )
+        deriv = self._legacy_batch_last_to_tfp(deriv, result_batch_shape, sample_shape)
 
         return dot, deriv
 
@@ -593,9 +587,7 @@ class TransformationSpline:
         coef = _broadcast_leading_core(coef, result_batch_shape, core_ndims=2)
         dot = self._evaluate_spline_value(value, coef)
 
-        return self._legacy_batch_last_to_tfp(
-            dot, result_batch_shape, sample_shape
-        )
+        return self._legacy_batch_last_to_tfp(dot, result_batch_shape, sample_shape)
 
     def dot_inverse_tfp(
         self,
@@ -630,6 +622,4 @@ class TransformationSpline:
         inverse_rows = self._inverse_rows_chunked(value_rows, coef_rows)
         inverse = jnp.reshape(inverse_rows, result_batch_shape + (sample_size,))
 
-        return self._legacy_batch_last_to_tfp(
-            inverse, result_batch_shape, sample_shape
-        )
+        return self._legacy_batch_last_to_tfp(inverse, result_batch_shape, sample_shape)

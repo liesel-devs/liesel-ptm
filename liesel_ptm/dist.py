@@ -3,7 +3,7 @@ from __future__ import annotations
 import operator
 from collections.abc import Callable
 from functools import cache, partial
-from typing import Any
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -328,9 +328,7 @@ class TransformationDist(tfd.Distribution):
     ) -> tuple[Array, Array]:
         if batch_shape is None:
             batch_shape = self._batch_shape_tuple()
-        return self.bspline.dot_and_deriv_tfp(
-            value, self.coef, batch_shape=batch_shape
-        )
+        return self.bspline.dot_and_deriv_tfp(value, self.coef, batch_shape=batch_shape)
 
     def _spline_value_tfp(
         self, value: Array, batch_shape: tuple[int, ...] | None = None

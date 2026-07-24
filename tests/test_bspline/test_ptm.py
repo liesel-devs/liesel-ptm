@@ -426,9 +426,7 @@ class TestTfpLayout:
             value, batch_shape
         )
 
-        value = bs._tfp_to_legacy_batch_last(
-            value, result_batch_shape, sample_shape
-        )
+        value = bs._tfp_to_legacy_batch_last(value, result_batch_shape, sample_shape)
         legacy_coef = jnp.expand_dims(coef, axis=-2)
         fx, fxd = bs.dot_and_deriv(value, legacy_coef)
 
@@ -444,15 +442,11 @@ class TestTfpLayout:
             value, batch_shape
         )
 
-        value = bs._tfp_to_legacy_batch_last(
-            value, result_batch_shape, sample_shape
-        )
+        value = bs._tfp_to_legacy_batch_last(value, result_batch_shape, sample_shape)
         legacy_coef = jnp.expand_dims(coef, axis=-2)
         inverse = bs.dot_inverse(value, legacy_coef)
 
-        return bs._legacy_batch_last_to_tfp(
-            inverse, result_batch_shape, sample_shape
-        )
+        return bs._legacy_batch_last_to_tfp(inverse, result_batch_shape, sample_shape)
 
     def _assert_tfp_roundtrip(
         self,
@@ -554,9 +548,7 @@ class TestTfpLayout:
         value = jnp.asarray([-8.0, -4.0, 0.0, 4.0, 8.0]).reshape((5, 1))
 
         x = bs.dot_inverse_tfp(value, coef, batch_shape=(2,))
-        x_ref = self._full_broadcast_inverse_reference(
-            value, coef, batch_shape=(2,)
-        )
+        x_ref = self._full_broadcast_inverse_reference(value, coef, batch_shape=(2,))
 
         assert x.shape == (5, 2)
         assert jnp.allclose(x, x_ref, atol=1e-4)

@@ -5,7 +5,7 @@ from liesel.contrib import splines
 from liesel.distributions import MultivariateNormalDegenerate as MVND
 from tensorflow_probability.substrates.jax import tf2jax as tf
 
-import liesel_ptm.gam as gam
+from liesel_ptm import gam
 
 
 class TestMultivariateNormalSingular:

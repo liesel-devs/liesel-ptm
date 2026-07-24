@@ -218,9 +218,7 @@ class TestBaseTransformationDist:
 
     def test_extreme_probabilities_remain_finite(self):
         coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
         probs = jnp.array([1e-6, 1.0 - 1e-6]).reshape(2, 1)
 
         quantiles = dist.quantile(probs)
@@ -319,9 +317,7 @@ class TestSplineMomentQuadrature:
         bs = PTMSpline(knots.knots)
         coef = random_walk_coef(jax.random.key(11), (16,), knots.nparam)
 
-        dist = ptm.TransformationDist(
-            coef=coef, bspline=bs, gauss_legendre_order=8
-        )
+        dist = ptm.TransformationDist(coef=coef, bspline=bs, gauss_legendre_order=8)
         reference = ptm.TransformationDist(
             coef=coef, bspline=bs, gauss_legendre_order=32
         )
@@ -354,9 +350,7 @@ class TestSplineMomentQuadrature:
         knots = PTMKnots(-4.0, 4.0, nparam=20)
         bs = PTMSpline(knots.knots)
         coef = random_walk_coef(jax.random.key(12), (8,), knots.nparam)
-        dist = ptm.TransformationDist(
-            coef=coef, bspline=bs, gauss_legendre_order=8
-        )
+        dist = ptm.TransformationDist(coef=coef, bspline=bs, gauss_legendre_order=8)
 
         diagnostic = dist.moment_quadrature_diagnostic(
             reference_order=24, rtol=5e-4, atol=5e-5
@@ -414,18 +408,14 @@ class TestSplineMomentQuadrature:
         knots = PTMKnots(-4.0, 4.0, nparam=20)
         bs = PTMSpline(knots.knots)
         coef = random_walk_coef(jax.random.key(14), (16,), knots.nparam)
-        dist = ptm.TransformationDist(
-            coef=coef, bspline=bs, gauss_legendre_order=8
-        )
+        dist = ptm.TransformationDist(coef=coef, bspline=bs, gauss_legendre_order=8)
 
         n_eval = (dist.integration_breaks.size - 1) * dist.gauss_legendre_order
         assert n_eval <= 200
 
         @jax.jit
         def moments(coef):
-            dist = ptm.TransformationDist(
-                coef=coef, bspline=bs, gauss_legendre_order=8
-            )
+            dist = ptm.TransformationDist(coef=coef, bspline=bs, gauss_legendre_order=8)
             mean = dist.transformation_spline_mean()
             variance = dist.transformation_spline_variance(mean=mean)
             return mean, variance

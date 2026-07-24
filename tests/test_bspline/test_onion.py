@@ -564,9 +564,7 @@ class TestTfpLayout:
             value, batch_shape
         )
 
-        value = bs._tfp_to_legacy_batch_last(
-            value, result_batch_shape, sample_shape
-        )
+        value = bs._tfp_to_legacy_batch_last(value, result_batch_shape, sample_shape)
         legacy_coef = jnp.expand_dims(coef, axis=-2)
         fx, fxd = bs.dot_and_deriv(value, legacy_coef)
 
@@ -582,15 +580,11 @@ class TestTfpLayout:
             value, batch_shape
         )
 
-        value = bs._tfp_to_legacy_batch_last(
-            value, result_batch_shape, sample_shape
-        )
+        value = bs._tfp_to_legacy_batch_last(value, result_batch_shape, sample_shape)
         legacy_coef = jnp.expand_dims(coef, axis=-2)
         inverse = bs.dot_inverse(value, legacy_coef)
 
-        return bs._legacy_batch_last_to_tfp(
-            inverse, result_batch_shape, sample_shape
-        )
+        return bs._legacy_batch_last_to_tfp(inverse, result_batch_shape, sample_shape)
 
     def _assert_tfp_roundtrip(
         self,

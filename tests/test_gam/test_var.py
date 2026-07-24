@@ -5,8 +5,8 @@ import pytest
 import scipy
 import tensorflow_probability.substrates.jax.distributions as tfd
 
-import liesel_ptm.gam as gam
 import liesel_ptm.gam.var as gvar
+from liesel_ptm import gam
 
 
 class TestBasis:

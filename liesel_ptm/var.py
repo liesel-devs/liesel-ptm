@@ -6,7 +6,7 @@ import liesel.model as lsl
 import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.distributions as tfd
 
-import liesel_ptm.gam as gam
+from liesel_ptm import gam
 
 from .constraint import mixed_model
 from .gam.kernel import init_star_ig_gibbs as init_star_ig_gibbs2

@@ -1570,8 +1570,8 @@ class LocScalePTM:
             p = p + p9.geom_ribbon(
                 p9.aes(
                     "r",
-                    ymin=f"q_{str(ci_quantiles[0])}",
-                    ymax=f"q_{str(ci_quantiles[1])}",
+                    ymin=f"q_{ci_quantiles[0]!s}",
+                    ymax=f"q_{ci_quantiles[1]!s}",
                 ),
                 fill="#56B4E9",
                 alpha=0.5,
@@ -1682,8 +1682,8 @@ class LocScalePTM:
             p = p + p9.geom_ribbon(
                 p9.aes(
                     "r",
-                    ymin=f"q_{str(ci_quantiles[0])}",
-                    ymax=f"q_{str(ci_quantiles[1])}",
+                    ymin=f"q_{ci_quantiles[0]!s}",
+                    ymax=f"q_{ci_quantiles[1]!s}",
                 ),
                 fill="#56B4E9",
                 alpha=0.5,
@@ -1792,8 +1792,8 @@ class LocScalePTM:
             p = p + p9.geom_ribbon(
                 p9.aes(
                     "r",
-                    ymin=f"q_{str(ci_quantiles[0])}",
-                    ymax=f"q_{str(ci_quantiles[1])}",
+                    ymin=f"q_{ci_quantiles[0]!s}",
+                    ymax=f"q_{ci_quantiles[1]!s}",
                 ),
                 fill="#56B4E9",
                 alpha=0.5,

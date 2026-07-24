@@ -566,12 +566,8 @@ class PTMSpline(TransformationSpline):
             self.max_eps, coef, value_right=value_right, deriv_right=deriv_right
         )
 
-        left_tail = self._left_tail_value(
-            x, coef, fx_at_linear_start=fx_left_start
-        )
-        right_tail = self._right_tail_value(
-            x, coef, fx_at_linear_start=fx_right_start
-        )
+        left_tail = self._left_tail_value(x, coef, fx_at_linear_start=fx_left_start)
+        right_tail = self._right_tail_value(x, coef, fx_at_linear_start=fx_right_start)
 
         in_core = (x >= self.min_knot) & (x <= self.max_knot)
         return jnp.where(

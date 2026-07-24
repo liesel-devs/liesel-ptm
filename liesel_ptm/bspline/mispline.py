@@ -93,7 +93,7 @@ class MiSpline(TransformationSpline):
         self,
         knots: Array,
         bijector: tfb.Bijector = tfb.Exp(),
-        ) -> None:
+    ) -> None:
         self.n_chunks = 1024
         self.supports_rowwise_coef = False
         self.knots = knots

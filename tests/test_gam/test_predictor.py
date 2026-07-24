@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 import pytest
 
-import liesel_ptm.gam as gam
+from liesel_ptm import gam
 
 term1 = gam.SmoothTerm.f_ig(basis=gam.Basis.new_linear(1.0, xname="x1"), fname="s")
 
