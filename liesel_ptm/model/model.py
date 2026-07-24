@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Literal, Self
 
 import jax
+import jax.flatten_util
 import jax.numpy as jnp
 import liesel.goose as gs
 import liesel.model as lsl

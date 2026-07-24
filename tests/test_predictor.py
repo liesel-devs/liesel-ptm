@@ -4,6 +4,7 @@ import liesel.model as lsl
 import pytest
 
 import liesel_ptm as ptm
+import liesel_ptm.predictor
 
 nparam = 10
 ptm_knots = ptm.LogIncKnots(-4.0, 4.0, nparam=nparam)

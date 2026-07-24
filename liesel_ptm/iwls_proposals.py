@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import jax
+import jax.flatten_util
 import jax.numpy as jnp
 from jax import Array
 from jax.typing import ArrayLike
