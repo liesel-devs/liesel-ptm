@@ -26,9 +26,10 @@ repos:
     hooks:
       - id: mypy
         name: mypy
-        entry: mypy
-        language: python
+        entry: uv run mypy
+        language: system
         types_or: [python, pyi]
         args: [--ignore-missing-imports, --scripts-are-modules]
+        pass_filenames: false
         require_serial: true
         exclude: ^docs/
