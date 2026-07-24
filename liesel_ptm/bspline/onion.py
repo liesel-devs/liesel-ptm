@@ -137,10 +137,11 @@ class OnionSpline(TransformationSpline):
         self.supports_rowwise_coef = True
         self._compute_coef = jax.jit(get_onion_fn(knots))  # type: ignore
 
-    def _evaluate_spline(self, x: Array, coef: Array) -> tuple[Array, Array]:
+    def _evaluate_spline(self, value: Array, coef: Array) -> tuple[Array, Array]:
         """
         Compute dot product and derivative for broadcasted values and coefficients.
         """
+        x = value
         coef = self._coef_for_eval(x, coef)
         fx_n, deriv_n = self.bspline.dot_and_deriv_n(x, coef)
         in_core = (x >= self.min_knot) & (x <= self.max_knot)
@@ -148,31 +149,34 @@ class OnionSpline(TransformationSpline):
         deriv_n = jnp.where(in_core, deriv_n, 1.0)
         return fx_n, deriv_n
 
-    def _evaluate_spline_value(self, x: Array, coef: Array) -> Array:
+    def _evaluate_spline_value(self, value: Array, coef: Array) -> Array:
         """
         Compute dot product for broadcasted values and coefficients.
         """
+        x = value
         coef = self._coef_for_eval(x, coef)
         fx_n = self.bspline.dot_n(x, coef)
         in_core = (x >= self.min_knot) & (x <= self.max_knot)
         return jnp.where(in_core, fx_n, x)
 
     def _evaluate_rowwise_shared_value(
-        self, x: Array, coef: Array
+        self, value: Array, coef: Array
     ) -> tuple[Array, Array]:
         """
         Evaluate rowwise coefficients at values shared along the rowwise axis.
         """
+        x = value
         fx_n, deriv_n = super()._evaluate_rowwise_shared_value(x, coef)
         in_core = (x >= self.min_knot) & (x <= self.max_knot)
         fx_n = jnp.where(in_core, fx_n, x)
         deriv_n = jnp.where(in_core, deriv_n, 1.0)
         return fx_n, deriv_n
 
-    def _evaluate_rowwise_shared_value_only(self, x: Array, coef: Array) -> Array:
+    def _evaluate_rowwise_shared_value_only(self, value: Array, coef: Array) -> Array:
         """
         Evaluate rowwise coefficients at values shared along the rowwise axis.
         """
+        x = value
         fx_n = super()._evaluate_rowwise_shared_value_only(x, coef)
         in_core = (x >= self.min_knot) & (x <= self.max_knot)
         return jnp.where(in_core, fx_n, x)

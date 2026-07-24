@@ -192,10 +192,11 @@ class MiSpline(TransformationSpline):
         val = fx_at_linear_start + target_slope_right * (x - self.max_eps)
         return val, target_slope_right
 
-    def _evaluate_spline(self, x: Array, coef: Array) -> tuple[Array, Array]:
+    def _evaluate_spline(self, value: Array, coef: Array) -> tuple[Array, Array]:
         """
         Compute dot product and derivative for broadcasted values and coefficients.
         """
+        x = value
         coef = self._coef_for_eval(x, coef)
         fx_n, deriv_n = self.bspline.dot_and_deriv_n(x, coef)
         boundary_values, boundary_derivs = self.bspline.dot_and_deriv_n(

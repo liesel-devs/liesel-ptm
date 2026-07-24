@@ -470,10 +470,11 @@ class PTMSpline(TransformationSpline):
         target_slope_right = self._target_slope_right(coef)
         return fx_at_linear_start + target_slope_right * (x - self.max_eps)
 
-    def _evaluate_spline(self, x: Array, coef: Array) -> tuple[Array, Array]:
+    def _evaluate_spline(self, value: Array, coef: Array) -> tuple[Array, Array]:
         """
         Compute dot product and derivative for broadcasted values and coefficients.
         """
+        x = value
         coef = self._coef_for_eval(x, coef)
         fx_n, deriv_n = self.bspline.dot_and_deriv_n(x, coef)
         boundary_values, boundary_derivs = self.bspline.dot_and_deriv_n(
@@ -537,10 +538,11 @@ class PTMSpline(TransformationSpline):
         )
         return value, deriv
 
-    def _evaluate_spline_value(self, x: Array, coef: Array) -> Array:
+    def _evaluate_spline_value(self, value: Array, coef: Array) -> Array:
         """
         Compute dot product for broadcasted values and coefficients.
         """
+        x = value
         coef = self._coef_for_eval(x, coef)
         fx_n = self.bspline.dot_n(x, coef)
         boundary_values, boundary_derivs = self.bspline.dot_and_deriv_n(

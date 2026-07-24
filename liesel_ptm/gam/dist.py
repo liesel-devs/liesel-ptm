@@ -69,7 +69,7 @@ class MultivariateNormalSingular(tfd.Distribution):
 
         return -(jnp.log(self._scale) * self._penalty_rank + neg_kernel)
 
-    def _sample_n(self, n, seed=None) -> Array:
+    def _sample_n(self, n, seed=None, **kwargs) -> Array:
         shape = [n] + self.batch_shape + self.event_shape
 
         # The added dimension at the end here makes sure that matrix multiplication

@@ -388,14 +388,14 @@ class TransformationDist(tfd.Distribution):
             tiny = jnp.finfo(jnp.asarray(prob).dtype).tiny
             return jnp.log(jnp.clip(prob, tiny, 1.0))
 
-    def _survival_function(self, value: Array) -> Array | float:
+    def _survival_function(self, value: Array, **kwargs) -> Array | float:
         z = self._transformation(value)
         try:
             return self.reference_distribution.survival_function(z)
         except (AttributeError, NotImplementedError):
             return 1.0 - self.reference_distribution.cdf(z)
 
-    def _log_survival_function(self, value: Array) -> Array | float:
+    def _log_survival_function(self, value: Array, **kwargs) -> Array | float:
         z = self._transformation(value)
         try:
             return self.reference_distribution.log_survival_function(z)
@@ -415,7 +415,9 @@ class TransformationDist(tfd.Distribution):
     def _prob(self, value: Array) -> Array | float:
         return jnp.exp(self._log_prob(value))
 
-    def _sample_n(self, n: int | Array, seed: KeyArray | None = None) -> Array:
+    def _sample_n(
+        self, n: int | Array, seed: KeyArray | None = None, **kwargs
+    ) -> Array:
         shape = (n,) + self._batch_shape_tuple()
         # ensure 0 will be > 0 to avoid numerical instability
         eps = jnp.finfo(self.coef.dtype).eps
@@ -462,7 +464,7 @@ class TransformationDist(tfd.Distribution):
 
         return tf.broadcast_static_shape(coef_shape, parametric_shape)
 
-    def _batch_shape_tensor(self):
+    def _batch_shape_tensor(self, **kwargs):
         coef_shape = jnp.asarray(
             self.bspline._tfp_coef_batch_shape(self.coef), dtype=jnp.int32
         )
