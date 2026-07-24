@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from interpax import interp1d
 from jax import Array
+from jax.typing import ArrayLike
 
 from ..util.inverse_interpax import inv1d
 from .approx import BSplineApprox
@@ -270,9 +271,9 @@ class TransformationSpline:
         return coef
 
     def _broadcast_value_and_coef(
-        self, value: Array, coef: Array
+        self, value: ArrayLike, coef: Array
     ) -> tuple[Array, Array, bool]:
-        value = jnp.asarray(value)
+        value = cast(Array, jnp.asarray(value))
         was_scalar = jnp.ndim(value) == 0
         if was_scalar:
             value = jnp.reshape(value, (1,))
@@ -290,7 +291,7 @@ class TransformationSpline:
         value = _broadcast_leading_core(value, target_batch, core_ndims=1)
         coef = _broadcast_leading_core(coef, target_batch, core_ndims=2)
 
-        return value, coef, was_scalar
+        return cast(Array, value), coef, was_scalar
 
     def _squeeze_scalar_result(self, value: Array, was_scalar: bool) -> Array:
         if was_scalar:
@@ -333,7 +334,7 @@ class TransformationSpline:
         return jnp.einsum("...j,...nj->...n", basis, coef)
 
     def _dot_and_deriv_broadcast(
-        self, value: Array, coef: Array
+        self, value: ArrayLike, coef: Array
     ) -> tuple[Array, Array]:
         value, coef, was_scalar = self._broadcast_value_and_coef(value, coef)
         dot, deriv = self._evaluate_spline(value, coef)
@@ -486,7 +487,9 @@ class TransformationSpline:
 
         return inverse_rows[:B, :]
 
-    def dot_and_deriv_n_fullbatch(self, x: Array, coef: Array) -> tuple[Array, Array]:
+    def dot_and_deriv_n_fullbatch(
+        self, x: ArrayLike, coef: Array
+    ) -> tuple[Array, Array]:
         """
         Compute dot product and derivative without chunking over observations.
         """
@@ -510,7 +513,7 @@ class TransformationSpline:
         """
         return self._dot_and_deriv_broadcast(x, coef)
 
-    def dot_and_deriv(self, x: Array, coef: Array) -> tuple[Array, Array]:
+    def dot_and_deriv(self, x: ArrayLike, coef: Array) -> tuple[Array, Array]:
         """
         Compute dot product and derivative in the legacy spline layout.
 
