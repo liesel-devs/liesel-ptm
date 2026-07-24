@@ -511,10 +511,10 @@ class EvaluatePTM:
             dist = self.model.init_dist(samples, newdata=newdata)
             return dist.sample(n, key)
 
-        sample_ = jax.jit(sample_, static_argnames="n")
+        sample_jit = jax.jit(sample_, static_argnames="n")
 
         def quantile_(samples, probs, key):
-            event_samples = sample_(key, samples, m)
+            event_samples = sample_jit(key, samples, m)
             quantiles = jnp.quantile(event_samples, q=probs, axis=(0, 1, 2))
             return quantiles
 

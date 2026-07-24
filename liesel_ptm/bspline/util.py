@@ -11,7 +11,7 @@ from jax import Array
 from ..util.inverse_interpax import inv1d
 from .approx import BSplineApprox
 
-inv1d = jax.jit(inv1d, static_argnums=(1, 2, 3, 4, 5))
+inv1d_jit = jax.jit(inv1d, static_argnums=(1, 2, 3, 4, 5))
 
 
 def _broadcast_leading_core(x, target_batch_shape, core_ndims):
@@ -375,7 +375,7 @@ class TransformationSpline:
             def fn(x):
                 return self._evaluate_spline(jnp.atleast_1d(x), coef_row)[0]
 
-            return inv1d(
+            return inv1d_jit(
                 value_row,
                 fn,
                 self._outer_knot_left,
