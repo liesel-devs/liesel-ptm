@@ -1195,7 +1195,7 @@ class LocScalePTM:
         if not trafo_terms:
             return self
 
-        trafo_coef = list(self.trafo.terms.values())[0]
+        trafo_coef = trafo_terms[0]
         trafo_scale = trafo_coef.scale
         trafo_var = trafo_scale.variance_param
 

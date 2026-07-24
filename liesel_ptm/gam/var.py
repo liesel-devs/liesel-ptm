@@ -1006,8 +1006,6 @@ def ps(
     else:
         penalty = jnp.asarray(penalty)
 
-    knots = knots
-    nbases = nbases
     basis = Basis(value=xvar, basis_fn=basis_fun, penalty=penalty)
 
     if scale_penalty:

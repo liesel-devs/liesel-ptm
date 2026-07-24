@@ -808,11 +808,12 @@ def setup_loc_scale(
             "da_target_accept": 0.8,
         }
 
-    if loc_intercept == "compute" or scale_intercept == "compute":
-        if response_value is None:
-            raise ValueError(
-                "To compute the intercept, a response value node must be provided."
-            )
+    if (
+        loc_intercept == "compute" or scale_intercept == "compute"
+    ) and response_value is None:
+        raise ValueError(
+            "To compute the intercept, a response value node must be provided."
+        )
 
     if loc_intercept == "compute":
         loc = LocPredictor.new_compute_intercept(

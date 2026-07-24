@@ -43,7 +43,7 @@ def summarise_by_quantiles(
     q_lo = np.asarray(np.quantile(a, q=lo, axis=axis))
     q_hi = np.asarray(np.quantile(a, q=hi, axis=axis))
 
-    df = dict()
+    df = {}
     sep = "_" if names_prefix else ""
     df[f"{names_prefix}{sep}mean"] = mean
     df[f"{names_prefix}{sep}sd"] = sd
