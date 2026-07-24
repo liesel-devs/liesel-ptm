@@ -1187,7 +1187,7 @@ class SimplePTMPredictor(Sum):
     @classmethod
     def new_onion_simple(cls, knots: Array, name: str) -> Self:
         mispline = MISplineCoef(knots)
-        fn = mispline.get_onion_fn_simple()  # type: ignore
+        fn = mispline.get_onion_fn_simple()
         return cls(name, fn=fn)
 
 

@@ -337,7 +337,7 @@ class PTMSpline(TransformationSpline):
 
         self._compute_coef = jax.jit(
             partial(PTMCoef(knots).get_ptm_fn_squeeze(), intercept=0.0, log_slope=0.0)
-        )  # type: ignore
+        )
 
         if continue_linearly:
             eps = 100000.0

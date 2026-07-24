@@ -59,7 +59,7 @@ class TestBasis:
 
     def test_array_without_name_causes_error(self) -> None:
         with pytest.raises(ValueError):
-            gam.Basis(jnp.linspace(0, 1, 10), basis_fn=lambda x: x)  # type: ignore
+            gam.Basis(jnp.linspace(0, 1, 10), basis_fn=lambda x: x)
 
     def test_array(self) -> None:
         x = jnp.linspace(0, 1, 10)

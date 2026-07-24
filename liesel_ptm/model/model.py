@@ -1195,8 +1195,8 @@ class LocScalePTM:
             return self
 
         trafo_coef = list(self.trafo.terms.values())[0]
-        trafo_scale = trafo_coef.scale  # type: ignore
-        trafo_var = trafo_scale.variance_param  # type: ignore
+        trafo_scale = trafo_coef.scale
+        trafo_var = trafo_scale.variance_param
 
         if trafo_kernel_kwargs_nuts:
             nuts_kernel_kwargs = trafo_kernel_kwargs_nuts
@@ -1252,7 +1252,7 @@ class LocScalePTM:
                     raise ValueError(f"{self.interface=} must not be None.")
                 cinfo = PTMCholInfoFixed.from_coef(
                     coef=trafo_coef,
-                    model=self.interface,  # type: ignore
+                    model=self.interface,
                 )
                 if cinfo.nan_in_cholesky_of_unprocessed_finfo:
                     logger.warning(

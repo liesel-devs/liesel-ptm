@@ -630,12 +630,12 @@ class ScaleWeibull(lsl.Var):
         if isinstance(scale, float):
             scale = jnp.asarray(scale, dtype=value.dtype)  # type: ignore
         if not isinstance(scale, lsl.Node | lsl.Var):
-            scale = lsl.Value(scale, _name=f"{name}_scale")  # type: ignore
+            scale = lsl.Value(scale, _name=f"{name}_scale")
 
         if isinstance(concentration, float):
             concentration = jnp.asarray(concentration, dtype=value.dtype)  # type: ignore
         if not isinstance(concentration, lsl.Node | lsl.Var):
-            concentration = lsl.Value(concentration, _name=f"{name}_concentration")  # type: ignore
+            concentration = lsl.Value(concentration, _name=f"{name}_concentration")
 
         prior = lsl.Dist(tfd.Weibull, concentration=concentration, scale=scale)
         self.variance_param = lsl.Var.new_param(

@@ -173,7 +173,7 @@ def init_star_wb_mh(
     if position_keys[0] != name:
         raise ValueError(f"The position key must be {name}.")
 
-    return star_wb_mh(coef, prop_ig_concentration, prop_ig_scale, **kwargs)  # type: ignore
+    return star_wb_mh(coef, prop_ig_concentration, prop_ig_scale, **kwargs)
 
 
 def init_star_ig_gibbs(position_keys: Sequence[str], coef: lsl.Var) -> gs.GibbsKernel:
@@ -191,7 +191,7 @@ def init_star_ig_gibbs(position_keys: Sequence[str], coef: lsl.Var) -> gs.GibbsK
     if position_keys[0] != name:
         raise ValueError(f"The position key must be {name}.")
 
-    return star_ig_gibbs(coef)  # type: ignore
+    return star_ig_gibbs(coef)
 
 
 class IWLSKernelDiag(gs.IWLSKernel):

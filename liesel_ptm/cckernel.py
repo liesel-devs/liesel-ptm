@@ -78,7 +78,7 @@ class ConstantConditionalKernel:
                 k0, kernel_state, altered_model_state, epoch
             )
         else:
-            outcome = self.kernel.transition(  # type: ignore
+            outcome = self.kernel.transition(
                 k0, kernel_state, altered_model_state, epoch
             )
 
@@ -139,7 +139,7 @@ class ConstantConditionalKernel:
                 k0, kernel_state, altered_model_state, epoch
             )
         else:
-            outcome = self.kernel.transition(  # type: ignore
+            outcome = self.kernel.transition(
                 k0, kernel_state, altered_model_state, epoch
             )
 
