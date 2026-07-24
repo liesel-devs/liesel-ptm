@@ -225,6 +225,8 @@ class TemporarilySwapDists:
         return self.model_copy
 
     def __exit__(self, exc_type, exc_value, traceback):
+        if self.model_copy is None:
+            raise RuntimeError("Cannot exit before entering the context")
         _, vars_ = self.model_copy.pop_nodes_and_vars()
 
         for name, dist in self.old_dists.items():
