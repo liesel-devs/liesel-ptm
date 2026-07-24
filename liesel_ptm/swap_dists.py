@@ -1,5 +1,5 @@
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
@@ -16,10 +16,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SwapSpec:
-    from_dist: type[tfd.Distribution] | None = None
+    from_dist: Callable[..., lsl.Distribution] | None = None
     from_name: str | None = None
     from_role: str | None = None
-    to_dist: type[tfd.Distribution] | None = None
+    to_dist: Callable[..., lsl.Distribution] | None = None
     to_dist_kwargs: dict[str, Array] | None = None
     bijector: tfb.Bijector | None = None
 
@@ -201,8 +201,12 @@ class TemporarilySwapDists:
                 bijector = self.pairs[i].bijector
 
                 if replacement_dist is not None:
+                    if replacement_kwargs is None:
+                        raise ValueError(
+                            "Replacement distribution arguments are required"
+                        )
                     uid = str(uuid4())
-                    kwargs = {
+                    kwargs: dict[str, Any] = {
                         name: lsl.Value(value, _name=f"__{name}-{uid}__")
                         for name, value in replacement_kwargs.items()
                     }

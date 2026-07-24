@@ -39,6 +39,6 @@ def waic(log_prob_samples: Array) -> pd.DataFrame:
             "waic_deviance": waic_deviance,
             "n_warning": n_var_greater_4,
         },
-        index=[0],
+        index=pd.Index([0]),
     )
     return waic_df

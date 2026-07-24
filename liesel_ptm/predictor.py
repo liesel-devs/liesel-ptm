@@ -1148,19 +1148,40 @@ class SimplePTMPredictor(Sum):
     @classmethod
     def new_ptm(cls, knots: Array, name: str) -> Self:
         mispline = MISplineCoef(knots)
-        fn = partial(mispline.get_ptm_fn(), intercept=0.0, log_slope=0.0)  # type: ignore
+        fn = cast(
+            Callable[[Array], Array],
+            partial(
+                cast(Callable[..., Array], mispline.get_ptm_fn()),
+                intercept=0.0,
+                log_slope=0.0,
+            ),
+        )
         return cls(name, fn=fn)
 
     @classmethod
     def new_ptm_squeeze(cls, knots: Array, name: str) -> Self:
         mispline = MISplineCoef(knots)
-        fn = partial(mispline.get_ptm_fn_squeeze(), intercept=0.0, log_slope=0.0)  # type: ignore
+        fn = cast(
+            Callable[[Array], Array],
+            partial(
+                cast(Callable[..., Array], mispline.get_ptm_fn_squeeze()),
+                intercept=0.0,
+                log_slope=0.0,
+            ),
+        )
         return cls(name, fn=fn)
 
     @classmethod
     def new_onion(cls, knots: Array, name: str) -> Self:
         mispline = MISplineCoef(knots)
-        fn = partial(mispline.get_onion_fn(), intercept=0.0, log_slope=0.0)  # type: ignore
+        fn = cast(
+            Callable[[Array], Array],
+            partial(
+                cast(Callable[..., Array], mispline.get_onion_fn()),
+                intercept=0.0,
+                log_slope=0.0,
+            ),
+        )
         return cls(name, fn=fn)
 
     @classmethod

@@ -144,7 +144,7 @@ def star_wb_mh(
         forward_log_prob = proposal_dist.log_prob(draw)
         backward_log_prob = proposal_dist.log_prob(pos[name])
 
-        draw_pos = {name: draw}
+        draw_pos = gs.types.Position({name: draw})
         log_correction = backward_log_prob - forward_log_prob
 
         return gs.MHProposal(position=draw_pos, log_correction=log_correction)
