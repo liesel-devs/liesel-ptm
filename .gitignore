@@ -200,3 +200,5 @@ tests/test_survival_constant_intercepts.ipynb
 tests/test_survival_v0.3.0-dev1.ipynb
 tests/test_survival_v0.3.0_multi_covariates.ipynb
 CONTEXT.md
+/docs/design
+/docs/adr
