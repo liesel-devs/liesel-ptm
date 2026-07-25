@@ -67,6 +67,7 @@ def split_dict_rough(d: PyTreeDict, k: int, axis: int = 1) -> list[PyTreeDict]:
     if k <= 0:
         raise ValueError("k must be positive.")
     _, S = _check_shapes(d, axis=axis)
+    k = min(k, S)
     M = (S + k - 1) // k  # ceil(S/k)
 
     def take_block(a, i: int):

@@ -767,22 +767,21 @@ class LocScalePTM:
         scale_ = jnp.asarray(scale_)
 
         trafo_samples = jnp.asarray(trafo_samples)
-        coef_batch_ndim = trafo_samples.ndim - 2
-        if trafo_samples.shape[-2] != 1:
-            coef_batch_ndim += 1
+        coef_batch_ndim = trafo_samples.ndim - 1
 
         ndim = max(loc_.ndim, scale_.ndim, coef_batch_ndim)
-        if uses_predicted_locscale:
-            ndim = max(ndim, trafo_samples.ndim - 1)
-            if self.is_gaussian and loc_.ndim <= 2 and scale_.ndim <= 2:
-                ndim = max(ndim, loc_.ndim + 1, scale_.ndim + 1)
+        if (
+            uses_predicted_locscale
+            and self.is_gaussian
+            and loc_.ndim <= 2
+            and scale_.ndim <= 2
+        ):
+            ndim = max(ndim, loc_.ndim + 1, scale_.ndim + 1)
 
         while loc_.ndim < ndim:
             loc_ = jnp.expand_dims(loc_, -1)
         while scale_.ndim < ndim:
             scale_ = jnp.expand_dims(scale_, -1)
-        while trafo_samples.shape[-2] == 1 and trafo_samples.ndim - 2 < ndim:
-            trafo_samples = jnp.expand_dims(trafo_samples, trafo_samples.ndim - 2)
 
         return self.response.dist_node.partial_dist_class(  # type: ignore
             loc=loc_, scale=scale_, coef=trafo_samples, batched=True

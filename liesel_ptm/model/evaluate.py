@@ -26,22 +26,6 @@ KeyArray = Any
 logger = logging.getLogger(__name__)
 
 
-def _flatten_first_two_sample_dims(samples_pytree):
-    """[S, C, ...] -> [S*C, ...] for every leaf in the PyTree."""
-    leaves, treedef = jax.tree_util.tree_flatten(samples_pytree)
-    S, C = leaves[0].shape[:2]
-
-    def reshape(x):
-        return x.reshape((S * C,) + x.shape[2:])
-
-    return jax.tree_util.tree_unflatten(treedef, [reshape(x) for x in leaves]), (S * C)
-
-
-def _index_pytree(pytree, i):
-    """Take pytree[i] along axis 0 for each leaf."""
-    return jax.tree_util.tree_map(lambda x: jnp.expand_dims(x[i], (0, 1)), pytree)
-
-
 class EvaluatePTM:
     """Helpers to evaluate predictive performance of a PTM model.
 
@@ -105,29 +89,7 @@ class EvaluatePTM:
         Returns an array of length N with the log pointwise predictive density
         for each observation.
         """
-
-        # Don’t mutate caller input; remove response before passing to init_dist
-        nd = {} if newdata is None else dict(newdata)
-        response = nd.pop(self.model.response.name, None)
-        if response is None:
-            raise ValueError("No response values provided in newdata.")
-        nd = nd if nd else {}
-
-        # Flatten [S, C, ...] -> [S*C, ...] so we can iterate samples on device
-        samples_flat, nsamples = _flatten_first_two_sample_dims(self.samples)
-
-        # Initialize running log-sum-exp over samples per observation i
-        N = response.shape[0]
-        lse0 = jnp.full((N,), -jnp.inf)
-
-        def body(i, lse):
-            sample_i = _index_pytree(samples_flat, i)
-            dist_i = self.model.init_dist(sample_i, newdata=nd)
-            lp_i = dist_i.log_prob(response).squeeze((0, 1))  # shape [N]
-            return jnp.logaddexp(lse, lp_i)
-
-        lse = jax.lax.fori_loop(0, nsamples, body, lse0)  # [N]
-        return lse - jnp.log(nsamples)  # lppd_i: [N]
+        return self._lppdi(newdata)
 
     def _waic(self):
         """Compute WAIC aggregates from log-probability samples (private)."""
@@ -169,71 +131,7 @@ class EvaluatePTM:
 
         Returns a one-row DataFrame with WAIC aggregates and a warning count.
         """
-
-        # Response values
-        y = self.model.response.value  # shape [N]
-        N = y.shape[0]
-
-        # Flatten two sample dims so we can iterate along axis 0 on device
-        samples_flat, nsamples = _flatten_first_two_sample_dims(self.samples)
-
-        # Accumulators (per observation):
-        # - lse: running log-sum-exp of log p(y_i | theta) over samples
-        # - mean, m2: Welford accumulators for variance of log p(y_i | theta)
-        lse0 = jnp.full((N,), -jnp.inf)
-        mean0 = jnp.zeros((N,))
-        m2_0 = jnp.zeros((N,))
-        n0 = jnp.array(0, dtype=jnp.int32)
-
-        def body(i, state):
-            lse, mean, m2, n = state
-            # get i-th sample (no batch left on params)
-            sample_i = _index_pytree(samples_flat, i)
-            dist_i = self.model.init_dist(sample_i)
-            lp_i = dist_i.log_prob(y).squeeze((0, 1))  # shape [N]
-
-            # accumulate log-sum-exp for lppd
-            lse = jnp.logaddexp(lse, lp_i)
-
-            # Welford update for variance of log-likelihoods
-            # (population variance, ddof=0)
-            n_new = n + 1
-            delta = lp_i - mean
-            mean_new = mean + delta / n_new
-            m2_new = m2 + delta * (lp_i - mean_new)
-
-            return (lse, mean_new, m2_new, n_new)
-
-        lse, mean, m2, n = jax.lax.fori_loop(0, nsamples, body, (lse0, mean0, m2_0, n0))
-
-        # Pointwise WAIC pieces
-        waic_lppd_i = lse - jnp.log(nsamples)  # log mean_s p(y_i | theta_s)
-        waic_p_i = (
-            m2 / n
-        )  # variance over samples of log p (ddof=0 to match jnp.var default)
-        waic_elpd_i = waic_lppd_i - waic_p_i
-
-        # Aggregates
-        waic_se = jnp.std(waic_elpd_i) * jnp.sqrt(N)
-        waic_p = waic_p_i.sum()
-        waic_lppd = waic_lppd_i.sum()
-        waic_elpd = waic_lppd - waic_p
-        waic_deviance = -2 * waic_elpd
-
-        # Common warning: count observations with large posterior variance of log-lik
-        n_var_greater_4 = jnp.sum(waic_p_i > 4)
-
-        waic_df = pd.DataFrame(
-            {
-                "waic_lppd": [float(waic_lppd)],
-                "waic_elpd": [float(waic_elpd)],
-                "waic_se": [float(waic_se)],
-                "waic_p": [float(waic_p)],
-                "waic_deviance": [float(waic_deviance)],
-                "n_warning": [int(n_var_greater_4)],
-            }
-        )
-        return waic_df
+        return self._waic()
 
     def log_score(self, newdata: dict[str, Array] | None = None) -> Array:
         """Negative log pointwise predictive density (sum over observations)."""
@@ -281,31 +179,7 @@ class EvaluatePTM:
         newdata: dict[str, "Array"] | None = None,
     ) -> "Array":
         """Compute per-sample MAD between true and predictive CDFs (private)."""
-
-        # Copy and extract response without mutating caller's dict
-        nd = {} if newdata is None else dict(newdata)
-        response = nd.pop(self.model.response.name, None)
-        if response is None:
-            raise ValueError("No response values provided in newdata.")
-
-        leaves, treedef = jax.tree_util.tree_flatten(self.samples)
-        S, C = leaves[0].shape[:2]
-
-        # Flatten sample dims so we can iterate on device
-        samples_flat, nsamples = _flatten_first_two_sample_dims(self.samples)
-
-        # Output buffer: one scalar per sample
-        out0 = jnp.zeros((nsamples,), dtype=jnp.result_type(true_cdf))
-
-        def body(i, acc):
-            sample_i = _index_pytree(samples_flat, i)
-            dist_i = self.model.init_dist(sample_i, newdata=nd)
-            cdf_i = dist_i.cdf(response).squeeze((0, 1))  # [N]
-            w1_i = jnp.mean(jnp.abs(true_cdf - cdf_i))  # scalar
-            return acc.at[i].set(w1_i)
-
-        w1_flat = jax.lax.fori_loop(0, nsamples, body, out0)  # [nsamples]
-        return w1_flat.reshape(S, C)  # matches original shape
+        return self.cdf_mad(true_cdf, newdata)
 
     def quantile_mse(
         self,
@@ -472,10 +346,9 @@ class EvaluatePTM:
             return crps_samples.mean(axis=-2)
 
         samples_partitions = split_dict_rough(samples, k=k)
-        crps_jitted = jax.jit(crps_)
         crps_partitions = []
         for samp in samples_partitions:
-            crps_partition = crps_jitted(probs, samp)
+            crps_partition = crps_(probs, samp)
             crps_partitions.append(crps_partition)
         return jnp.concatenate(crps_partitions, axis=1)
 
@@ -511,10 +384,8 @@ class EvaluatePTM:
             dist = self.model.init_dist(samples, newdata=newdata)
             return dist.sample(n, key)
 
-        sample_jit = jax.jit(sample_, static_argnames="n")
-
         def quantile_(samples, probs, key):
-            event_samples = sample_jit(key, samples, m)
+            event_samples = sample_(key, samples, m)
             quantiles = jnp.quantile(event_samples, q=probs, axis=(0, 1, 2))
             return quantiles
 
@@ -538,8 +409,7 @@ class EvaluatePTM:
             return crps_contributions
 
         key, subkey = jax.random.split(key)
-        crps_jitted = jax.jit(crps_)
-        return crps_jitted(probs, samples, subkey)
+        return crps_(probs, samples, subkey)
 
     def crps(
         self,

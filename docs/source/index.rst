@@ -44,6 +44,11 @@ This is a simple example for first steps:
 
     dist = model.init_dist(samples) # initialize a distribution object
 
+.. toctree::
+    :maxdepth: 2
+
+    term-distributions
+
 
 API Reference
 -------------
@@ -59,7 +64,6 @@ API Reference
     ~liesel_ptm.LocScalePTM
     ~liesel_ptm.TransformationDist
     ~liesel_ptm.LocScaleTransformationDist
-    ~liesel_ptm.Basis
     ~liesel_ptm.term
     ~liesel_ptm.term_ri
     ~liesel_ptm.ps
@@ -69,6 +73,23 @@ API Reference
     ~liesel_ptm.PTMCoef
     ~liesel_ptm.ScaleWeibull
     ~liesel_ptm.ScaleInverseGamma
+
+.. rubric:: Term-induced distribution summaries
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    ~liesel_ptm.summarise_intercept_dist
+    ~liesel_ptm.summarise_1d_smooth_dist
+    ~liesel_ptm.summarise_nd_smooth_dist
+    ~liesel_ptm.summarise_cluster_dist
+    ~liesel_ptm.plot_intercept_dist
+    ~liesel_ptm.plot_1d_smooth_dist
+    ~liesel_ptm.plot_2d_smooth_dist
+    ~liesel_ptm.plot_3d_smooth_dist
+    ~liesel_ptm.plot_cluster_dist
+    ~liesel_ptm.plot_regions_dist
 
 Acknowledgements and Funding
 --------------------------------

@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 from jax import grad
 from jax.flatten_util import ravel_pytree
-from liesel.goose.da import da_finalize, da_init, da_step
+from liesel.goose.da import DualAvgState, da_finalize, da_init, da_step
 from liesel.goose.epoch import EpochState
 from liesel.goose.iwls_utils import mvn_log_prob, mvn_sample, solve
 from liesel.goose.kernel import (
@@ -38,13 +38,8 @@ class IWLSFixedKernelState:
     """
 
     step_size: float
-    error_sum: float = field(init=False)
-    log_avg_step_size: float = field(init=False)
-    mu: float = field(init=False)
-    chol_info: Array = field(init=False)
-
-    def __post_init__(self):
-        da_init(self)
+    da_state: DualAvgState | None = None
+    chol_info: Array = field(default_factory=lambda: jnp.empty((0, 0)))
 
 
 IWLSTransitionInfo = DefaultTransitionInfo
@@ -120,6 +115,7 @@ class IWLSKernelFixed(
         Initializes the kernel state.
         """
         state = IWLSFixedKernelState(self.initial_step_size)
+        da_init(state)
         position = self.position(model_state)
         flat_position, _ = ravel_pytree(position)
         logprob = FlatLogProb(self.model, model_state, self.position_keys)

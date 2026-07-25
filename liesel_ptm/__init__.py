@@ -1,3 +1,5 @@
+# from .model_lib import PTMDist as PTMDist
+from . import plots as plots
 from .bspline import LogIncKnots as LogIncKnots
 from .bspline import PTMKnots as PTMKnots
 from .dist import LocScaleTransformationDist as LocScaleTransformationDist
@@ -11,9 +13,16 @@ from .gam.var import term as term
 from .gam.var import term_ri as term_ri
 from .model import EvaluatePTM as EvaluatePTM
 from .model import LocScalePTM as LocScalePTM
-
-# from .model_lib import PTMDist as PTMDist
-from .util import plots as plots
+from .plots import plot_1d_smooth_dist as plot_1d_smooth_dist
+from .plots import plot_2d_smooth_dist as plot_2d_smooth_dist
+from .plots import plot_3d_smooth_dist as plot_3d_smooth_dist
+from .plots import plot_cluster_dist as plot_cluster_dist
+from .plots import plot_intercept_dist as plot_intercept_dist
+from .plots import plot_regions_dist as plot_regions_dist
+from .summary import summarise_1d_smooth_dist as summarise_1d_smooth_dist
+from .summary import summarise_cluster_dist as summarise_cluster_dist
+from .summary import summarise_intercept_dist as summarise_intercept_dist
+from .summary import summarise_nd_smooth_dist as summarise_nd_smooth_dist
 from .util.summary import cache_results as cache_results
 from .util.summary import summarise_by_samples as summarise_by_samples
 from .util.testing import mock_samples as mock_samples
