@@ -377,7 +377,7 @@ class BSplineApprox:
         self.max_knot = self.knots[-(order + 1)]
 
         grid = jnp.linspace(self.min_knot, self.max_knot, ngrid)
-        self.step = (self.max_knot - self.min_knot) / ngrid
+        self.step = (self.max_knot - self.min_knot) / (ngrid - 1)
         prepend = jnp.array([self.min_knot - self.step])
         append = jnp.array([self.max_knot + self.step])
         self.ngrid = ngrid
@@ -393,6 +393,13 @@ class BSplineApprox:
 
         self._dot_fn = self._get_dot_fn()
         self._dot_and_deriv_fn = self._get_dot_and_deriv_fn()
+
+    def _grid_index(self, x: Array) -> Array:
+        i = jnp.floor((x - self.grid[0]) / self.step).astype(jnp.int32)
+        i = jnp.clip(i, 0, self.ngrid)
+        i += (x >= self.grid[i + 1]).astype(i.dtype)
+        i -= (x < self.grid[i]).astype(i.dtype)
+        return jnp.clip(i, 0, self.ngrid)
 
     @staticmethod
     def _contract_basis_coef(basis: Array, coef: Array) -> Array:
@@ -434,9 +441,9 @@ class BSplineApprox:
 
     @partial(jax.jit, static_argnums=0)
     def _approx_basis(self, x: Array) -> Array:
-        i = jnp.searchsorted(self.grid, x, side="right") - 1
+        i = self._grid_index(x)
         lo = self.grid[i]
-        k = jnp.expand_dims((x - lo) / self.step, -1)
+        k = jnp.expand_dims((x - lo) / (self.grid[i + 1] - lo), -1)
 
         basis = (1.0 - k) * self.basis_grid[i, :] + (k * self.basis_grid[i + 1, :])
         return basis
@@ -448,9 +455,9 @@ class BSplineApprox:
         respect to the data.
         """
 
-        i = jnp.searchsorted(self.grid, x, side="right") - 1
+        i = self._grid_index(x)
         lo = self.grid[i]
-        k = jnp.expand_dims((x - lo) / self.step, -1)
+        k = jnp.expand_dims((x - lo) / (self.grid[i + 1] - lo), -1)
 
         basis = (1.0 - k) * self.basis_grid[i, :] + (k * self.basis_grid[i + 1, :])
         basis_deriv = (1.0 - k) * self.basis_deriv_grid[i, :] + (
@@ -464,9 +471,9 @@ class BSplineApprox:
         Returns the basis matrix approximation and its first and second
         derivative with respect to the data.
         """
-        i = jnp.searchsorted(self.grid, x, side="right") - 1
+        i = self._grid_index(x)
         lo = self.grid[i]
-        k = jnp.expand_dims((x - lo) / self.step, -1)
+        k = jnp.expand_dims((x - lo) / (self.grid[i + 1] - lo), -1)
 
         basis = (1.0 - k) * self.basis_grid[i, :] + (k * self.basis_grid[i + 1, :])
         basis_deriv = (1.0 - k) * self.basis_deriv_grid[i, :] + (

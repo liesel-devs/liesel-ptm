@@ -9,6 +9,23 @@ coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
 bs = PTMSpline(knots.knots)
 
 
+def test_algebraic_grid_lookup_matches_binary_search():
+    approx = bs.bspline
+    nodes = approx.grid[1:-1]
+    x = jnp.concatenate(
+        (
+            jnp.linspace(approx.min_knot, approx.max_knot, 10_000),
+            nodes,
+            jnp.nextafter(nodes, -jnp.inf),
+            jnp.nextafter(nodes, jnp.inf),
+        )
+    )
+    expected = jnp.searchsorted(approx.grid, x, side="right") - 1
+    expected = jnp.clip(expected, 0, approx.ngrid)
+
+    assert jnp.array_equal(approx._grid_index(x), expected)
+
+
 class TestDotAndDeriv:
     def test_scalar_x(self):
         fx, fxd = bs.dot_and_deriv(1.0, coef)
