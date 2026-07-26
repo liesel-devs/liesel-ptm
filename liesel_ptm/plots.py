@@ -28,7 +28,7 @@ from .summary import (
 from .util.plots import plot_loss, plot_param_history
 
 _QUANTITIES = {"density", "cdf", "transformation", "transformation_raw"}
-_NO_PANEL_GRID = p9.theme(panel_grid=p9.element_blank())
+_NO_PANEL_GRID = p9.theme_light() + p9.theme(panel_grid=p9.element_blank())
 _NO_Y_AXIS = p9.theme(
     axis_text_y=p9.element_blank(),
     axis_ticks_major_y=p9.element_blank(),
