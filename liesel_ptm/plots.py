@@ -1,13 +1,22 @@
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Literal, cast, overload
 
 import jax.numpy as jnp
+import liesel.model as lsl
+import liesel_gam as gam
 import numpy as np
 import pandas as pd
 import plotnine as p9
+from jax import Array
 from jax.typing import ArrayLike
 
 from .summary import (
+    ClusterNewData,
+    DistInput,
+    Intercept,
+    Labels,
+    MarginalTerm,
+    NewData,
     _make_dist,
     _normalise_sample_dims,
     _predict,
@@ -27,7 +36,10 @@ _NO_Y_AXIS = p9.theme(
 )
 
 
-def _reference_data(dist, term, r: np.ndarray, quantity: str) -> pd.DataFrame:
+def _reference_data(
+    dist: DistInput, term: lsl.Var, r: ArrayLike, quantity: str
+) -> pd.DataFrame:
+    r = np.asarray(r)
     fitted = _make_dist(dist, jnp.zeros(term.value.shape[-1]))
     if quantity == "density":
         value = fitted.reference_distribution.prob(r)
@@ -80,14 +92,15 @@ def _plot_curves(
 
 
 def _trajectory_data(
-    dist,
-    coef: jnp.ndarray,
-    r: np.ndarray,
+    dist: DistInput,
+    coef: Array,
+    r: ArrayLike,
     *,
     quantity: str,
     n: int,
     seed: int,
 ) -> pd.DataFrame:
+    r = np.asarray(r)
     r_batched = jnp.asarray(r).reshape((-1,) + (1,) * (coef.ndim - 1))
     fitted = _make_dist(dist, coef, raw=quantity == "transformation_raw")
     if quantity == "density":
@@ -111,15 +124,16 @@ def _trajectory_data(
 
 
 def _trajectory_data_grid(
-    dist,
-    coef: jnp.ndarray,
-    r: np.ndarray,
+    dist: DistInput,
+    coef: Array,
+    r: ArrayLike,
     *,
     quantity: str,
     n: int,
     seed: int,
-    covariates: Mapping[str, Any],
+    covariates: Mapping[str, ArrayLike | Sequence[Any]],
 ) -> pd.DataFrame:
+    r = np.asarray(r)
     r_batched = jnp.asarray(r).reshape((-1,) + (1,) * (coef.ndim - 1))
     fitted = _make_dist(dist, coef, raw=quantity == "transformation_raw")
     if quantity == "density":
@@ -147,9 +161,39 @@ def _trajectory_data_grid(
     return data
 
 
+@overload
 def plot_intercept_dist(
-    dist,
-    term,
+    dist: DistInput,
+    term: gam.MultivariateIntercept,
+    samples: Mapping[str, ArrayLike],
+    *,
+    quantity: str = "density",
+    rgrid: int | ArrayLike = 150,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot: ...
+
+
+@overload
+def plot_intercept_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    quantity: str = "density",
+    rgrid: int | ArrayLike = 150,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot: ...
+
+
+def plot_intercept_dist(
+    dist: DistInput,
+    term: lsl.Var,
     samples: Mapping[str, ArrayLike],
     *,
     quantity: str = "density",
@@ -194,16 +238,56 @@ def plot_intercept_dist(
     )
 
 
+@overload
 def plot_1d_smooth_dist(
-    dist,
-    term,
+    dist: DistInput,
+    term: gam.MultivariateStrctTerm,
     samples: Mapping[str, ArrayLike],
     *,
     quantity: str = "density",
     rgrid: int | ArrayLike = 150,
-    newdata: Mapping[str, ArrayLike] | None = None,
+    newdata: NewData = None,
     ngrid: int = 5,
-    intercept=None,
+    intercept: Intercept = None,
+    ridge_spacing: float | None = None,
+    show_y_axis: bool = False,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot: ...
+
+
+@overload
+def plot_1d_smooth_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    quantity: str = "density",
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    intercept: Intercept = None,
+    ridge_spacing: float | None = None,
+    show_y_axis: bool = False,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot: ...
+
+
+def plot_1d_smooth_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    quantity: str = "density",
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    intercept: Intercept = None,
     ridge_spacing: float | None = None,
     show_y_axis: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
@@ -212,6 +296,7 @@ def plot_1d_smooth_dist(
     seed: int = 1,
 ) -> p9.ggplot:
     """Plot standardized PTM distributions induced by a one-dimensional smooth."""
+    term = cast(MarginalTerm, term)
     if quantity not in _QUANTITIES:
         raise ValueError(f"Unknown quantity {quantity!r}.")
     quantiles = (0.05, 0.5, 0.95) if ci_quantiles is None else ci_quantiles
@@ -368,18 +453,66 @@ def plot_1d_smooth_dist(
     return plot
 
 
+@overload
 def plot_2d_smooth_dist(
-    dist,
-    term,
+    dist: DistInput,
+    term: (
+        gam.MultivariateStrctTerm
+        | gam.MultivariateStrctInteractionTerm
+        | gam.MultivariateTPTerm
+    ),
     samples: Mapping[str, ArrayLike],
     *,
     quantity: str = "density",
     rgrid: int | ArrayLike = 150,
-    newdata: Mapping[str, ArrayLike] | None = None,
+    newdata: NewData = None,
     ngrid: int = 5,
     newdata_meshgrid: bool = False,
-    marginals: Sequence = (),
-    intercept=None,
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
+    facet_by: str | None = None,
+    ridge_spacing: float | None = None,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot: ...
+
+
+@overload
+def plot_2d_smooth_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    quantity: str = "density",
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    newdata_meshgrid: bool = False,
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
+    facet_by: str | None = None,
+    ridge_spacing: float | None = None,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot: ...
+
+
+def plot_2d_smooth_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    quantity: str = "density",
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    newdata_meshgrid: bool = False,
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
     facet_by: str | None = None,
     ridge_spacing: float | None = None,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
@@ -388,6 +521,7 @@ def plot_2d_smooth_dist(
     seed: int = 1,
 ) -> p9.ggplot:
     """Plot standardized PTM distributions induced by a two-dimensional smooth."""
+    term = cast(MarginalTerm, term)
     if quantity not in _QUANTITIES:
         raise ValueError(f"Unknown quantity {quantity!r}.")
     inputs = list(term.input_obs)
@@ -558,20 +692,76 @@ def plot_2d_smooth_dist(
     )
 
 
+@overload
 def plot_3d_smooth_dist(
-    dist,
-    term,
+    dist: DistInput,
+    term: (
+        gam.MultivariateStrctTerm
+        | gam.MultivariateStrctInteractionTerm
+        | gam.MultivariateTPTerm
+    ),
     samples: Mapping[str, ArrayLike],
     *,
     x: str,
     y: str,
     ridge_by: str,
     points: Mapping[str, ArrayLike],
-    ridge_values: Sequence,
+    ridge_values: Sequence[Any],
     rgrid: int | ArrayLike = 150,
-    layout: str = "stack",
-    marginals: Sequence = (),
-    intercept=None,
+    layout: Literal["stack", "facet"] = "stack",
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
+    glyph_width: float | None = None,
+    glyph_height: float | None = None,
+    ridge_spacing: float | None = None,
+    point_size: float = 2.5,
+    point_shape: str | int = "x",
+    point_color: str = "black",
+    ci_quantiles: tuple[float, float] | None = None,
+    hdi_prob: float | None = None,
+) -> p9.ggplot: ...
+
+
+@overload
+def plot_3d_smooth_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    x: str,
+    y: str,
+    ridge_by: str,
+    points: Mapping[str, ArrayLike],
+    ridge_values: Sequence[Any],
+    rgrid: int | ArrayLike = 150,
+    layout: Literal["stack", "facet"] = "stack",
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
+    glyph_width: float | None = None,
+    glyph_height: float | None = None,
+    ridge_spacing: float | None = None,
+    point_size: float = 2.5,
+    point_shape: str | int = "x",
+    point_color: str = "black",
+    ci_quantiles: tuple[float, float] | None = None,
+    hdi_prob: float | None = None,
+) -> p9.ggplot: ...
+
+
+def plot_3d_smooth_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    x: str,
+    y: str,
+    ridge_by: str,
+    points: Mapping[str, ArrayLike],
+    ridge_values: Sequence[Any],
+    rgrid: int | ArrayLike = 150,
+    layout: Literal["stack", "facet"] = "stack",
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
     glyph_width: float | None = None,
     glyph_height: float | None = None,
     ridge_spacing: float | None = None,
@@ -582,6 +772,7 @@ def plot_3d_smooth_dist(
     hdi_prob: float | None = None,
 ) -> p9.ggplot:
     """Plot local density glyphs for a three-dimensional smooth."""
+    term = cast(MarginalTerm, term)
     inputs = list(term.input_obs)
     if len(inputs) != 3 or set((x, y, ridge_by)) != set(inputs):
         raise ValueError("x, y, and ridge_by must name the term's three inputs.")
@@ -700,16 +891,56 @@ def plot_3d_smooth_dist(
     )
 
 
+@overload
 def plot_cluster_dist(
-    dist,
-    term,
+    dist: DistInput,
+    term: gam.MultivariateStrctTerm,
     samples: Mapping[str, ArrayLike],
     *,
     quantity: str = "density",
     rgrid: int | ArrayLike = 150,
-    newdata: Mapping[str, ArrayLike] | None = None,
-    labels=None,
-    intercept=None,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
+    show_unobserved: bool = True,
+    ridge_spacing: float | None = None,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot: ...
+
+
+@overload
+def plot_cluster_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    quantity: str = "density",
+    rgrid: int | ArrayLike = 150,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
+    show_unobserved: bool = True,
+    ridge_spacing: float | None = None,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot: ...
+
+
+def plot_cluster_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    quantity: str = "density",
+    rgrid: int | ArrayLike = 150,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
     show_unobserved: bool = True,
     ridge_spacing: float | None = None,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
@@ -718,6 +949,7 @@ def plot_cluster_dist(
     seed: int = 1,
 ) -> p9.ggplot:
     """Plot standardized PTM distributions induced by a categorical term."""
+    term = cast(MarginalTerm, term)
     if quantity not in _QUANTITIES:
         raise ValueError(f"Unknown quantity {quantity!r}.")
     quantiles = (0.05, 0.5, 0.95) if ci_quantiles is None else ci_quantiles
@@ -746,7 +978,12 @@ def plot_cluster_dist(
         elif mapping is not None:
             codes = np.asarray(mapping.labels_to_integers(group_array))
         else:
-            label_codes = {label: code for code, label in enumerate(labels or groups)}
+            label_values = (
+                labels
+                if labels is not None and not isinstance(labels, gam.CategoryMapping)
+                else groups
+            )
+            label_codes = {label: code for code, label in enumerate(label_values)}
             codes = np.asarray([label_codes[label] for label in groups])
         coef = _normalise_sample_dims(
             _predict(term, samples, {category: codes}), term.value.ndim
@@ -920,17 +1157,57 @@ def _polygon_centroid(vertices: ArrayLike) -> tuple[float, float]:
     return float(centroid[0]), float(centroid[1])
 
 
+@overload
 def plot_regions_dist(
-    dist,
-    term,
+    dist: DistInput,
+    term: gam.MultivariateStrctTerm,
     samples: Mapping[str, ArrayLike],
     *,
     polys: Mapping[Any, ArrayLike] | None = None,
     locations: Mapping[Any, tuple[float, float]] | None = None,
     rgrid: int | ArrayLike = 150,
-    newdata: Mapping[str, ArrayLike] | None = None,
-    labels=None,
-    intercept=None,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
+    glyph_width: float | None = None,
+    glyph_height: float | None = None,
+    show_density_fill: bool = True,
+    ci_quantiles: tuple[float, float] | None = None,
+    hdi_prob: float | None = None,
+) -> p9.ggplot: ...
+
+
+@overload
+def plot_regions_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    polys: Mapping[Any, ArrayLike] | None = None,
+    locations: Mapping[Any, tuple[float, float]] | None = None,
+    rgrid: int | ArrayLike = 150,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
+    glyph_width: float | None = None,
+    glyph_height: float | None = None,
+    show_density_fill: bool = True,
+    ci_quantiles: tuple[float, float] | None = None,
+    hdi_prob: float | None = None,
+) -> p9.ggplot: ...
+
+
+def plot_regions_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    polys: Mapping[Any, ArrayLike] | None = None,
+    locations: Mapping[Any, tuple[float, float]] | None = None,
+    rgrid: int | ArrayLike = 150,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
     glyph_width: float | None = None,
     glyph_height: float | None = None,
     show_density_fill: bool = True,
@@ -938,10 +1215,11 @@ def plot_regions_dist(
     hdi_prob: float | None = None,
 ) -> p9.ggplot:
     """Plot local density glyphs for a spatial categorical term."""
+    term = cast(MarginalTerm, term)
     if polys is None:
         polys = next(
             (
-                candidate.polys
+                getattr(candidate, "polys")
                 for candidate in (term, *getattr(term, "marginal_terms", ()))
                 if getattr(candidate, "polys", None) is not None
             ),
@@ -950,7 +1228,7 @@ def plot_regions_dist(
     if polys is None:
         polys = next(
             (
-                candidate.polygons
+                getattr(candidate, "polygons")
                 for candidate in (term, *getattr(term, "marginal_terms", ()))
                 if getattr(candidate, "polygons", None) is not None
             ),

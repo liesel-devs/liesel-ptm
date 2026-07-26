@@ -1,17 +1,32 @@
-from collections.abc import Mapping, Sequence
-from typing import Any
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, cast, overload
 
 import jax.numpy as jnp
 import liesel.goose as gs
 import liesel.model as lsl
+import liesel_gam as gam
 import numpy as np
 import pandas as pd
+from jax import Array
 from jax.typing import ArrayLike
 
 from .dist import LocScaleTransformationDist, TransformationDist
 
+type DistInput = Callable[..., TransformationDist] | lsl.Var | lsl.Dist
+type NewData = gs.Position | Mapping[str, ArrayLike] | None
+type ClusterNewData = (
+    gs.Position | Mapping[str, ArrayLike | Sequence[int] | Sequence[str]] | None
+)
+type Intercept = gam.MultivariateIntercept | lsl.Var | None
+type Labels = gam.CategoryMapping | Sequence[str] | None
+type MarginalTerm = (
+    gam.MultivariateStrctTerm
+    | gam.MultivariateStrctInteractionTerm
+    | gam.MultivariateTPTerm
+)
 
-def _normalise_sample_dims(a: ArrayLike, value_ndim: int) -> jnp.ndarray:
+
+def _normalise_sample_dims(a: ArrayLike, value_ndim: int) -> Array:
     a = jnp.asarray(a)
     sample_ndim = a.ndim - value_ndim
     if sample_ndim == 0:
@@ -23,16 +38,19 @@ def _normalise_sample_dims(a: ArrayLike, value_ndim: int) -> jnp.ndarray:
     raise ValueError("Expected zero, one, or two leading sample dimensions.")
 
 
-def _make_dist(constructor, coef, *, raw: bool = False):
+def _make_dist(
+    constructor: DistInput, coef: ArrayLike, *, raw: bool = False
+) -> TransformationDist:
+    constructor_fn: Any = constructor
     if isinstance(constructor, lsl.Var):
         if constructor.dist_node is None:
             raise TypeError("The supplied variable has no distribution.")
-        constructor = constructor.dist_node
-    if isinstance(constructor, lsl.Dist):
-        constructor = constructor.distribution
+        constructor_fn = constructor.dist_node
+    if isinstance(constructor_fn, lsl.Dist):
+        constructor_fn = constructor_fn.distribution
 
     kwargs = {"coef": coef}
-    dist_class = getattr(constructor, "func", constructor)
+    dist_class = getattr(constructor_fn, "func", constructor_fn)
     if not (
         isinstance(dist_class, type) and issubclass(dist_class, TransformationDist)
     ):
@@ -41,14 +59,14 @@ def _make_dist(constructor, coef, *, raw: bool = False):
         kwargs.update(loc=0.0, scale=1.0)
     if raw:
         kwargs.update(centered=False, scaled=False)
-    return constructor(**kwargs)
+    return cast(TransformationDist, constructor_fn(**kwargs))
 
 
 def _summarise_array(
     values: ArrayLike,
     *,
     quantity: str,
-    rgrid: jnp.ndarray,
+    rgrid: Array,
     quantiles: Sequence[float],
     hdi_prob: float,
 ) -> pd.DataFrame:
@@ -70,13 +88,13 @@ def _summarise_array(
 
 
 def _summarise_coef(
-    dist,
-    coef: jnp.ndarray,
+    dist: DistInput,
+    coef: Array,
     *,
     rgrid: int | ArrayLike,
     quantiles: Sequence[float],
     hdi_prob: float,
-    covariates: Mapping[str, Any] | None = None,
+    covariates: Mapping[str, ArrayLike | Sequence[Any]] | None = None,
 ) -> pd.DataFrame:
     if isinstance(rgrid, int):
         if rgrid <= 0:
@@ -113,11 +131,16 @@ def _summarise_coef(
     return summary
 
 
-def _predict(term, samples, newdata=None) -> jnp.ndarray:
-    return term.predict(dict(samples), newdata=newdata)
+def _predict(
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    newdata: NewData = None,
+) -> Array:
+    newdata_dict = None if newdata is None else dict(newdata)
+    return term.predict(dict(samples), newdata=newdata_dict)
 
 
-def _category_mapping(term, input_name: str):
+def _category_mapping(term: lsl.Var, input_name: str) -> gam.CategoryMapping | None:
     for marginal in getattr(term, "marginal_terms", ()):
         mapping = getattr(marginal, "mapping", None)
         basis = getattr(marginal, "basis", None)
@@ -129,7 +152,9 @@ def _category_mapping(term, input_name: str):
     return None
 
 
-def _predict_intercept(intercept, samples) -> jnp.ndarray | None:
+def _predict_intercept(
+    intercept: Intercept, samples: Mapping[str, ArrayLike]
+) -> Array | None:
     if intercept is None:
         return None
     if not isinstance(intercept, lsl.Var):
@@ -139,9 +164,33 @@ def _predict_intercept(intercept, samples) -> jnp.ndarray | None:
     )
 
 
+@overload
 def summarise_intercept_dist(
-    dist,
-    term,
+    dist: DistInput,
+    term: gam.MultivariateIntercept,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+@overload
+def summarise_intercept_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+def summarise_intercept_dist(
+    dist: DistInput,
+    term: lsl.Var,
     samples: Mapping[str, ArrayLike],
     *,
     rgrid: int | ArrayLike = 150,
@@ -159,19 +208,50 @@ def summarise_intercept_dist(
     )
 
 
+@overload
 def summarise_1d_smooth_dist(
-    dist,
-    term,
+    dist: DistInput,
+    term: gam.MultivariateStrctTerm,
     samples: Mapping[str, ArrayLike],
     *,
     rgrid: int | ArrayLike = 150,
-    newdata: Mapping[str, ArrayLike] | None = None,
+    newdata: NewData = None,
     ngrid: int = 5,
-    intercept=None,
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+@overload
+def summarise_1d_smooth_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+def summarise_1d_smooth_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    intercept: Intercept = None,
     quantiles: Sequence[float] = (0.05, 0.5, 0.95),
     hdi_prob: float = 0.9,
 ) -> pd.DataFrame:
     """Summarise the standardized PTM distribution induced by a 1D smooth."""
+    term = cast(MarginalTerm, term)
     inputs = term.input_obs
     if len(inputs) != 1:
         raise ValueError(f"Expected one input covariate, got {len(inputs)}.")
@@ -197,43 +277,81 @@ def summarise_1d_smooth_dist(
     )
 
 
+@overload
 def summarise_nd_smooth_dist(
-    dist,
-    term,
+    dist: DistInput,
+    term: (
+        gam.MultivariateStrctTerm
+        | gam.MultivariateStrctInteractionTerm
+        | gam.MultivariateTPTerm
+    ),
     samples: Mapping[str, ArrayLike],
     *,
     rgrid: int | ArrayLike = 150,
-    newdata: Mapping[str, ArrayLike] | None = None,
+    newdata: NewData = None,
     ngrid: int = 5,
     newdata_meshgrid: bool = False,
-    marginals: Sequence = (),
-    intercept=None,
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+@overload
+def summarise_nd_smooth_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    newdata_meshgrid: bool = False,
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+def summarise_nd_smooth_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    newdata_meshgrid: bool = False,
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
     quantiles: Sequence[float] = (0.05, 0.5, 0.95),
     hdi_prob: float = 0.9,
 ) -> pd.DataFrame:
     """Summarise a standardized PTM distribution induced by an nD smooth."""
+    term = cast(MarginalTerm, term)
     inputs = term.input_obs
     mappings = {name: _category_mapping(term, name) for name in inputs}
     grid: dict[str, Any]
     if newdata is None:
-        axes = {
-            name: (
-                np.arange(len(mappings[name].labels_to_integers_map))
-                if mappings[name] is not None
+        axes = {}
+        for name, obs in inputs.items():
+            mapping = mappings[name]
+            axes[name] = (
+                np.arange(len(mapping.labels_to_integers_map))
+                if mapping is not None
                 else np.linspace(np.min(obs.value), np.max(obs.value), ngrid)
             )
-            for name, obs in inputs.items()
-        }
         arrays = np.meshgrid(*axes.values(), indexing="ij")
         grid = {name: value.ravel() for name, value in zip(axes, arrays)}
     elif newdata_meshgrid:
         axes = {}
         for name, values in newdata.items():
             values = np.asarray(values)
-            if mappings[name] is not None and not np.issubdtype(
-                values.dtype, np.integer
-            ):
-                values = np.asarray(mappings[name].labels_to_integers(values))
+            mapping = mappings[name]
+            if mapping is not None and not np.issubdtype(values.dtype, np.integer):
+                values = np.asarray(mapping.labels_to_integers(values))
             axes[name] = values
         arrays = np.meshgrid(*axes.values(), indexing="ij")
         grid = {name: value.ravel() for name, value in zip(newdata, arrays)}
@@ -241,23 +359,20 @@ def summarise_nd_smooth_dist(
         grid = {}
         for name, values in newdata.items():
             values = np.asarray(values)
-            if mappings[name] is not None and not np.issubdtype(
-                values.dtype, np.integer
-            ):
-                values = np.asarray(mappings[name].labels_to_integers(values))
+            mapping = mappings[name]
+            if mapping is not None and not np.issubdtype(values.dtype, np.integer):
+                values = np.asarray(mapping.labels_to_integers(values))
             grid[name] = values
         lengths = {len(np.asarray(value)) for value in grid.values()}
         if len(lengths) != 1:
             raise ValueError("All newdata arrays must have the same length.")
 
-    display_grid = {
-        name: (
-            list(mappings[name].integers_to_labels(values))
-            if mappings[name] is not None
-            else values
+    display_grid = {}
+    for name, values in grid.items():
+        mapping = mappings[name]
+        display_grid[name] = (
+            list(mapping.integers_to_labels(values)) if mapping is not None else values
         )
-        for name, values in grid.items()
-    }
 
     coef = _normalise_sample_dims(
         _predict(term, samples, grid), value_ndim=term.value.ndim
@@ -291,25 +406,58 @@ def summarise_nd_smooth_dist(
     return summary
 
 
+@overload
 def summarise_cluster_dist(
-    dist,
-    term,
+    dist: DistInput,
+    term: gam.MultivariateStrctTerm,
     samples: Mapping[str, ArrayLike],
     *,
     rgrid: int | ArrayLike = 150,
-    newdata: Mapping[str, ArrayLike] | None = None,
-    labels=None,
-    intercept=None,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+@overload
+def summarise_cluster_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+def summarise_cluster_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
     quantiles: Sequence[float] = (0.05, 0.5, 0.95),
     hdi_prob: float = 0.9,
 ) -> pd.DataFrame:
     """Summarise a standardized PTM distribution induced by a categorical term."""
+    term = cast(MarginalTerm, term)
     inputs = term.input_obs
     if len(inputs) != 1:
         raise ValueError(f"Expected one categorical input, got {len(inputs)}.")
     name, observed_var = next(iter(inputs.items()))
-    mapping = getattr(term.marginal_terms[0], "mapping", None)
-    explicit_mapping = labels if hasattr(labels, "labels_to_integers_map") else None
+    mapping: gam.CategoryMapping | None = getattr(
+        term.marginal_terms[0], "mapping", None
+    )
+    explicit_mapping = labels if isinstance(labels, gam.CategoryMapping) else None
     active_mapping = explicit_mapping or (mapping if labels is None else None)
 
     if active_mapping is not None:
@@ -321,7 +469,11 @@ def summarise_cluster_dist(
             codes = np.asarray(active_mapping.labels_to_integers(codes))
         display = list(active_mapping.integers_to_labels(codes))
     else:
-        categories = list(labels) if labels is not None else []
+        categories = (
+            list(labels)
+            if labels is not None and not isinstance(labels, gam.CategoryMapping)
+            else []
+        )
         values = (
             np.arange(len(categories)) if newdata is None else np.asarray(newdata[name])
         )

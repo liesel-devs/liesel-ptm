@@ -229,7 +229,7 @@ def test_summaries_reject_boolean_intercept_shorthand() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     with pytest.raises(TypeError, match="intercept"):
-        ptm.summarise_1d_smooth_dist(
+        ptm.summarise_1d_smooth_dist(  # ty: ignore[no-matching-overload]
             ptm.onion_dist(nparam=4),
             term,
             samples,

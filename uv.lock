@@ -1033,7 +1033,7 @@ wheels = [
 [[package]]
 name = "liesel"
 version = "0.5.1.dev3"
-source = { git = "https://github.com/liesel-devs/liesel.git?branch=optim-devel#8eba55815239e6d1ef4e2d2bf844abbd382c2bf4" }
+source = { git = "https://github.com/liesel-devs/liesel.git?rev=optim-devel#8eba55815239e6d1ef4e2d2bf844abbd382c2bf4" }
 dependencies = [
     { name = "arviz" },
     { name = "blackjax" },
@@ -1071,7 +1071,7 @@ dependencies = [
 requires-dist = [
     { name = "formulaic", specifier = ">=1.2.1" },
     { name = "jax", specifier = ">=0.5" },
-    { name = "liesel", git = "https://github.com/liesel-devs/liesel.git?branch=optim-devel" },
+    { name = "liesel", git = "https://github.com/liesel-devs/liesel.git?rev=optim-devel" },
     { name = "matplotlib", specifier = "<3.11" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pandas", specifier = ">=1.4" },
@@ -1119,6 +1119,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "smoothcon" },
     { name = "sphinx" },
     { name = "sphinx-autodoc-typehints" },
     { name = "sphinx-book-theme" },
@@ -1129,7 +1130,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "interpax", specifier = ">=0.3.10" },
-    { name = "liesel", git = "https://github.com/liesel-devs/liesel.git?branch=optim-devel" },
+    { name = "liesel" },
     { name = "liesel-gam", editable = "../liesel_gam" },
     { name = "plotnine", specifier = ">=0.14.5" },
     { name = "properscoring", specifier = ">=0.1" },
@@ -1145,6 +1146,7 @@ dev = [
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-cov", specifier = ">=6.1.1" },
     { name = "ruff", specifier = ">=0.11.4" },
+    { name = "smoothcon", editable = "../smoothcon2" },
     { name = "sphinx", specifier = ">=8.2.3" },
     { name = "sphinx-autodoc-typehints", specifier = ">=3.2.0" },
     { name = "sphinx-book-theme", specifier = ">=1.1.4" },
