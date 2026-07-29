@@ -639,7 +639,7 @@ def plot_2d_smooth_dist(  # type: ignore[overload-cannot-match]
     newdata: NewData = None,
     ngrid: int = 5,
     newdata_meshgrid: bool = False,
-    marginals: Sequence[MarginalTerm] = (),
+    marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
     facet_by: str | None = None,
     ridge_spacing: float | None = None,
@@ -660,7 +660,7 @@ def plot_2d_smooth_dist(
     newdata: NewData = None,
     ngrid: int = 5,
     newdata_meshgrid: bool = False,
-    marginals: Sequence[MarginalTerm] = (),
+    marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
     facet_by: str | None = None,
     ridge_spacing: float | None = None,
@@ -671,6 +671,7 @@ def plot_2d_smooth_dist(
 ) -> p9.ggplot:
     """Plot standardized PTM distributions induced by a two-dimensional smooth."""
     term = cast(MarginalTerm, term)
+    marginal_terms = cast(Sequence[MarginalTerm], marginals)
     if quantity not in _QUANTITIES:
         raise ValueError(f"Unknown quantity {quantity!r}.")
     inputs = list(term.input_obs)
@@ -689,7 +690,7 @@ def plot_2d_smooth_dist(
         newdata=newdata,
         ngrid=ngrid,
         newdata_meshgrid=newdata_meshgrid,
-        marginals=marginals,
+        marginals=marginal_terms,
         intercept=intercept,
         quantiles=quantiles,
         hdi_prob=0.9 if hdi_prob is None else hdi_prob,
@@ -702,7 +703,7 @@ def plot_2d_smooth_dist(
         summary,
         inputs=inputs,
         quantity=quantity,
-        marginals=marginals,
+        marginals=marginal_terms,
         intercept=intercept,
         n=show_n_samples,
         seed=seed,
@@ -825,7 +826,7 @@ def plot_3d_smooth_dist(  # type: ignore[overload-cannot-match]
     newdata: NewData = None,
     ngrid: int = 5,
     newdata_meshgrid: bool = False,
-    marginals: Sequence[MarginalTerm] = (),
+    marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
     ridge_spacing: float | None = None,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
@@ -847,7 +848,7 @@ def plot_3d_smooth_dist(
     newdata: NewData = None,
     ngrid: int = 5,
     newdata_meshgrid: bool = False,
-    marginals: Sequence[MarginalTerm] = (),
+    marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
     ridge_spacing: float | None = None,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
@@ -857,6 +858,7 @@ def plot_3d_smooth_dist(
 ) -> p9.ggplot:
     """Plot faceted density ridges for a three-dimensional smooth."""
     term = cast(MarginalTerm, term)
+    marginal_terms = cast(Sequence[MarginalTerm], marginals)
     inputs = list(term.input_obs)
     if len(inputs) != 3 or set((x, y, ridge_by)) != set(inputs):
         raise ValueError("x, y, and ridge_by must name the term's three inputs.")
@@ -870,7 +872,7 @@ def plot_3d_smooth_dist(
         newdata=newdata,
         ngrid=ngrid,
         newdata_meshgrid=newdata_meshgrid,
-        marginals=marginals,
+        marginals=marginal_terms,
         intercept=intercept,
         quantiles=quantiles,
         hdi_prob=0.9 if hdi_prob is None else hdi_prob,
@@ -883,7 +885,7 @@ def plot_3d_smooth_dist(
         summary,
         inputs=inputs,
         quantity="density",
-        marginals=marginals,
+        marginals=marginal_terms,
         intercept=intercept,
         n=show_n_samples,
         seed=seed,
@@ -953,7 +955,7 @@ def plot_3d_smooth_dist_stacked(  # type: ignore[overload-cannot-match]
     points: Mapping[str, ArrayLike],
     ridge_values: Sequence[Any],
     rgrid: int | ArrayLike = 150,
-    marginals: Sequence[MarginalTerm] = (),
+    marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
     glyph_width: float | None = None,
     glyph_height: float | None = None,
@@ -977,7 +979,7 @@ def plot_3d_smooth_dist_stacked(
     points: Mapping[str, ArrayLike],
     ridge_values: Sequence[Any],
     rgrid: int | ArrayLike = 150,
-    marginals: Sequence[MarginalTerm] = (),
+    marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
     glyph_width: float | None = None,
     glyph_height: float | None = None,
@@ -990,6 +992,7 @@ def plot_3d_smooth_dist_stacked(
 ) -> p9.ggplot:
     """Plot stacked local density glyphs for a three-dimensional smooth."""
     term = cast(MarginalTerm, term)
+    marginal_terms = cast(Sequence[MarginalTerm], marginals)
     inputs = list(term.input_obs)
     if len(inputs) != 3 or set((x, y, ridge_by)) != set(inputs):
         raise ValueError("x, y, and ridge_by must name the term's three inputs.")
@@ -1016,7 +1019,7 @@ def plot_3d_smooth_dist_stacked(
         samples,
         rgrid=rgrid,
         newdata=newdata,
-        marginals=marginals,
+        marginals=marginal_terms,
         intercept=intercept,
         quantiles=quantiles,
         hdi_prob=0.9 if hdi_prob is None else hdi_prob,

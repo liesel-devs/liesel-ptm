@@ -241,6 +241,7 @@ def test_summaries_reject_boolean_intercept_shorthand() -> None:
 def test_summarise_nd_smooth_dist_adds_only_explicit_marginals() -> None:
     term, marginal, model = _tensor_with_marginal()
     assert term.model is model
+    generic_terms: dict[str, lsl.Var] = {"term": term, "marginal": marginal}
     samples = {
         term.coef.name: jnp.zeros(term.coef.value.shape),
         marginal.coef.name: jnp.full(marginal.coef.value.shape, 0.2),
@@ -256,11 +257,11 @@ def test_summarise_nd_smooth_dist_adds_only_explicit_marginals() -> None:
     )
     composed = ptm.summarise_nd_smooth_dist(
         ptm.onion_dist(nparam=4),
-        term,
+        generic_terms["term"],
         samples,
         rgrid=jnp.array([0.0]),
         newdata=newdata,
-        marginals=(marginal,),
+        marginals=(generic_terms["marginal"],),
     )
 
     assert not np.allclose(isolated["mean"], composed["mean"])

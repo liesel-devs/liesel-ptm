@@ -360,16 +360,19 @@ def test_plot_3d_smooth_dist_uses_automatic_facet_grid() -> None:
     term, model = _tensor3()
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+    generic_term: lsl.Var = term
+    generic_marginals: list[lsl.Var] = []
 
     plot = ptm.plot_3d_smooth_dist(
         ptm.onion_dist(nparam=4),
-        term,
+        generic_term,
         samples,
         x="longitude",
         y="latitude",
         ridge_by="z",
         rgrid=7,
         ngrid=2,
+        marginals=generic_marginals,
     )
 
     assert isinstance(plot.facet, p9.facet_grid)

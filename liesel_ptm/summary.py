@@ -308,7 +308,7 @@ def summarise_nd_smooth_dist(  # type: ignore[overload-cannot-match]
     newdata: NewData = None,
     ngrid: int = 5,
     newdata_meshgrid: bool = False,
-    marginals: Sequence[MarginalTerm] = (),
+    marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
     quantiles: Sequence[float] = (0.05, 0.5, 0.95),
     hdi_prob: float = 0.9,
@@ -324,13 +324,14 @@ def summarise_nd_smooth_dist(
     newdata: NewData = None,
     ngrid: int = 5,
     newdata_meshgrid: bool = False,
-    marginals: Sequence[MarginalTerm] = (),
+    marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
     quantiles: Sequence[float] = (0.05, 0.5, 0.95),
     hdi_prob: float = 0.9,
 ) -> pd.DataFrame:
     """Summarise a standardized PTM distribution induced by an nD smooth."""
     term = cast(MarginalTerm, term)
+    marginal_terms = cast(Sequence[MarginalTerm], marginals)
     inputs = term.input_obs
     mappings = {name: _category_mapping(term, name) for name in inputs}
     grid: dict[str, Any]
@@ -377,7 +378,7 @@ def summarise_nd_smooth_dist(
     coef = _normalise_sample_dims(
         _predict(term, samples, grid), value_ndim=term.value.ndim
     )
-    for marginal in marginals:
+    for marginal in marginal_terms:
         marginal_grid = {
             name: value for name, value in grid.items() if name in marginal.input_obs
         }
