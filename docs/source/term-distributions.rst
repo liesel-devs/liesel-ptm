@@ -38,11 +38,15 @@ and return a :class:`plotnine.ggplot`. Density plots use ridge baselines; CDF an
 transformation plots overlay curves. Posterior trajectories are disabled by default
 and can be enabled reproducibly with ``show_n_samples=`` and ``seed=``. Quantile
 ribbons are shown on ordinary distribution plots by default; ``hdi_prob=`` adds HDI
-display. Both uncertainty displays are opt-in for three-input and region glyphs.
-Panel grids are removed by default.
+display. Both uncertainty displays are opt-in for stacked three-input and region
+glyphs. Panel grids are removed by default.
 
-Density plots deliberately do not map color. A caller can add color and fill mappings
-afterward because the original covariate columns remain in the plot data::
+Grouped distribution plots map color, and uncertainty ribbons map fill, to the
+conditioning variable by default. This provides a legend identifying each ridge or
+curve. Numeric ridge values are ordered from low to high, so higher values have
+higher vertical offsets and use the high end of the color scale. Callers can replace
+the default scales directly. Reference distributions are always drawn as gray dotted
+lines::
 
    plot = ptm.plot_2d_smooth_dist(
        dist,
@@ -50,16 +54,19 @@ afterward because the original covariate columns remain in the plot data::
        samples,
        facet_by="season",
    )
-   plot + p9.aes(color="day", fill="day") + p9.scale_color_viridis_c()
+   plot + p9.scale_color_viridis_c() + p9.scale_fill_viridis_c()
 
 The one-dimensional density ridgeline hides its y-axis by default. Pass
-``show_y_axis=True`` to restore the conditioning-value labels.
+``show_y_axis=True`` to restore the conditioning-value labels. Two- and three-input
+density ridges use an otherwise empty ``Density`` axis because the ridge values are
+identified by the legend.
 
 Three-input tensors
 -------------------
 
-For a three-input tensor, two inputs supply paired anchor points and the third selects
-the local densities. Caller order is retained in the stack, facets, and legend::
+For a three-input tensor, two inputs define a facet grid and the third defines the
+density ridges within each facet. The conditioning data follows the same row-wise or
+mesh-grid convention as the two-input plot::
 
    ptm.plot_3d_smooth_dist(
        dist,
@@ -68,9 +75,26 @@ the local densities. Caller order is retained in the stack, facets, and legend::
        x="longitude",
        y="latitude",
        ridge_by="z",
+       newdata={
+           "longitude": [10.1, 10.5, 10.9],
+           "latitude": [50.1, 50.5, 50.9],
+           "z": [0.1, 0.5, 0.9],
+       },
+       newdata_meshgrid=True,
+   )
+
+Use the stacked variant to draw spatial density glyphs at paired anchor points.
+Ridge values use the same ascending order as the faceted plots::
+
+   ptm.plot_3d_smooth_dist_stacked(
+       dist,
+       tensor,
+       samples,
+       x="longitude",
+       y="latitude",
+       ridge_by="z",
        points={"longitude": longitude, "latitude": latitude},
        ridge_values=[0.1, 0.5, 0.9],
-       layout="stack",  # or "facet"
        point_size=3.5,
        point_shape="+",
        point_color="black",

@@ -16,6 +16,7 @@ from .model import LocScalePTM as LocScalePTM
 from .plots import plot_1d_smooth_dist as plot_1d_smooth_dist
 from .plots import plot_2d_smooth_dist as plot_2d_smooth_dist
 from .plots import plot_3d_smooth_dist as plot_3d_smooth_dist
+from .plots import plot_3d_smooth_dist_stacked as plot_3d_smooth_dist_stacked
 from .plots import plot_cluster_dist as plot_cluster_dist
 from .plots import plot_intercept_dist as plot_intercept_dist
 from .plots import plot_regions_dist as plot_regions_dist

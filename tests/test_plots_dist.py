@@ -6,8 +6,20 @@ import liesel_gam as gam
 import numpy as np
 import pandas as pd
 import plotnine as p9
+import pytest
 
 import liesel_ptm as ptm
+
+
+def _assert_gray_reference_lines(plot: p9.ggplot) -> None:
+    reference_layers = [
+        layer
+        for layer in plot.layers
+        if isinstance(layer.geom, p9.geom_line)
+        and layer.geom.aes_params.get("linetype") == "dotted"
+    ]
+    assert reference_layers
+    assert all(layer.geom.aes_params["color"] == "gray" for layer in reference_layers)
 
 
 def _basis(x):
@@ -107,6 +119,7 @@ def test_plot_intercept_dist_renders_mean_band_and_reference() -> None:
     assert isinstance(plot, p9.ggplot)
     assert len(figure.axes) == 1
     assert len(figure.axes[0].lines) >= 2
+    _assert_gray_reference_lines(plot)
     assert not any(
         line.get_visible()
         for line in figure.axes[0].get_xgridlines() + figure.axes[0].get_ygridlines()
@@ -145,7 +158,11 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     plot = ptm.plot_1d_smooth_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=11, ngrid=3
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        rgrid=11,
+        newdata={"x": np.asarray([1.0, 0.5, 0.0])},
     )
     figure = plot.draw()
     shown_axis = ptm.plot_1d_smooth_dist(
@@ -153,14 +170,19 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
         term,
         samples,
         rgrid=11,
-        ngrid=3,
+        newdata={"x": np.asarray([1.0, 0.5, 0.0])},
         show_y_axis=True,
     ).draw()
 
     assert isinstance(plot, p9.ggplot)
+    assert isinstance(plot.data, pd.DataFrame)
     assert not figure.axes[0].get_yticklabels()
     assert len(shown_axis.axes[0].get_yticklabels()) == 3
-    assert plot.mapping.get("color") is None
+    assert plot.mapping["color"] == "x"
+    assert plot.labels.color == "x"
+    _assert_gray_reference_lines(plot)
+    baselines = plot.data.groupby("x")["baseline"].first().sort_index()
+    assert np.all(np.diff(baselines) > 0)
     assert len(plot.layers) >= 4
 
 
@@ -208,19 +230,62 @@ def test_density_ridges_add_opt_in_hdi() -> None:
     assert len(hdi.draw().axes) == 1
 
 
-def test_plot_2d_smooth_dist_facets_density_without_color_mapping() -> None:
+def test_plot_2d_smooth_dist_colors_ridges_and_hides_y_tick_labels() -> None:
     term, model = _tensor2()
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     plot = ptm.plot_2d_smooth_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=7, ngrid=3
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        rgrid=7,
+        newdata={
+            "x": np.asarray([1.0, 0.5, 0.0]),
+            "z": np.asarray([2.0, 1.5, 1.0]),
+        },
+        newdata_meshgrid=True,
     )
     figure = plot.draw()
 
     assert isinstance(plot, p9.ggplot)
     assert len(figure.axes) == 3
-    assert plot.mapping.get("color") is None
+    assert plot.mapping["color"] == "x"
+    assert plot.labels.color == "x"
+    assert plot.labels.y == "Density"
+    _assert_gray_reference_lines(plot)
+    assert all(not axis.get_yticklabels() for axis in figure.axes)
+    assert isinstance(plot.data, pd.DataFrame)
+    baselines = plot.data.groupby("x")["baseline"].first().sort_index()
+    assert np.all(np.diff(baselines) > 0)
+
+
+@pytest.mark.parametrize(
+    ("quantity", "label"),
+    [
+        ("cdf", "CDF"),
+        ("transformation", "Transformation"),
+        ("transformation_raw", "Raw transformation"),
+    ],
+)
+def test_plot_2d_smooth_dist_labels_non_density_quantities(
+    quantity: str, label: str
+) -> None:
+    term, model = _tensor2()
+    assert term.model is model
+    samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+
+    plot = ptm.plot_2d_smooth_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        quantity=quantity,
+        rgrid=7,
+        ngrid=2,
+    )
+
+    assert plot.labels.y == label
+    _assert_gray_reference_lines(plot)
 
 
 def test_plot_2d_smooth_dist_supports_opt_in_trajectories() -> None:
@@ -248,12 +313,12 @@ def test_plot_2d_smooth_dist_supports_opt_in_trajectories() -> None:
     )
 
 
-def test_plot_3d_smooth_dist_preserves_ridge_order_and_marks_points() -> None:
+def test_plot_3d_smooth_dist_stacked_orders_ridges_and_marks_points() -> None:
     term, model = _tensor3()
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    plot = ptm.plot_3d_smooth_dist(
+    plot = ptm.plot_3d_smooth_dist_stacked(
         ptm.onion_dist(nparam=4),
         term,
         samples,
@@ -274,7 +339,14 @@ def test_plot_3d_smooth_dist_preserves_ridge_order_and_marks_points() -> None:
 
     assert isinstance(plot, p9.ggplot)
     assert isinstance(plot.data, pd.DataFrame)
-    assert list(plot.data["z"].cat.categories) == [0.8, 0.2]
+    assert pd.api.types.is_numeric_dtype(plot.data["z"])
+    baselines = (
+        plot.data.groupby(["longitude", "latitude", "z"])["baseline"]
+        .first()
+        .unstack("z")
+    )
+    assert np.all(baselines[0.8] > baselines[0.2])
+    assert plot.mapping["color"] == "z"
     assert plot.layers[-1].geom.aes_params == {
         "color": "red",
         "shape": "o",
@@ -284,7 +356,7 @@ def test_plot_3d_smooth_dist_preserves_ridge_order_and_marks_points() -> None:
     assert len(figure.axes[0].collections) >= 1
 
 
-def test_plot_3d_smooth_dist_can_facet_by_ridge_value() -> None:
+def test_plot_3d_smooth_dist_uses_automatic_facet_grid() -> None:
     term, model = _tensor3()
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
@@ -296,22 +368,112 @@ def test_plot_3d_smooth_dist_can_facet_by_ridge_value() -> None:
         x="longitude",
         y="latitude",
         ridge_by="z",
-        points={
+        rgrid=7,
+        ngrid=2,
+    )
+
+    assert isinstance(plot.facet, p9.facet_grid)
+    assert plot.facet.rows == ["longitude"]
+    assert plot.facet.cols == ["latitude"]
+    assert isinstance(plot.data, pd.DataFrame)
+    assert len(plot.data[["longitude", "latitude", "z"]].drop_duplicates()) == 8
+
+
+def test_plot_3d_smooth_dist_supports_rowwise_newdata() -> None:
+    term, model = _tensor3()
+    assert term.model is model
+    samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+
+    plot = ptm.plot_3d_smooth_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        x="longitude",
+        y="latitude",
+        ridge_by="z",
+        newdata={
+            "longitude": np.asarray([10.2, 10.8, 10.2]),
+            "latitude": np.asarray([50.3, 50.7, 50.3]),
+            "z": np.asarray([0.8, 0.2, 0.2]),
+        },
+        rgrid=7,
+        ci_quantiles=None,
+    )
+
+    assert isinstance(plot.data, pd.DataFrame)
+    assert len(plot.data[["longitude", "latitude", "z"]].drop_duplicates()) == 3
+
+
+def test_plot_3d_smooth_dist_meshgrid_draws_ordered_density_ridges() -> None:
+    term, model = _tensor3()
+    assert term.model is model
+    samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+
+    plot = ptm.plot_3d_smooth_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        x="longitude",
+        y="latitude",
+        ridge_by="z",
+        newdata={
             "longitude": np.asarray([10.2, 10.8]),
             "latitude": np.asarray([50.3, 50.7]),
+            "z": np.asarray([0.8, 0.2]),
         },
-        ridge_values=[0.8, 0.2],
-        rgrid=9,
-        layout="facet",
+        newdata_meshgrid=True,
+        rgrid=7,
     )
     figure = plot.draw()
 
-    assert plot.layers[-1].geom.aes_params["shape"] == "x"
-    assert len(figure.axes) == 2
-    assert all(axis.collections for axis in figure.axes)
+    assert isinstance(plot.data, pd.DataFrame)
+    assert len(plot.data[["longitude", "latitude", "z"]].drop_duplicates()) == 8
+    assert plot.mapping["x"] == "r"
+    assert plot.mapping["color"] == "z"
+    assert plot.labels.color == "z"
+    _assert_gray_reference_lines(plot)
+    assert plot.labels.y == "Density"
+    assert any(isinstance(layer.geom, p9.geom_ribbon) for layer in plot.layers)
+    assert len(figure.axes) == 4
+    assert all(not axis.get_yticklabels() for axis in figure.axes)
+    baselines = plot.data.groupby("z")["baseline"].first().sort_index()
+    assert np.all(np.diff(baselines) > 0)
 
 
-def test_plot_3d_smooth_dist_adds_opt_in_hdi() -> None:
+def test_plot_3d_smooth_dist_adds_opt_in_hdi_and_trajectories() -> None:
+    term, model = _tensor3()
+    assert term.model is model
+    samples = {
+        term.coef.name: jnp.arange(3 * term.coef.value.size, dtype=float).reshape(3, -1)
+        / 100.0
+    }
+    kwargs: dict[str, Any] = {
+        "x": "longitude",
+        "y": "latitude",
+        "ridge_by": "z",
+        "newdata": {
+            "longitude": np.asarray([10.2, 10.2]),
+            "latitude": np.asarray([50.3, 50.3]),
+            "z": np.asarray([0.8, 0.2]),
+        },
+        "rgrid": 7,
+        "ci_quantiles": None,
+    }
+
+    default = ptm.plot_3d_smooth_dist(ptm.onion_dist(nparam=4), term, samples, **kwargs)
+    hdi = ptm.plot_3d_smooth_dist(
+        ptm.onion_dist(nparam=4), term, samples, hdi_prob=0.8, **kwargs
+    )
+    sampled = ptm.plot_3d_smooth_dist(
+        ptm.onion_dist(nparam=4), term, samples, show_n_samples=2, **kwargs
+    )
+
+    assert len(hdi.layers) == len(default.layers) + 1
+    assert len(sampled.layers) == len(default.layers) + 1
+    assert len(sampled.draw().axes) == 1
+
+
+def test_plot_3d_smooth_dist_stacked_adds_opt_in_hdi() -> None:
     term, model = _tensor3()
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
@@ -327,8 +489,10 @@ def test_plot_3d_smooth_dist_adds_opt_in_hdi() -> None:
         "rgrid": 9,
     }
 
-    default = ptm.plot_3d_smooth_dist(ptm.onion_dist(nparam=4), term, samples, **kwargs)
-    hdi = ptm.plot_3d_smooth_dist(
+    default = ptm.plot_3d_smooth_dist_stacked(
+        ptm.onion_dist(nparam=4), term, samples, **kwargs
+    )
+    hdi = ptm.plot_3d_smooth_dist_stacked(
         ptm.onion_dist(nparam=4),
         term,
         samples,
@@ -346,9 +510,8 @@ def test_plot_cluster_dist_can_show_and_hide_unobserved_levels() -> None:
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    shown = ptm.plot_cluster_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=9
-    ).draw()
+    shown_plot = ptm.plot_cluster_dist(ptm.onion_dist(nparam=4), term, samples, rgrid=9)
+    shown = shown_plot.draw()
     hidden = ptm.plot_cluster_dist(
         ptm.onion_dist(nparam=4),
         term,
@@ -359,6 +522,8 @@ def test_plot_cluster_dist_can_show_and_hide_unobserved_levels() -> None:
 
     assert len(shown.axes[0].get_yticks()) == 3
     assert len(hidden.axes[0].get_yticks()) == 2
+    assert shown_plot.mapping["color"] == "group"
+    _assert_gray_reference_lines(shown_plot)
 
 
 def test_plot_cluster_dist_supports_opt_in_trajectories() -> None:

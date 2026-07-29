@@ -1,5 +1,5 @@
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, cast, overload
+from typing import Any, cast, overload
 
 import jax.numpy as jnp
 import liesel.model as lsl
@@ -27,13 +27,35 @@ from .summary import (
 )
 from .util.plots import plot_loss, plot_param_history
 
-_QUANTITIES = {"density", "cdf", "transformation", "transformation_raw"}
-_NO_PANEL_GRID = p9.theme_light() + p9.theme(panel_grid=p9.element_blank())
-_NO_Y_AXIS = p9.theme(
-    axis_text_y=p9.element_blank(),
-    axis_ticks_major_y=p9.element_blank(),
-    axis_title_y=p9.element_blank(),
-)
+_QUANTITY_LABELS = {
+    "density": "Density",
+    "cdf": "CDF",
+    "transformation": "Transformation",
+    "transformation_raw": "Raw transformation",
+}
+_QUANTITIES = set(_QUANTITY_LABELS)
+
+
+def _no_panel_grid() -> p9.theme:
+    return p9.theme_light() + p9.theme(panel_grid=p9.element_blank())
+
+
+def _no_y_axis() -> p9.theme:
+    return p9.theme(
+        axis_text_y=p9.element_blank(),
+        axis_ticks_major_y=p9.element_blank(),
+        axis_title_y=p9.element_blank(),
+    )
+
+
+def _ordered_groups(values: pd.Series) -> list[Any]:
+    if isinstance(values.dtype, pd.CategoricalDtype):
+        present = set(values.dropna())
+        return [value for value in values.cat.categories if value in present]
+    try:
+        return sorted(pd.unique(values))
+    except TypeError:
+        return list(pd.unique(values))
 
 
 def _reference_data(
@@ -85,9 +107,76 @@ def _plot_curves(
             data=reference,
             inherit_aes=False,
             linetype="dotted",
+            color="gray",
         )
-        + p9.labs(x="r", y=quantity)
-        + _NO_PANEL_GRID
+        + p9.labs(x="r", y=_QUANTITY_LABELS[quantity])
+        + _no_panel_grid()
+    )
+
+
+def _plot_density_ridges(
+    summary: pd.DataFrame,
+    *,
+    reference: pd.DataFrame,
+    ridge_by: str,
+    ridge_spacing: float | None,
+    ci_quantiles: tuple[float, float] | None,
+    hdi_prob: float | None,
+    trajectories: pd.DataFrame | None = None,
+) -> p9.ggplot:
+    groups = _ordered_groups(summary[ridge_by])
+    if ridge_spacing is None:
+        ridge_spacing = 1.15 * float(summary["mean"].max())
+    baselines = np.arange(len(groups)) * ridge_spacing
+    baseline_for = dict(zip(groups, baselines))
+    summary["baseline"] = summary[ridge_by].map(baseline_for)
+    summary["plot_mean"] = summary["mean"] + summary["baseline"]
+
+    plot = p9.ggplot(
+        summary,
+        p9.aes("r", "plot_mean", group=ridge_by, color=ridge_by),
+    )
+    if ci_quantiles is not None:
+        summary["plot_low"] = summary[f"q_{ci_quantiles[0]}"] + summary["baseline"]
+        summary["plot_high"] = summary[f"q_{ci_quantiles[1]}"] + summary["baseline"]
+        plot += p9.geom_ribbon(
+            p9.aes(ymin="plot_low", ymax="plot_high", fill=ridge_by),
+            alpha=0.25,
+        )
+    if hdi_prob is not None:
+        summary["plot_hdi_low"] = summary["hdi_low"] + summary["baseline"]
+        summary["plot_hdi_high"] = summary["hdi_high"] + summary["baseline"]
+        plot += p9.geom_ribbon(
+            p9.aes(ymin="plot_hdi_low", ymax="plot_hdi_high", fill=ridge_by),
+            alpha=0.25,
+        )
+    if trajectories is not None:
+        trajectories["plot_value"] = trajectories["value"] + trajectories[ridge_by].map(
+            baseline_for
+        )
+        plot += p9.geom_line(
+            p9.aes(y="plot_value", group="trajectory"),
+            data=trajectories,
+            alpha=0.25,
+        )
+    reference["plot_reference"] = reference["reference"] + reference[ridge_by].map(
+        baseline_for
+    )
+    return (
+        plot
+        + p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
+        + p9.geom_line(
+            p9.aes("r", "plot_reference", group=ridge_by),
+            data=reference,
+            inherit_aes=False,
+            linetype="dotted",
+            color="gray",
+            alpha=0.5,
+        )
+        + p9.geom_line()
+        + p9.scale_y_continuous(breaks=[])
+        + p9.labs(x="r", y="Density", color=ridge_by, fill=ridge_by)
+        + _no_panel_grid()
     )
 
 
@@ -159,6 +248,52 @@ def _trajectory_data_grid(
     for name, covariate in covariates.items():
         data[name] = np.tile(np.repeat(np.asarray(covariate), len(r)), n)
     return data
+
+
+def _nd_trajectory_data(
+    dist: DistInput,
+    term: MarginalTerm,
+    samples: Mapping[str, ArrayLike],
+    summary: pd.DataFrame,
+    *,
+    inputs: Sequence[str],
+    quantity: str,
+    marginals: Sequence[MarginalTerm],
+    intercept: Intercept,
+    n: int | None,
+    seed: int,
+) -> pd.DataFrame | None:
+    if n is None or n <= 0:
+        return None
+    combinations = summary[list(inputs)].drop_duplicates()
+    grid = {name: combinations[name].to_numpy() for name in inputs}
+    coef = _normalise_sample_dims(_predict(term, samples, grid), term.value.ndim)
+    for marginal in marginals:
+        marginal_grid = {
+            name: value for name, value in grid.items() if name in marginal.input_obs
+        }
+        coef = coef + _normalise_sample_dims(
+            _predict(marginal, samples, marginal_grid),
+            marginal.value.ndim,
+        )
+    if intercept is not None:
+        intercept_coef = _normalise_sample_dims(
+            _predict(intercept, samples), intercept.value.ndim
+        )
+        coef = coef + intercept_coef[..., None, :]
+    trajectories = _trajectory_data_grid(
+        dist,
+        coef,
+        summary["r"].drop_duplicates().to_numpy(),
+        quantity=quantity,
+        n=n,
+        seed=seed,
+        covariates=grid,
+    )
+    trajectories["trajectory"] = trajectories["sample"].astype(str)
+    for name in inputs:
+        trajectories["trajectory"] += ":" + trajectories[name].astype(str)
+    return trajectories
 
 
 @overload
@@ -313,7 +448,7 @@ def plot_1d_smooth_dist(
     )
     summary = summary.loc[summary["quantity"] == quantity].copy()
     covariate = next(iter(term.input_obs))
-    groups = list(pd.unique(summary[covariate]))
+    groups = _ordered_groups(summary[covariate])
     trajectories = None
     if show_n_samples is not None and show_n_samples > 0:
         grid = {covariate: np.asarray(groups)}
@@ -339,12 +474,16 @@ def plot_1d_smooth_dist(
         )
 
     if quantity != "density":
-        plot = p9.ggplot(summary, p9.aes("r", "mean", group=covariate))
+        plot = p9.ggplot(
+            summary,
+            p9.aes("r", "mean", group=covariate, color=covariate),
+        )
         if ci_quantiles is not None:
             plot += p9.geom_ribbon(
                 p9.aes(
                     ymin=f"q_{ci_quantiles[0]}",
                     ymax=f"q_{ci_quantiles[1]}",
+                    fill=covariate,
                 ),
                 alpha=0.25,
             )
@@ -368,9 +507,15 @@ def plot_1d_smooth_dist(
                 data=reference,
                 inherit_aes=False,
                 linetype="dotted",
+                color="gray",
             )
-            + p9.labs(x="r", y=quantity)
-            + _NO_PANEL_GRID
+            + p9.labs(
+                x="r",
+                y=_QUANTITY_LABELS[quantity],
+                color=covariate,
+                fill=covariate,
+            )
+            + _no_panel_grid()
         )
 
     if ridge_spacing is None:
@@ -390,17 +535,20 @@ def plot_1d_smooth_dist(
         else summary["mean"]
     )
 
-    plot = p9.ggplot(summary, p9.aes("r", "plot_mean", group=covariate))
+    plot = p9.ggplot(
+        summary,
+        p9.aes("r", "plot_mean", group=covariate, color=covariate),
+    )
     if ci_quantiles is not None:
         plot += p9.geom_ribbon(
-            p9.aes(ymin="plot_low", ymax="plot_high"),
+            p9.aes(ymin="plot_low", ymax="plot_high", fill=covariate),
             alpha=0.25,
         )
     if hdi_prob is not None:
         summary["plot_hdi_low"] = summary["hdi_low"] + summary["baseline"]
         summary["plot_hdi_high"] = summary["hdi_high"] + summary["baseline"]
         plot += p9.geom_ribbon(
-            p9.aes(ymin="plot_hdi_low", ymax="plot_hdi_high"),
+            p9.aes(ymin="plot_hdi_low", ymax="plot_hdi_high", fill=covariate),
             alpha=0.25,
         )
     if trajectories is not None:
@@ -439,17 +587,18 @@ def plot_1d_smooth_dist(
             data=reference,
             inherit_aes=False,
             linetype="dotted",
+            color="gray",
             alpha=0.5,
         )
         + p9.geom_line()
         + p9.scale_y_continuous(
             breaks=baselines.tolist(), labels=[str(v) for v in groups]
         )
-        + p9.labs(x="r", y=covariate)
-        + _NO_PANEL_GRID
+        + p9.labs(x="r", y=covariate, color=covariate, fill=covariate)
+        + _no_panel_grid()
     )
     if not show_y_axis:
-        plot += _NO_Y_AXIS
+        plot += _no_y_axis()
     return plot
 
 
@@ -546,38 +695,18 @@ def plot_2d_smooth_dist(
         hdi_prob=0.9 if hdi_prob is None else hdi_prob,
     )
     summary = summary.loc[summary["quantity"] == quantity].copy()
-    trajectories = None
-    if show_n_samples is not None and show_n_samples > 0:
-        combinations = summary[inputs].drop_duplicates()
-        grid = {name: combinations[name].to_numpy() for name in inputs}
-        coef = _normalise_sample_dims(_predict(term, samples, grid), term.value.ndim)
-        for marginal in marginals:
-            marginal_grid = {
-                name: value
-                for name, value in grid.items()
-                if name in marginal.input_obs
-            }
-            coef = coef + _normalise_sample_dims(
-                _predict(marginal, samples, marginal_grid),
-                marginal.value.ndim,
-            )
-        if intercept is not None:
-            intercept_coef = _normalise_sample_dims(
-                _predict(intercept, samples), intercept.value.ndim
-            )
-            coef = coef + intercept_coef[..., None, :]
-        trajectories = _trajectory_data_grid(
-            dist,
-            coef,
-            summary["r"].drop_duplicates().to_numpy(),
-            quantity=quantity,
-            n=show_n_samples,
-            seed=seed,
-            covariates=grid,
-        )
-        trajectories["trajectory"] = trajectories["sample"].astype(str)
-        for name in inputs:
-            trajectories["trajectory"] += ":" + trajectories[name].astype(str)
+    trajectories = _nd_trajectory_data(
+        dist,
+        term,
+        samples,
+        summary,
+        inputs=inputs,
+        quantity=quantity,
+        marginals=marginals,
+        intercept=intercept,
+        n=show_n_samples,
+        seed=seed,
+    )
 
     if quantity != "density":
         plot = p9.ggplot(
@@ -620,42 +749,18 @@ def plot_2d_smooth_dist(
                 data=reference,
                 inherit_aes=False,
                 linetype="dotted",
+                color="gray",
             )
             + p9.facet_wrap(f"~{facet_by}")
-            + p9.labs(x="r", y=quantity)
-            + _NO_PANEL_GRID
+            + p9.labs(
+                x="r",
+                y=_QUANTITY_LABELS[quantity],
+                color=ridge_by,
+                fill=ridge_by,
+            )
+            + _no_panel_grid()
         )
 
-    groups = list(pd.unique(summary[ridge_by]))
-    if ridge_spacing is None:
-        ridge_spacing = 1.15 * float(summary["mean"].max())
-    baselines = np.arange(len(groups)) * ridge_spacing
-    summary["baseline"] = summary[ridge_by].map(dict(zip(groups, baselines)))
-    summary["plot_mean"] = summary["mean"] + summary["baseline"]
-    plot = p9.ggplot(summary, p9.aes("r", "plot_mean", group=ridge_by))
-    if ci_quantiles is not None:
-        summary["plot_low"] = summary[f"q_{ci_quantiles[0]}"] + summary["baseline"]
-        summary["plot_high"] = summary[f"q_{ci_quantiles[1]}"] + summary["baseline"]
-        plot += p9.geom_ribbon(
-            p9.aes(ymin="plot_low", ymax="plot_high"),
-            alpha=0.25,
-        )
-    if hdi_prob is not None:
-        summary["plot_hdi_low"] = summary["hdi_low"] + summary["baseline"]
-        summary["plot_hdi_high"] = summary["hdi_high"] + summary["baseline"]
-        plot += p9.geom_ribbon(
-            p9.aes(ymin="plot_hdi_low", ymax="plot_hdi_high"),
-            alpha=0.25,
-        )
-    if trajectories is not None:
-        trajectories["plot_value"] = trajectories["value"] + trajectories[ridge_by].map(
-            dict(zip(groups, baselines))
-        )
-        plot += p9.geom_line(
-            p9.aes(y="plot_value", group="trajectory"),
-            data=trajectories,
-            alpha=0.25,
-        )
     reference = (
         summary[[facet_by, ridge_by]]
         .drop_duplicates()
@@ -669,27 +774,15 @@ def plot_2d_smooth_dist(
             how="cross",
         )
     )
-    reference["plot_reference"] = reference["reference"] + reference[ridge_by].map(
-        dict(zip(groups, baselines))
-    )
-    return (
-        plot
-        + p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
-        + p9.geom_line(
-            p9.aes("r", "plot_reference", group=ridge_by),
-            data=reference,
-            inherit_aes=False,
-            linetype="dotted",
-            alpha=0.5,
-        )
-        + p9.geom_line()
-        + p9.facet_wrap(f"~{facet_by}")
-        + p9.scale_y_continuous(
-            breaks=baselines.tolist(), labels=[str(v) for v in groups]
-        )
-        + p9.labs(x="r", y=ridge_by)
-        + _NO_PANEL_GRID
-    )
+    return _plot_density_ridges(
+        summary,
+        reference=reference,
+        ridge_by=ridge_by,
+        ridge_spacing=ridge_spacing,
+        ci_quantiles=ci_quantiles,
+        hdi_prob=hdi_prob,
+        trajectories=trajectories,
+    ) + p9.facet_wrap(f"~{facet_by}", labeller="label_both")
 
 
 @overload
@@ -705,10 +798,136 @@ def plot_3d_smooth_dist(
     x: str,
     y: str,
     ridge_by: str,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    newdata_meshgrid: bool = False,
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
+    ridge_spacing: float | None = None,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot: ...
+
+
+@overload
+def plot_3d_smooth_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    x: str,
+    y: str,
+    ridge_by: str,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    newdata_meshgrid: bool = False,
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
+    ridge_spacing: float | None = None,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot: ...
+
+
+def plot_3d_smooth_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    x: str,
+    y: str,
+    ridge_by: str,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    newdata_meshgrid: bool = False,
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
+    ridge_spacing: float | None = None,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+    show_n_samples: int | None = None,
+    seed: int = 1,
+) -> p9.ggplot:
+    """Plot faceted density ridges for a three-dimensional smooth."""
+    term = cast(MarginalTerm, term)
+    inputs = list(term.input_obs)
+    if len(inputs) != 3 or set((x, y, ridge_by)) != set(inputs):
+        raise ValueError("x, y, and ridge_by must name the term's three inputs.")
+
+    quantiles = (0.05, 0.5, 0.95) if ci_quantiles is None else ci_quantiles
+    summary = summarise_nd_smooth_dist(
+        dist,
+        term,
+        samples,
+        rgrid=rgrid,
+        newdata=newdata,
+        ngrid=ngrid,
+        newdata_meshgrid=newdata_meshgrid,
+        marginals=marginals,
+        intercept=intercept,
+        quantiles=quantiles,
+        hdi_prob=0.9 if hdi_prob is None else hdi_prob,
+    )
+    summary = summary.loc[summary["quantity"] == "density"].copy()
+    trajectories = _nd_trajectory_data(
+        dist,
+        term,
+        samples,
+        summary,
+        inputs=inputs,
+        quantity="density",
+        marginals=marginals,
+        intercept=intercept,
+        n=show_n_samples,
+        seed=seed,
+    )
+    reference = (
+        summary[[x, y, ridge_by]]
+        .drop_duplicates()
+        .merge(
+            _reference_data(
+                dist,
+                term,
+                summary["r"].drop_duplicates().to_numpy(),
+                "density",
+            ),
+            how="cross",
+        )
+    )
+    return _plot_density_ridges(
+        summary,
+        reference=reference,
+        ridge_by=ridge_by,
+        ridge_spacing=ridge_spacing,
+        ci_quantiles=ci_quantiles,
+        hdi_prob=hdi_prob,
+        trajectories=trajectories,
+    ) + p9.facet_grid(rows=x, cols=y, labeller="label_both")
+
+
+@overload
+def plot_3d_smooth_dist_stacked(
+    dist: DistInput,
+    term: (
+        gam.MultivariateStrctTerm
+        | gam.MultivariateStrctInteractionTerm
+        | gam.MultivariateTPTerm
+    ),
+    samples: Mapping[str, ArrayLike],
+    *,
+    x: str,
+    y: str,
+    ridge_by: str,
     points: Mapping[str, ArrayLike],
     ridge_values: Sequence[Any],
     rgrid: int | ArrayLike = 150,
-    layout: Literal["stack", "facet"] = "stack",
     marginals: Sequence[MarginalTerm] = (),
     intercept: Intercept = None,
     glyph_width: float | None = None,
@@ -723,7 +942,7 @@ def plot_3d_smooth_dist(
 
 
 @overload
-def plot_3d_smooth_dist(  # type: ignore[overload-cannot-match]
+def plot_3d_smooth_dist_stacked(  # type: ignore[overload-cannot-match]
     dist: DistInput,
     term: lsl.Var,
     samples: Mapping[str, ArrayLike],
@@ -734,7 +953,6 @@ def plot_3d_smooth_dist(  # type: ignore[overload-cannot-match]
     points: Mapping[str, ArrayLike],
     ridge_values: Sequence[Any],
     rgrid: int | ArrayLike = 150,
-    layout: Literal["stack", "facet"] = "stack",
     marginals: Sequence[MarginalTerm] = (),
     intercept: Intercept = None,
     glyph_width: float | None = None,
@@ -748,7 +966,7 @@ def plot_3d_smooth_dist(  # type: ignore[overload-cannot-match]
 ) -> p9.ggplot: ...
 
 
-def plot_3d_smooth_dist(
+def plot_3d_smooth_dist_stacked(
     dist: DistInput,
     term: lsl.Var,
     samples: Mapping[str, ArrayLike],
@@ -759,7 +977,6 @@ def plot_3d_smooth_dist(
     points: Mapping[str, ArrayLike],
     ridge_values: Sequence[Any],
     rgrid: int | ArrayLike = 150,
-    layout: Literal["stack", "facet"] = "stack",
     marginals: Sequence[MarginalTerm] = (),
     intercept: Intercept = None,
     glyph_width: float | None = None,
@@ -771,18 +988,16 @@ def plot_3d_smooth_dist(
     ci_quantiles: tuple[float, float] | None = None,
     hdi_prob: float | None = None,
 ) -> p9.ggplot:
-    """Plot local density glyphs for a three-dimensional smooth."""
+    """Plot stacked local density glyphs for a three-dimensional smooth."""
     term = cast(MarginalTerm, term)
     inputs = list(term.input_obs)
     if len(inputs) != 3 or set((x, y, ridge_by)) != set(inputs):
         raise ValueError("x, y, and ridge_by must name the term's three inputs.")
-    if layout not in {"stack", "facet"}:
-        raise ValueError("layout must be 'stack' or 'facet'.")
     if set(points) != {x, y}:
         raise ValueError(f"points must contain exactly {x!r} and {y!r}.")
     xpoints = np.asarray(points[x])
     ypoints = np.asarray(points[y])
-    ridge_values = list(ridge_values)
+    ridge_values = _ordered_groups(pd.Series(ridge_values))
     if len(xpoints) != len(ypoints) or not len(xpoints):
         raise ValueError("Point coordinate arrays must have the same nonzero length.")
     if not ridge_values:
@@ -807,9 +1022,10 @@ def plot_3d_smooth_dist(
         hdi_prob=0.9 if hdi_prob is None else hdi_prob,
     )
     summary = summary.loc[summary["quantity"] == "density"].copy()
-    summary[ridge_by] = pd.Categorical(
-        summary[ridge_by], categories=ridge_values, ordered=True
-    )
+    if isinstance(summary[ridge_by].dtype, pd.CategoricalDtype):
+        summary[ridge_by] = summary[ridge_by].cat.set_categories(
+            ridge_values, ordered=True
+        )
 
     xspan = float(np.ptp(xpoints)) or 1.0
     yspan = float(np.ptp(ypoints)) or 1.0
@@ -819,10 +1035,12 @@ def plot_3d_smooth_dist(
     rspan = float(summary["r"].max() - summary["r"].min()) or 1.0
     rmid = 0.5 * float(summary["r"].max() + summary["r"].min())
     density_scale = float(summary["mean"].max()) or 1.0
-    ridge_index = summary[ridge_by].cat.codes.to_numpy()
-    displacement = ridge_index * ridge_spacing if layout == "stack" else 0.0
+    ridge_index = np.asarray(
+        summary[ridge_by].map(dict(zip(ridge_values, range(len(ridge_values))))),
+        dtype=float,
+    )
     summary["glyph_x"] = summary[x] + (summary["r"] - rmid) / rspan * glyph_width
-    summary["baseline"] = summary[y] + displacement
+    summary["baseline"] = summary[y] + ridge_index * ridge_spacing
     summary["glyph_y"] = (
         summary["baseline"] + summary["mean"] / density_scale * glyph_height
     )
@@ -866,15 +1084,6 @@ def plot_3d_smooth_dist(
     plot += p9.geom_line()
 
     anchors = pd.DataFrame({x: xpoints, y: ypoints})
-    if layout == "facet":
-        anchors = pd.concat(
-            [anchors.assign(**{ridge_by: value}) for value in ridge_values],
-            ignore_index=True,
-        )
-        anchors[ridge_by] = pd.Categorical(
-            anchors[ridge_by], categories=ridge_values, ordered=True
-        )
-        plot += p9.facet_wrap(f"~{ridge_by}")
     return (
         plot
         + p9.geom_point(
@@ -887,7 +1096,7 @@ def plot_3d_smooth_dist(
         )
         + p9.coord_equal()
         + p9.labs(x=x, y=y, color=ridge_by, fill=ridge_by)
-        + _NO_PANEL_GRID
+        + _no_panel_grid()
     )
 
 
@@ -968,7 +1177,7 @@ def plot_cluster_dist(
     if not show_unobserved:
         summary = summary.loc[summary["observed"]].copy()
     category = next(iter(term.input_obs))
-    groups = list(pd.unique(summary[category]))
+    groups = _ordered_groups(summary[category])
     trajectories = None
     if show_n_samples is not None and show_n_samples > 0:
         mapping = getattr(term.marginal_terms[0], "mapping", None)
@@ -1023,6 +1232,7 @@ def plot_cluster_dist(
                 "mean",
                 group=category,
                 linetype="observed",
+                color=category,
             ),
         )
         if trajectories is not None:
@@ -1036,6 +1246,7 @@ def plot_cluster_dist(
                 p9.aes(
                     ymin=f"q_{ci_quantiles[0]}",
                     ymax=f"q_{ci_quantiles[1]}",
+                    fill=category,
                 ),
                 alpha=0.25,
             )
@@ -1053,9 +1264,15 @@ def plot_cluster_dist(
                 data=reference,
                 inherit_aes=False,
                 linetype="dotted",
+                color="gray",
             )
-            + p9.labs(x="r", y=quantity)
-            + _NO_PANEL_GRID
+            + p9.labs(
+                x="r",
+                y=_QUANTITY_LABELS[quantity],
+                color=category,
+                fill=category,
+            )
+            + _no_panel_grid()
         )
 
     if ridge_spacing is None:
@@ -1072,20 +1289,21 @@ def plot_cluster_dist(
             "plot_mean",
             group=category,
             linetype="observed",
+            color=category,
         ),
     )
     if ci_quantiles is not None:
         summary["plot_low"] = summary[f"q_{ci_quantiles[0]}"] + summary["baseline"]
         summary["plot_high"] = summary[f"q_{ci_quantiles[1]}"] + summary["baseline"]
         plot += p9.geom_ribbon(
-            p9.aes(ymin="plot_low", ymax="plot_high"),
+            p9.aes(ymin="plot_low", ymax="plot_high", fill=category),
             alpha=0.25,
         )
     if hdi_prob is not None:
         summary["plot_hdi_low"] = summary["hdi_low"] + summary["baseline"]
         summary["plot_hdi_high"] = summary["hdi_high"] + summary["baseline"]
         plot += p9.geom_ribbon(
-            p9.aes(ymin="plot_hdi_low", ymax="plot_hdi_high"),
+            p9.aes(ymin="plot_hdi_low", ymax="plot_hdi_high", fill=category),
             alpha=0.25,
         )
     if trajectories is not None:
@@ -1124,14 +1342,21 @@ def plot_cluster_dist(
             data=reference,
             inherit_aes=False,
             linetype="dotted",
+            color="gray",
             alpha=0.5,
         )
         + p9.geom_line()
         + p9.scale_y_continuous(
             breaks=baselines.tolist(), labels=[str(v) for v in groups]
         )
-        + p9.labs(x="r", y=category, linetype="Observed")
-        + _NO_PANEL_GRID
+        + p9.labs(
+            x="r",
+            y=category,
+            color=category,
+            fill=category,
+            linetype="Observed",
+        )
+        + _no_panel_grid()
     )
 
 
@@ -1346,7 +1571,7 @@ def plot_regions_dist(
         + p9.geom_line()
         + p9.coord_equal()
         + p9.labs(x="x", y="y")
-        + _NO_PANEL_GRID
+        + _no_panel_grid()
     )
 
 
@@ -1354,6 +1579,7 @@ __all__ = [
     "plot_1d_smooth_dist",
     "plot_2d_smooth_dist",
     "plot_3d_smooth_dist",
+    "plot_3d_smooth_dist_stacked",
     "plot_cluster_dist",
     "plot_regions_dist",
     "plot_intercept_dist",

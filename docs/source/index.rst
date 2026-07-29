@@ -88,6 +88,7 @@ API Reference
     ~liesel_ptm.plot_1d_smooth_dist
     ~liesel_ptm.plot_2d_smooth_dist
     ~liesel_ptm.plot_3d_smooth_dist
+    ~liesel_ptm.plot_3d_smooth_dist_stacked
     ~liesel_ptm.plot_cluster_dist
     ~liesel_ptm.plot_regions_dist
 
