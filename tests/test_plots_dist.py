@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import plotnine as p9
 import pytest
+from matplotlib.text import Text
 
 import liesel_ptm as ptm
 
@@ -20,6 +21,12 @@ def _assert_gray_reference_lines(plot: p9.ggplot) -> None:
     ]
     assert reference_layers
     assert all(layer.geom.aes_params["color"] == "gray" for layer in reference_layers)
+
+
+def _assert_ridge_ribbons_are_fill_only(plot: p9.ggplot) -> None:
+    ribbons = [layer for layer in plot.layers if isinstance(layer.geom, p9.geom_ribbon)]
+    assert ribbons
+    assert all(layer.geom.aes_params["color"] == "none" for layer in ribbons)
 
 
 def _basis(x):
@@ -181,9 +188,40 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
     assert plot.mapping["color"] == "x"
     assert plot.labels.color == "x"
     _assert_gray_reference_lines(plot)
+    _assert_ridge_ribbons_are_fill_only(plot)
+    assert any(
+        isinstance(layer.geom, p9.geom_line) and not layer.geom.aes_params
+        for layer in plot.layers
+    )
     baselines = plot.data.groupby("x")["baseline"].first().sort_index()
     assert np.all(np.diff(baselines) > 0)
-    assert len(plot.layers) >= 4
+
+
+def test_plot_labels_round_numeric_values_to_two_decimals() -> None:
+    term, model = _tensor3()
+    assert term.model is model
+    samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+
+    figure = ptm.plot_3d_smooth_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        x="longitude",
+        y="latitude",
+        ridge_by="z",
+        rgrid=7,
+        ngrid=4,
+    ).draw()
+
+    numeric_labels = [
+        text.get_text()
+        for text in figure.findobj(Text)
+        if any(character.isdigit() for character in text.get_text())
+    ]
+    assert numeric_labels
+    assert all(
+        len(label.rpartition(".")[2]) <= 2 for label in numeric_labels if "." in label
+    )
 
 
 def test_plot_1d_smooth_dist_supports_opt_in_trajectories() -> None:
@@ -227,6 +265,7 @@ def test_density_ridges_add_opt_in_hdi() -> None:
     )
 
     assert len(hdi.layers) > len(default.layers)
+    _assert_ridge_ribbons_are_fill_only(hdi)
     assert len(hdi.draw().axes) == 1
 
 
@@ -254,6 +293,7 @@ def test_plot_2d_smooth_dist_colors_ridges_and_hides_y_tick_labels() -> None:
     assert plot.labels.color == "x"
     assert plot.labels.y == "Density"
     _assert_gray_reference_lines(plot)
+    _assert_ridge_ribbons_are_fill_only(plot)
     assert all(not axis.get_yticklabels() for axis in figure.axes)
     assert isinstance(plot.data, pd.DataFrame)
     baselines = plot.data.groupby("x")["baseline"].first().sort_index()
@@ -435,6 +475,7 @@ def test_plot_3d_smooth_dist_meshgrid_draws_ordered_density_ridges() -> None:
     assert plot.mapping["color"] == "z"
     assert plot.labels.color == "z"
     _assert_gray_reference_lines(plot)
+    _assert_ridge_ribbons_are_fill_only(plot)
     assert plot.labels.y == "Density"
     assert any(isinstance(layer.geom, p9.geom_ribbon) for layer in plot.layers)
     assert len(figure.axes) == 4
@@ -505,6 +546,7 @@ def test_plot_3d_smooth_dist_stacked_adds_opt_in_hdi() -> None:
     )
 
     assert len(hdi.layers) > len(default.layers)
+    _assert_ridge_ribbons_are_fill_only(hdi)
     assert len(hdi.draw().axes) == 1
 
 
@@ -527,6 +569,7 @@ def test_plot_cluster_dist_can_show_and_hide_unobserved_levels() -> None:
     assert len(hidden.axes[0].get_yticks()) == 2
     assert shown_plot.mapping["color"] == "group"
     _assert_gray_reference_lines(shown_plot)
+    _assert_ridge_ribbons_are_fill_only(shown_plot)
 
 
 def test_plot_cluster_dist_supports_opt_in_trajectories() -> None:

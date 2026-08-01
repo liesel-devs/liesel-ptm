@@ -48,6 +48,46 @@ def _no_y_axis() -> p9.theme:
     )
 
 
+def _format_number(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if not np.isfinite(number):
+        return str(value)
+    return f"{0.0 if round(number, 2) == 0 else number:.2f}".rstrip("0").rstrip(".")
+
+
+def _format_numbers(values: Sequence[Any]) -> list[str]:
+    return [_format_number(value) for value in values]
+
+
+def _rounded_scales(data: pd.DataFrame, **aesthetics: str | None) -> list[Any]:
+    scales = []
+    for aesthetic, column in aesthetics.items():
+        kind = (
+            "continuous"
+            if column is None or pd.api.types.is_numeric_dtype(data[column])
+            else "discrete"
+        )
+        scales.append(getattr(p9, f"scale_{aesthetic}_{kind}")(labels=_format_numbers))
+    return scales
+
+
+def _facet_labeller(data: pd.DataFrame, *columns: str, label_both: bool) -> p9.labeller:
+    formatters: dict[str, Any] = {}
+    for column in columns:
+        if pd.api.types.is_numeric_dtype(data[column]):
+
+            def formatter(value: Any, name: str = column) -> str:
+                return f"{name}: {_format_number(value)}"
+
+            formatters[column] = formatter if label_both else _format_number
+    return p9.labeller(
+        default="label_both" if label_both else "label_value", **formatters
+    )  # type: ignore[arg-type]
+
+
 def _ordered_groups(values: pd.Series) -> list[Any]:
     if isinstance(values.dtype, pd.CategoricalDtype):
         present = set(values.dropna())
@@ -111,6 +151,7 @@ def _plot_curves(
         )
         + p9.labs(x="r", y=_QUANTITY_LABELS[quantity])
         + _no_panel_grid()
+        + _rounded_scales(summary, x=None, y=None)
     )
 
 
@@ -142,6 +183,7 @@ def _plot_density_ridges(
         plot += p9.geom_ribbon(
             p9.aes(ymin="plot_low", ymax="plot_high", fill=ridge_by),
             alpha=0.25,
+            color="none",
         )
     if hdi_prob is not None:
         summary["plot_hdi_low"] = summary["hdi_low"] + summary["baseline"]
@@ -149,7 +191,9 @@ def _plot_density_ridges(
         plot += p9.geom_ribbon(
             p9.aes(ymin="plot_hdi_low", ymax="plot_hdi_high", fill=ridge_by),
             alpha=0.25,
+            color="none",
         )
+    plot += p9.geom_line()
     if trajectories is not None:
         trajectories["plot_value"] = trajectories["value"] + trajectories[ridge_by].map(
             baseline_for
@@ -173,10 +217,10 @@ def _plot_density_ridges(
             color="gray",
             alpha=0.5,
         )
-        + p9.geom_line()
         + p9.scale_y_continuous(breaks=[])
         + p9.labs(x="r", y="Density", color=ridge_by, fill=ridge_by)
         + _no_panel_grid()
+        + _rounded_scales(summary, x=None, color=ridge_by, fill=ridge_by)
     )
 
 
@@ -516,6 +560,13 @@ def plot_1d_smooth_dist(
                 fill=covariate,
             )
             + _no_panel_grid()
+            + _rounded_scales(
+                summary,
+                x=None,
+                y=None,
+                color=covariate,
+                fill=covariate,
+            )
         )
 
     if ridge_spacing is None:
@@ -543,6 +594,7 @@ def plot_1d_smooth_dist(
         plot += p9.geom_ribbon(
             p9.aes(ymin="plot_low", ymax="plot_high", fill=covariate),
             alpha=0.25,
+            color="none",
         )
     if hdi_prob is not None:
         summary["plot_hdi_low"] = summary["hdi_low"] + summary["baseline"]
@@ -550,7 +602,9 @@ def plot_1d_smooth_dist(
         plot += p9.geom_ribbon(
             p9.aes(ymin="plot_hdi_low", ymax="plot_hdi_high", fill=covariate),
             alpha=0.25,
+            color="none",
         )
+    plot += p9.geom_line()
     if trajectories is not None:
         trajectories["plot_value"] = trajectories["value"] + trajectories[
             covariate
@@ -590,12 +644,12 @@ def plot_1d_smooth_dist(
             color="gray",
             alpha=0.5,
         )
-        + p9.geom_line()
         + p9.scale_y_continuous(
-            breaks=baselines.tolist(), labels=[str(v) for v in groups]
+            breaks=baselines.tolist(), labels=_format_numbers(groups)
         )
         + p9.labs(x="r", y=covariate, color=covariate, fill=covariate)
         + _no_panel_grid()
+        + _rounded_scales(summary, x=None, color=covariate, fill=covariate)
     )
     if not show_y_axis:
         plot += _no_y_axis()
@@ -752,7 +806,13 @@ def plot_2d_smooth_dist(
                 linetype="dotted",
                 color="gray",
             )
-            + p9.facet_wrap(f"~{facet_by}")
+            + p9.facet_wrap(
+                f"~{facet_by}",
+                labeller=cast(
+                    Any,
+                    _facet_labeller(summary, facet_by, label_both=False),
+                ),
+            )
             + p9.labs(
                 x="r",
                 y=_QUANTITY_LABELS[quantity],
@@ -760,6 +820,13 @@ def plot_2d_smooth_dist(
                 fill=ridge_by,
             )
             + _no_panel_grid()
+            + _rounded_scales(
+                summary,
+                x=None,
+                y=None,
+                color=ridge_by,
+                fill=ridge_by,
+            )
         )
 
     reference = (
@@ -783,7 +850,13 @@ def plot_2d_smooth_dist(
         ci_quantiles=ci_quantiles,
         hdi_prob=hdi_prob,
         trajectories=trajectories,
-    ) + p9.facet_wrap(f"~{facet_by}", labeller="label_both")
+    ) + p9.facet_wrap(
+        f"~{facet_by}",
+        labeller=cast(
+            Any,
+            _facet_labeller(summary, facet_by, label_both=True),
+        ),
+    )
 
 
 @overload
@@ -911,7 +984,14 @@ def plot_3d_smooth_dist(
         ci_quantiles=ci_quantiles,
         hdi_prob=hdi_prob,
         trajectories=trajectories,
-    ) + p9.facet_grid(rows=x, cols=y, labeller="label_both")
+    ) + p9.facet_grid(
+        rows=x,
+        cols=y,
+        labeller=cast(
+            Any,
+            _facet_labeller(summary, x, y, label_both=True),
+        ),
+    )
 
 
 @overload
@@ -1072,6 +1152,7 @@ def plot_3d_smooth_dist_stacked(
         plot += p9.geom_ribbon(
             p9.aes(ymin="glyph_low", ymax="glyph_high", fill=ridge_by),
             alpha=0.2,
+            color="none",
         )
     if hdi_prob is not None:
         summary["glyph_hdi_low"] = (
@@ -1083,9 +1164,9 @@ def plot_3d_smooth_dist_stacked(
         plot += p9.geom_ribbon(
             p9.aes(ymin="glyph_hdi_low", ymax="glyph_hdi_high", fill=ridge_by),
             alpha=0.2,
+            color="none",
         )
     plot += p9.geom_line()
-
     anchors = pd.DataFrame({x: xpoints, y: ypoints})
     return (
         plot
@@ -1100,6 +1181,13 @@ def plot_3d_smooth_dist_stacked(
         + p9.coord_equal()
         + p9.labs(x=x, y=y, color=ridge_by, fill=ridge_by)
         + _no_panel_grid()
+        + _rounded_scales(
+            summary,
+            x=None,
+            y=None,
+            color=ridge_by,
+            fill=ridge_by,
+        )
     )
 
 
@@ -1276,6 +1364,13 @@ def plot_cluster_dist(
                 fill=category,
             )
             + _no_panel_grid()
+            + _rounded_scales(
+                summary,
+                x=None,
+                y=None,
+                color=category,
+                fill=category,
+            )
         )
 
     if ridge_spacing is None:
@@ -1301,6 +1396,7 @@ def plot_cluster_dist(
         plot += p9.geom_ribbon(
             p9.aes(ymin="plot_low", ymax="plot_high", fill=category),
             alpha=0.25,
+            color="none",
         )
     if hdi_prob is not None:
         summary["plot_hdi_low"] = summary["hdi_low"] + summary["baseline"]
@@ -1308,7 +1404,9 @@ def plot_cluster_dist(
         plot += p9.geom_ribbon(
             p9.aes(ymin="plot_hdi_low", ymax="plot_hdi_high", fill=category),
             alpha=0.25,
+            color="none",
         )
+    plot += p9.geom_line()
     if trajectories is not None:
         trajectories["plot_value"] = trajectories["value"] + trajectories[category].map(
             dict(zip(groups, baselines))
@@ -1348,9 +1446,8 @@ def plot_cluster_dist(
             color="gray",
             alpha=0.5,
         )
-        + p9.geom_line()
         + p9.scale_y_continuous(
-            breaks=baselines.tolist(), labels=[str(v) for v in groups]
+            breaks=baselines.tolist(), labels=_format_numbers(groups)
         )
         + p9.labs(
             x="r",
@@ -1360,6 +1457,7 @@ def plot_cluster_dist(
             linetype="Observed",
         )
         + _no_panel_grid()
+        + _rounded_scales(summary, x=None, color=category, fill=category)
     )
 
 
@@ -1575,6 +1673,7 @@ def plot_regions_dist(
         + p9.coord_equal()
         + p9.labs(x="x", y="y")
         + _no_panel_grid()
+        + _rounded_scales(summary, x=None, y=None)
     )
 
 
