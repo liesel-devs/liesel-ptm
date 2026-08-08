@@ -638,6 +638,60 @@ class TestDistBatchedCoef:
 
 
 class TestPseudoDistributions:
+    def test_spline_only_identity_methods_match_tfp_batch_broadcasting(self):
+        batch_shape = (2, 3)
+        loc = jnp.zeros(batch_shape)
+        scale = jnp.ones(batch_shape)
+        rate = jnp.ones(batch_shape)
+        distributions = (
+            (
+                GaussianPseudoTransformationDist(
+                    coef=jnp.array([0.0]), loc=loc, scale=scale
+                ),
+                tfd.Normal(loc=loc, scale=scale),
+            ),
+            (
+                PseudoTransformationDist(
+                    coef=jnp.array([0.0]),
+                    parametric_distribution=tfd.Exponential,
+                    rate=rate,
+                ),
+                tfd.Exponential(rate=rate),
+            ),
+            (
+                LocScalePseudoTransformationDist(
+                    coef=jnp.array([0.0]),
+                    loc=loc,
+                    scale=scale,
+                    parametric_distribution=tfd.Normal,
+                ),
+                tfd.Normal(loc=loc, scale=scale),
+            ),
+        )
+
+        for dist, reference in distributions:
+            for value in (jnp.array(0.75), jnp.full((5, 1, 1), 0.75)):
+                expected_shape = reference.log_prob(value).shape
+                expected_value = jnp.broadcast_to(value, expected_shape)
+
+                transformed, logdet = dist.transformation_and_logdet_spline(value)
+                assert transformed.shape == expected_shape
+                assert logdet.shape == expected_shape
+                assert jnp.array_equal(transformed, expected_value)
+                assert jnp.array_equal(logdet, jnp.zeros(expected_shape))
+                assert jnp.array_equal(
+                    dist._transformation_spline(value), expected_value
+                )
+                assert jnp.array_equal(
+                    dist.inverse_transformation_spline(value), expected_value
+                )
+
+            bad_value = jnp.ones((5, 2))
+            with pytest.raises((TypeError, ValueError)):
+                reference.log_prob(bad_value)
+            with pytest.raises((TypeError, ValueError)):
+                dist.transformation_and_logdet_spline(bad_value)
+
     def test_gaussian_pseudo_matches_normal(self):
         loc = jnp.array([0.0, 1.0])
         scale = jnp.array([1.0, 2.0])

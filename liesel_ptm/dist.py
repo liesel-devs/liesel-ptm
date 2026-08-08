@@ -342,6 +342,13 @@ class TransformationDist(tfd.Distribution):
             value, self.coef, batch_shape=self._batch_shape_tuple()
         )
 
+    def _broadcast_tfp_value(self, value: Array) -> Array:
+        value = jnp.asarray(value, dtype=self.dtype)
+        _, sample_shape, _, result_batch_shape = self.bspline._tfp_value_layout(
+            value, self._batch_shape_tuple()
+        )
+        return jnp.broadcast_to(value, sample_shape + result_batch_shape)
+
     def _mean(self, **kwargs) -> Array:
         if self.parametric_distribution is None:
             parametric_mean = jnp.array(0.0, dtype=self.dtype)
@@ -1072,13 +1079,14 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
         return _identity_moment_quadrature_diagnostic(self.dtype)
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
+        value = self._broadcast_tfp_value(value)
         return value, tf.zeros_like(value)
 
     def _transformation_spline(self, value: Array) -> Array:
-        return value
+        return self._broadcast_tfp_value(value)
 
     def inverse_transformation_spline(self, value: Array) -> Array:
-        return value
+        return self._broadcast_tfp_value(value)
 
 
 class PseudoTransformationDist(TransformationDist):
@@ -1183,13 +1191,14 @@ class PseudoTransformationDist(TransformationDist):
         return _identity_moment_quadrature_diagnostic(self.dtype)
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
+        value = self._broadcast_tfp_value(value)
         return value, tf.zeros_like(value)
 
     def _transformation_spline(self, value: Array) -> Array:
-        return value
+        return self._broadcast_tfp_value(value)
 
     def inverse_transformation_spline(self, value: Array) -> Array:
-        return value
+        return self._broadcast_tfp_value(value)
 
 
 class LocScalePseudoTransformationDist(TransformationDist):
@@ -1345,10 +1354,11 @@ class LocScalePseudoTransformationDist(TransformationDist):
         return _identity_moment_quadrature_diagnostic(self.dtype)
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
+        value = self._broadcast_tfp_value(value)
         return value, tf.zeros_like(value)
 
     def _transformation_spline(self, value: Array) -> Array:
-        return value
+        return self._broadcast_tfp_value(value)
 
     def inverse_transformation_spline(self, value: Array) -> Array:
-        return value
+        return self._broadcast_tfp_value(value)
