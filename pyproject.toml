@@ -11,7 +11,7 @@ dependencies = [
     "liesel",
     "liesel-gam",
     "plotnine>=0.14.5",
-    "interpax>=0.3.10",
+    "interpax>=0.3.14",
     "properscoring>=0.1",
 ]
 

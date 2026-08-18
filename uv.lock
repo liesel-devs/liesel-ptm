@@ -220,7 +220,7 @@ name = "cffi"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/eb/56/b1ba7935a17738ae8453301356628e8147c79dbb825bcbc73dc7401f9846/cffi-2.0.0.tar.gz", hash = "sha256:44d1b5909021139fe36001ae048dbdde8214afa20200eda0f64c068cac5d5529", size = 523588, upload-time = "2025-09-08T23:24:04.541Z" }
 wheels = [
@@ -725,7 +725,7 @@ wheels = [
 
 [[package]]
 name = "interpax"
-version = "0.3.12"
+version = "0.3.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "equinox" },
@@ -734,9 +734,9 @@ dependencies = [
     { name = "lineax" },
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1b/39/55576cf2c33c1f4df483ec1507fb36027389c00863772b78abf04c75afff/interpax-0.3.12.tar.gz", hash = "sha256:9563b5458a70a9bac34372c68d8fca34a03864e19805b06763a1c48dbd420699", size = 58170, upload-time = "2025-11-03T19:01:45.591Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/b2/06d071b6eade1ea7e3bb0660aa3c1f8fd6484fa611cc45cd424d2bbebecf/interpax-0.3.14.tar.gz", hash = "sha256:5018c18a07d946be7466504f385b4e5ac632cd7b006c1cead42b1aefe37e16e3", size = 58669, upload-time = "2026-04-18T00:35:09.305Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e6/41/2077ef0c346d44ec66d1ee807493631fbe07e6088255191b4324fc258949/interpax-0.3.12-py3-none-any.whl", hash = "sha256:1f447c238ae629dabf23f9c04671d52a03d11251f31ec7607556c576a81142b6", size = 27795, upload-time = "2025-11-03T19:01:44.422Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/77/3b4c3db18738ffc146887f3b47e44159d370509c3ee302f0456a8f0dfcac/interpax-0.3.14-py3-none-any.whl", hash = "sha256:070c5242227fa65bd7dafc472ae2ed0c4df9891fbbbede73a8b04e21859a5d47", size = 28104, upload-time = "2026-04-18T00:35:07.774Z" },
 ]
 
 [[package]]
@@ -1167,7 +1167,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "interpax", specifier = ">=0.3.10" },
+    { name = "interpax", specifier = ">=0.3.14" },
     { name = "liesel" },
     { name = "liesel-gam", editable = "../liesel_gam" },
     { name = "plotnine", specifier = ">=0.14.5" },
@@ -2159,7 +2159,6 @@ wheels = [
 
 [[package]]
 name = "smoothcon"
-version = "0.1.0"
 source = { editable = "../smoothcon2" }
 dependencies = [
     { name = "jax" },
@@ -2175,16 +2174,14 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "genbadge", extras = ["coverage"], specifier = ">=1.1.3" },
-    { name = "mkdocs", specifier = ">=1.6.1" },
-    { name = "mkdocs-material", specifier = ">=9.0" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.18" },
     { name = "mypy", specifier = ">=1.15.0" },
     { name = "pre-commit", specifier = ">=4.2.0" },
-    { name = "pymdown-extensions", specifier = ">=11.0.1" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.11.4" },
     { name = "ty", specifier = ">=0.0.63" },
+    { name = "zensical", specifier = ">=0.0.53" },
 ]
 
 [[package]]

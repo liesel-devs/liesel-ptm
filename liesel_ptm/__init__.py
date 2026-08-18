@@ -1,6 +1,7 @@
 # from .model_lib import PTMDist as PTMDist
 from . import plots as plots
 from .bspline import LogIncKnots as LogIncKnots
+from .bspline import OnionKnots as OnionKnots
 from .bspline import PTMKnots as PTMKnots
 from .dist import LocScaleTransformationDist as LocScaleTransformationDist
 from .dist import TransformationDist as TransformationDist
