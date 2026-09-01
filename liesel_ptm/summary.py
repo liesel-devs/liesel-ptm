@@ -14,6 +14,9 @@ from .dist import LocScaleTransformationDist, TransformationDist
 
 type DistInput = Callable[..., TransformationDist] | lsl.Var | lsl.Dist
 type NewData = gs.Position | Mapping[str, ArrayLike] | None
+type ConditionalNewData = (
+    Mapping[str, ArrayLike | Sequence[Any]] | Sequence[Mapping[str, Any]]
+)
 type ClusterNewData = (
     gs.Position | Mapping[str, ArrayLike | Sequence[int] | Sequence[str]] | None
 )
@@ -96,6 +99,25 @@ def _summarise_coef(
     hdi_prob: float,
     covariates: Mapping[str, ArrayLike | Sequence[Any]] | None = None,
 ) -> pd.DataFrame:
+    return _summarise_dist(
+        _make_dist(dist, coef),
+        _make_dist(dist, coef, raw=True),
+        rgrid=rgrid,
+        quantiles=quantiles,
+        hdi_prob=hdi_prob,
+        covariates=covariates,
+    )
+
+
+def _summarise_dist(
+    fitted: TransformationDist,
+    raw: TransformationDist,
+    *,
+    rgrid: int | ArrayLike,
+    quantiles: Sequence[float],
+    hdi_prob: float,
+    covariates: Mapping[str, ArrayLike | Sequence[Any]] | None = None,
+) -> pd.DataFrame:
     if isinstance(rgrid, int):
         if rgrid <= 0:
             raise ValueError("Integer rgrid must be positive.")
@@ -104,9 +126,7 @@ def _summarise_coef(
         r = jnp.asarray(rgrid)
         if r.ndim != 1 or not len(r):
             raise ValueError("Array rgrid must be a nonempty one-dimensional vector.")
-    r_batched = r.reshape((-1,) + (1,) * (coef.ndim - 1))
-    fitted = _make_dist(dist, coef)
-    raw = _make_dist(dist, coef, raw=True)
+    r_batched = r.reshape((-1,) + (1,) * len(fitted.batch_shape))
     quantities = {
         "density": fitted.prob(r_batched),
         "cdf": fitted.cdf(r_batched),
@@ -131,16 +151,200 @@ def _summarise_coef(
     return summary
 
 
+def _unique_newdata(newdata: ConditionalNewData) -> pd.DataFrame:
+    if not newdata:
+        raise ValueError("newdata must contain at least one covariate.")
+    if not isinstance(newdata, Mapping):
+        rows = list(newdata)
+        if not all(isinstance(row, Mapping) for row in rows):
+            raise TypeError("newdata rows must be dictionaries.")
+        names = list(rows[0])
+        if not names or any(set(row) != set(names) for row in rows):
+            raise ValueError("All newdata rows must contain the same covariates.")
+        if any(np.ndim(value) != 0 for row in rows for value in row.values()):
+            raise ValueError("All values in newdata rows must be scalar.")
+        return pd.DataFrame(rows, columns=pd.Index(names)).drop_duplicates(
+            ignore_index=True
+        )
+
+    columns = {}
+    for name, values in newdata.items():
+        array = np.asarray(values)
+        if array.ndim != 1 or not len(array):
+            raise ValueError(
+                "All newdata values must be nonempty one-dimensional arrays."
+            )
+        columns[name] = array
+    lengths = {len(values) for values in columns.values()}
+    if len(lengths) != 1:
+        raise ValueError("All newdata arrays must have the same length.")
+    return pd.DataFrame(columns).drop_duplicates(ignore_index=True)
+
+
+def _response_dist(
+    response: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    newdata: pd.DataFrame,
+    *,
+    include_loc: bool,
+    include_scale: bool,
+) -> tuple[TransformationDist, TransformationDist]:
+    dist_node = response.dist_node
+    if dist_node is None:
+        raise TypeError("The supplied response has no distribution.")
+    model = response.model
+    if model is None:
+        raise ValueError("The supplied response must belong to a built model.")
+
+    constructor = dist_node.distribution
+    dist_class = getattr(constructor, "func", constructor)
+    if not (
+        isinstance(dist_class, type) and issubclass(dist_class, TransformationDist)
+    ):
+        raise TypeError("response must have a PTM transformation distribution.")
+    loc_scale = issubclass(dist_class, LocScaleTransformationDist)
+    if (include_loc or include_scale) and not loc_scale:
+        raise ValueError("Location and scale can only be included for a loc-scale PTM.")
+
+    kwinputs = {
+        name: node
+        for name, node in dist_node.kwinputs.items()
+        if name not in {"loc", "scale"}
+        or (name == "loc" and include_loc)
+        or (name == "scale" and include_scale)
+    }
+    nodes = list(dist_node.inputs) + list(kwinputs.values())
+    targets = {
+        target.name: target
+        for node in nodes
+        if not isinstance(
+            target := node.var if node.var is not None else node, lsl.Value
+        )
+    }
+    predictions = (
+        model.predict(
+            gs.Position(dict(samples)),
+            predict=list(targets),
+            newdata=gs.Position(
+                {str(name): newdata[name].to_numpy() for name in newdata.columns}
+            ),
+        )
+        if targets
+        else {}
+    )
+
+    def value_for(node: Any, name: str | None = None) -> Any:
+        if name == "loc" and not include_loc:
+            return 0.0
+        if name == "scale" and not include_scale:
+            return 1.0
+        target = node.var if node.var is not None else node
+        if isinstance(target, lsl.Value):
+            return target.value
+        return predictions[target.name]
+
+    args = [value_for(node) for node in dist_node.inputs]
+    kwargs = {name: value_for(node, name) for name, node in dist_node.kwinputs.items()}
+    required = {"coef", "loc", "scale"} if loc_scale else {"coef"}
+    if missing := required.difference(kwargs):
+        names = ", ".join(repr(name) for name in sorted(missing))
+        raise TypeError(f"The response distribution must define keyword input {names}.")
+
+    prepared = {}
+    parameter_names = ["coef"]
+    if include_loc:
+        parameter_names.append("loc")
+    if include_scale:
+        parameter_names.append("scale")
+    for name in parameter_names:
+        node = dist_node.kwinputs[name]
+        target = node.var if node.var is not None else node
+        value_ndim = jnp.ndim(target.value)
+        value = _normalise_sample_dims(kwargs[name], value_ndim)
+        if name == "coef":
+            if value_ndim not in (1, 2):
+                raise ValueError("coef must be shared or row-specific.")
+            prepared[name] = value[..., None, :] if value_ndim == 1 else value
+        else:
+            if value_ndim not in (0, 1):
+                raise ValueError(f"{name} must be shared or row-specific.")
+            prepared[name] = value[..., None] if value_ndim == 0 else value
+
+    used = [prepared["coef"]]
+    if include_loc:
+        used.append(prepared["loc"])
+    if include_scale:
+        used.append(prepared["scale"])
+    sample_shape = np.broadcast_shapes(*(value.shape[:2] for value in used))
+    nconditions = len(newdata)
+    kwargs["coef"] = jnp.broadcast_to(
+        prepared["coef"], sample_shape + (nconditions, prepared["coef"].shape[-1])
+    )
+    if loc_scale:
+        kwargs["loc"] = (
+            jnp.broadcast_to(prepared["loc"], sample_shape + (nconditions,))
+            if include_loc
+            else jnp.zeros(sample_shape + (nconditions,))
+        )
+        kwargs["scale"] = (
+            jnp.broadcast_to(prepared["scale"], sample_shape + (nconditions,))
+            if include_scale
+            else jnp.ones(sample_shape + (nconditions,))
+        )
+    kwargs["batched"] = True
+    fitted = constructor(*args, **kwargs)
+    raw = constructor(*args, **(kwargs | {"centered": False, "scaled": False}))
+    return cast(TransformationDist, fitted), cast(TransformationDist, raw)
+
+
+def summarise_conditional_dist(
+    response: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    newdata: ConditionalNewData,
+    rgrid: int | ArrayLike = 150,
+    include_loc: bool = False,
+    include_scale: bool = False,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame:
+    """Summarise conditional PTM distributions at unique rows of newdata."""
+    if isinstance(rgrid, int) and (include_loc or include_scale):
+        raise ValueError(
+            "rgrid must be an explicit array when location or scale is included."
+        )
+    combinations = _unique_newdata(newdata)
+    fitted, raw = _response_dist(
+        response,
+        samples,
+        combinations,
+        include_loc=include_loc,
+        include_scale=include_scale,
+    )
+    return _summarise_dist(
+        fitted,
+        raw,
+        rgrid=rgrid,
+        quantiles=quantiles,
+        hdi_prob=hdi_prob,
+        covariates={
+            str(name): combinations[name].to_numpy() for name in combinations.columns
+        },
+    )
+
+
 def _predict(
     term: lsl.Var,
     samples: Mapping[str, ArrayLike],
     newdata: NewData = None,
 ) -> Array:
-    newdata_dict = None if newdata is None else dict(newdata)
-    return term.predict(dict(samples), newdata=newdata_dict)
+    newdata_position = None if newdata is None else gs.Position(dict(newdata))
+    return term.predict(gs.Position(dict(samples)), newdata=newdata_position)
 
 
 def _category_mapping(term: lsl.Var, input_name: str) -> gam.CategoryMapping | None:
+    if isinstance(term, gam.MultivariateStrctLinTerm) and input_name in term.mappings:
+        return term.mappings[input_name]
     for marginal in getattr(term, "marginal_terms", ()):
         mapping = getattr(marginal, "mapping", None)
         basis = getattr(marginal, "basis", None)
@@ -455,9 +659,7 @@ def summarise_cluster_dist(
     if len(inputs) != 1:
         raise ValueError(f"Expected one categorical input, got {len(inputs)}.")
     name, observed_var = next(iter(inputs.items()))
-    mapping: gam.CategoryMapping | None = getattr(
-        term.marginal_terms[0], "mapping", None
-    )
+    mapping = _category_mapping(term, name)
     explicit_mapping = labels if isinstance(labels, gam.CategoryMapping) else None
     active_mapping = explicit_mapping or (mapping if labels is None else None)
 

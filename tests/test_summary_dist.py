@@ -83,6 +83,35 @@ def _mixed_tensor():
     return term, model
 
 
+def _conditional_response():
+    x = lsl.Var.new_obs(jnp.array([0.0, 1.0]), name="conditional_x")
+    z = lsl.Var.new_obs(jnp.array([0.0, 1.0]), name="conditional_z")
+    loc_coef = lsl.Var.new_param(1.0, name="conditional_loc_coef")
+    scale_coef = lsl.Var.new_param(jnp.log(2.0), name="conditional_scale_coef")
+    loc = lsl.Var.new_calc(
+        lambda x, coef: x * coef, x, loc_coef, name="conditional_loc"
+    )
+    scale = lsl.Var.new_calc(
+        lambda z, coef: jnp.exp(z * coef),
+        z,
+        scale_coef,
+        name="conditional_scale",
+    )
+    coef = lsl.Var.new_param(jnp.zeros(4), name="conditional_shape")
+    response = lsl.Var.new_obs(
+        jnp.zeros(2),
+        lsl.Dist(ptm.onion_dist(nparam=4), coef=coef, loc=loc, scale=scale),
+        name="conditional_response",
+    )
+    model = lsl.Model([response])
+    samples = {
+        coef.name: jnp.zeros((1, 1, 4)),
+        loc_coef.name: jnp.ones((1, 1)),
+        scale_coef.name: jnp.full((1, 1), jnp.log(2.0)),
+    }
+    return response, samples, model
+
+
 def _tensor_with_marginal():
     data = pd.DataFrame(
         {"x": jnp.linspace(0.0, 1.0, 6), "z": jnp.linspace(1.0, 2.0, 6)}
@@ -129,6 +158,129 @@ def test_summarise_intercept_dist_reports_all_quantities() -> None:
     assert summary["sample_size"].eq(1).all()
     assert summary["r"].eq(0.0).all()
     assert summary.set_index("quantity")["mean"].to_dict() == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "newdata",
+    [
+        {"conditional_x": [0.0, 1.0, 1.0], "conditional_z": [1.0, 0.0, 0.0]},
+        [
+            {"conditional_x": 0.0, "conditional_z": 1.0},
+            {"conditional_x": 1.0, "conditional_z": 0.0},
+            {"conditional_x": 1.0, "conditional_z": 0.0},
+        ],
+    ],
+)
+def test_summarise_conditional_dist_uses_unique_rows(newdata) -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+
+    summary = ptm.summarise_conditional_dist(
+        response, samples, newdata=newdata, rgrid=jnp.array([-1.0, 1.0])
+    )
+
+    assert summary.shape[0] == 4 * 2 * 2
+    assert summary["quantity"].drop_duplicates().tolist() == [
+        "density",
+        "cdf",
+        "transformation",
+        "transformation_raw",
+    ]
+    conditions = summary.loc[
+        summary["quantity"] == "density", ["conditional_x", "conditional_z"]
+    ].drop_duplicates()
+    assert conditions.to_records(index=False).tolist() == [(0.0, 1.0), (1.0, 0.0)]
+
+
+@pytest.mark.parametrize(
+    ("include_loc", "include_scale"),
+    [(False, False), (True, False), (False, True), (True, True)],
+)
+def test_summarise_conditional_dist_location_scale_switches(
+    include_loc, include_scale
+) -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+    newdata = {"conditional_x": [0.0, 1.0], "conditional_z": [0.0, 1.0]}
+
+    summary = ptm.summarise_conditional_dist(
+        response,
+        samples,
+        newdata=newdata,
+        rgrid=jnp.array([0.0]),
+        include_loc=include_loc,
+        include_scale=include_scale,
+    )
+
+    loc = jnp.array([0.0, 1.0]) if include_loc else 0.0
+    scale = jnp.array([1.0, 2.0]) if include_scale else 1.0
+    expected = ptm.onion_dist(nparam=4)(coef=jnp.zeros(4), loc=loc, scale=scale).prob(
+        jnp.zeros(2)
+    )
+    density = summary.loc[summary["quantity"] == "density", "mean"]
+    np.testing.assert_allclose(density, expected, rtol=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("include_loc", "include_scale"), [(True, False), (False, True), (True, True)]
+)
+def test_summarise_conditional_dist_requires_explicit_full_scale_grid(
+    include_loc, include_scale
+) -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+
+    with pytest.raises(ValueError, match="rgrid must be an explicit array"):
+        ptm.summarise_conditional_dist(
+            response,
+            samples,
+            newdata={"conditional_x": [0.0], "conditional_z": [0.0]},
+            include_loc=include_loc,
+            include_scale=include_scale,
+        )
+
+
+@pytest.mark.parametrize(
+    "newdata",
+    [
+        {},
+        {"conditional_x": [0.0], "conditional_z": [0.0, 1.0]},
+        [{"conditional_x": 0.0}, {"conditional_z": 1.0}],
+        [{"conditional_x": [0.0]}],
+    ],
+)
+def test_summarise_conditional_dist_rejects_malformed_newdata(newdata) -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+
+    with pytest.raises((TypeError, ValueError)):
+        ptm.summarise_conditional_dist(response, samples, newdata=newdata)
+
+
+def test_summarise_conditional_dist_requires_built_response_distribution() -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+    newdata = {"conditional_x": [0.0], "conditional_z": [0.0]}
+
+    with pytest.raises(TypeError, match="no distribution"):
+        ptm.summarise_conditional_dist(
+            lsl.Var.new_obs(jnp.zeros(1), name="bare_response"),
+            samples,
+            newdata=newdata,
+        )
+
+    response = lsl.Var.new_obs(
+        jnp.zeros(1),
+        lsl.Dist(
+            ptm.onion_dist(nparam=4),
+            coef=jnp.zeros(4),
+            loc=0.0,
+            scale=1.0,
+        ),
+        name="unbuilt_response",
+    )
+    with pytest.raises(ValueError, match="built model"):
+        ptm.summarise_conditional_dist(response, {}, newdata=newdata)
 
 
 @pytest.mark.parametrize("as_response", [False, True])
@@ -203,6 +355,24 @@ def test_summarise_cluster_dist_includes_unobserved_categories() -> None:
     assert summary.shape[0] == 4 * 3
     assert list(summary["group"].cat.categories) == ["a", "b", "c"]
     observed = summary.groupby("group", observed=False)["observed"].first().to_dict()
+    assert observed == {"a": True, "b": True, "c": False}
+
+
+def test_summarise_cluster_dist_supports_categorical_linear_term() -> None:
+    categories = pd.Categorical(["a", "b", "a"], categories=["a", "b", "c"])
+    builder = gam.MVTermBuilder.from_df(pd.DataFrame({"myvar": categories}), jnp.eye(4))
+    term = builder.lin("C(myvar, contr.sum)", dimension_scale=1.0)
+    model = lsl.Model([term])
+    assert term.model is model
+    samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+
+    summary = ptm.summarise_cluster_dist(
+        ptm.onion_dist(nparam=4), term, samples, rgrid=jnp.array([0.0])
+    )
+
+    assert summary.shape[0] == 4 * 3
+    assert list(summary["myvar"].cat.categories) == ["a", "b", "c"]
+    observed = summary.groupby("myvar", observed=False)["observed"].first().to_dict()
     assert observed == {"a": True, "b": True, "c": False}
 
 

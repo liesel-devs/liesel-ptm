@@ -30,6 +30,33 @@ An integer ``rgrid`` creates a grid on ``[-5, 5]``. Continuous covariates use fi
 values by default, while categorical covariates use every mapped level. Supplied
 ``newdata`` is interpreted row-wise unless ``newdata_meshgrid=True``.
 
+Conditional distributions
+-------------------------
+
+``summarise_conditional_dist`` evaluates the response distribution at every distinct
+row supplied in ``newdata``. It does not infer covariate values or form a Cartesian
+grid. New data may be supplied as equal-length arrays or as scalar-valued records::
+
+   cases = [
+       {"x": 0.5, "group": "a"},
+       {"x": 1.0, "group": "b"},
+   ]
+   summary = ptm.summarise_conditional_dist(
+       model.response,
+       samples,
+       newdata=cases,
+   )
+   plot = ptm.plot_conditional_dist(
+       model.response,
+       samples,
+       newdata=cases,
+   )
+
+By default, only the shape transformation is included and location and scale are
+fixed to zero and one. Set ``include_loc=True`` and/or ``include_scale=True`` for the
+corresponding conditional parameters. When either is included, ``rgrid`` must be an
+explicit response-scale array.
+
 Plots
 -----
 
@@ -45,8 +72,8 @@ Grouped distribution plots map color, and uncertainty ribbons map fill, to the
 conditioning variable by default. This provides a legend identifying each ridge or
 curve. Numeric ridge values are ordered from low to high, so higher values have
 higher vertical offsets and use the high end of the color scale. Callers can replace
-the default scales directly. Reference distributions are always drawn as gray dotted
-lines::
+the default scales directly. Term-induced plots draw reference distributions as gray
+dotted lines; conditional response plots omit them::
 
    plot = ptm.plot_2d_smooth_dist(
        dist,

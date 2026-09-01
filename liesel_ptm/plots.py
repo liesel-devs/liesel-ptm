@@ -12,16 +12,19 @@ from jax.typing import ArrayLike
 
 from .summary import (
     ClusterNewData,
+    ConditionalNewData,
     DistInput,
     Intercept,
     Labels,
     MarginalTerm,
     NewData,
+    _category_mapping,
     _make_dist,
     _normalise_sample_dims,
     _predict,
     summarise_1d_smooth_dist,
     summarise_cluster_dist,
+    summarise_conditional_dist,
     summarise_intercept_dist,
     summarise_nd_smooth_dist,
 )
@@ -158,7 +161,7 @@ def _plot_curves(
 def _plot_density_ridges(
     summary: pd.DataFrame,
     *,
-    reference: pd.DataFrame,
+    reference: pd.DataFrame | None,
     ridge_by: str,
     ridge_spacing: float | None,
     ci_quantiles: tuple[float, float] | None,
@@ -170,7 +173,7 @@ def _plot_density_ridges(
         ridge_spacing = 1.15 * float(summary["mean"].max())
     baselines = np.arange(len(groups)) * ridge_spacing
     baseline_for = dict(zip(groups, baselines))
-    summary["baseline"] = summary[ridge_by].map(baseline_for)
+    summary["baseline"] = np.asarray(summary[ridge_by].map(baseline_for), dtype=float)
     summary["plot_mean"] = summary["mean"] + summary["baseline"]
 
     plot = p9.ggplot(
@@ -195,21 +198,21 @@ def _plot_density_ridges(
         )
     plot += p9.geom_line()
     if trajectories is not None:
-        trajectories["plot_value"] = trajectories["value"] + trajectories[ridge_by].map(
-            baseline_for
+        trajectory_baseline = np.asarray(
+            trajectories[ridge_by].map(baseline_for), dtype=float
         )
+        trajectories["plot_value"] = trajectories["value"] + trajectory_baseline
         plot += p9.geom_line(
             p9.aes(y="plot_value", group="trajectory"),
             data=trajectories,
             alpha=0.25,
         )
-    reference["plot_reference"] = reference["reference"] + reference[ridge_by].map(
-        baseline_for
-    )
-    return (
-        plot
-        + p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
-        + p9.geom_line(
+    if reference is not None:
+        reference_baseline = np.asarray(
+            reference[ridge_by].map(baseline_for), dtype=float
+        )
+        reference["plot_reference"] = reference["reference"] + reference_baseline
+        plot += p9.geom_line(
             p9.aes("r", "plot_reference", group=ridge_by),
             data=reference,
             inherit_aes=False,
@@ -217,10 +220,93 @@ def _plot_density_ridges(
             color="gray",
             alpha=0.5,
         )
+    return (
+        plot
+        + p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
         + p9.scale_y_continuous(breaks=[])
         + p9.labs(x="r", y="Density", color=ridge_by, fill=ridge_by)
         + _no_panel_grid()
         + _rounded_scales(summary, x=None, color=ridge_by, fill=ridge_by)
+    )
+
+
+def plot_conditional_dist(
+    response: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    newdata: ConditionalNewData,
+    quantity: str = "density",
+    rgrid: int | ArrayLike = 150,
+    include_loc: bool = False,
+    include_scale: bool = False,
+    ridge_spacing: float | None = None,
+    ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
+    hdi_prob: float | None = None,
+) -> p9.ggplot:
+    """Plot conditional PTM distributions at unique rows of newdata."""
+    if quantity not in _QUANTITIES:
+        raise ValueError(f"Unknown quantity {quantity!r}.")
+    quantiles = (0.05, 0.5, 0.95) if ci_quantiles is None else ci_quantiles
+    summary = summarise_conditional_dist(
+        response,
+        samples,
+        newdata=newdata,
+        rgrid=rgrid,
+        include_loc=include_loc,
+        include_scale=include_scale,
+        quantiles=quantiles,
+        hdi_prob=0.9 if hdi_prob is None else hdi_prob,
+    )
+    summary = summary.loc[summary["quantity"] == quantity].copy()
+    names = list(newdata) if isinstance(newdata, Mapping) else list(newdata[0])
+    condition = "_condition"
+    while condition in summary:
+        condition = f"_{condition}"
+    labels = summary[names].apply(
+        lambda row: ", ".join(f"{name}={_format_number(row[name])}" for name in names),
+        axis=1,
+    )
+    summary[condition] = pd.Categorical(
+        labels, categories=pd.unique(labels), ordered=True
+    )
+
+    if quantity == "density":
+        return _plot_density_ridges(
+            summary,
+            reference=None,
+            ridge_by=condition,
+            ridge_spacing=ridge_spacing,
+            ci_quantiles=ci_quantiles,
+            hdi_prob=hdi_prob,
+        ) + p9.labs(color="Condition", fill="Condition")
+
+    plot = p9.ggplot(
+        summary,
+        p9.aes("r", "mean", group=condition, color=condition),
+    )
+    if ci_quantiles is not None:
+        plot += p9.geom_ribbon(
+            p9.aes(
+                ymin=f"q_{ci_quantiles[0]}",
+                ymax=f"q_{ci_quantiles[1]}",
+                fill=condition,
+            ),
+            alpha=0.25,
+        )
+    if hdi_prob is not None:
+        plot += p9.geom_line(p9.aes(y="hdi_low"), linetype="dashed")
+        plot += p9.geom_line(p9.aes(y="hdi_high"), linetype="dashed")
+    return (
+        plot
+        + p9.geom_line()
+        + p9.labs(
+            x="r",
+            y=_QUANTITY_LABELS[quantity],
+            color="Condition",
+            fill="Condition",
+        )
+        + _no_panel_grid()
+        + _rounded_scales(summary, x=None, y=None, color=condition, fill=condition)
     )
 
 
@@ -1271,7 +1357,7 @@ def plot_cluster_dist(
     groups = _ordered_groups(summary[category])
     trajectories = None
     if show_n_samples is not None and show_n_samples > 0:
-        mapping = getattr(term.marginal_terms[0], "mapping", None)
+        mapping = _category_mapping(term, category)
         group_array = np.asarray(groups)
         if np.issubdtype(group_array.dtype, np.integer):
             codes = group_array
@@ -1683,6 +1769,7 @@ __all__ = [
     "plot_3d_smooth_dist",
     "plot_3d_smooth_dist_stacked",
     "plot_cluster_dist",
+    "plot_conditional_dist",
     "plot_regions_dist",
     "plot_intercept_dist",
     "plot_loss",
