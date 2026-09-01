@@ -9,7 +9,7 @@ authors = [
 ]
 dependencies = [
     "liesel",
-    "liesel-gam",
+    "liesel-gam>=0.2.1",
     "plotnine>=0.14.5",
     "interpax>=0.3.14",
     "properscoring>=0.1",
@@ -30,7 +30,6 @@ dev = [
     "sphinx-book-theme>=1.1.4",
     "sphinx-copybutton>=0.5.2",
     "sphinx-remove-toctrees>=1.0.0.post1",
-    "smoothcon>=0.1.0",
 ]
 
 [tool.pytest.ini_options]
@@ -89,7 +88,3 @@ build-backend = "hatchling.build"
 
 [tool.hatch.version]
 path = "liesel_ptm/__about__.py"
-
-[tool.uv.sources]
-liesel-gam = { path = "../liesel_gam", editable = true }
-smoothcon = { path = "../smoothcon2", editable = true }
