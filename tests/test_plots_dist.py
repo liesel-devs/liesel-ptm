@@ -276,7 +276,7 @@ def test_plot_conditional_density_uses_unique_condition_ridges() -> None:
         include_scale=True,
         ci_quantiles=None,
     )
-    plot.draw()
+    figure = plot.draw()
 
     assert isinstance(plot.data, pd.DataFrame)
     data = plot.data
@@ -286,6 +286,7 @@ def test_plot_conditional_density_uses_unique_condition_ridges() -> None:
     ]
     baselines = data["baseline"].drop_duplicates().to_numpy()
     np.testing.assert_allclose(baselines, [0.0, 1.15 * float(data["mean"].max())])
+    assert not figure.axes[0].get_yticklabels()
     _assert_ridge_baselines(plot, shown=False)
     _assert_okabe_ito_scales(plot, 2)
 
@@ -386,31 +387,35 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
         term,
         samples,
         rgrid=11,
-        newdata={"x": np.asarray([1.0, 0.5, 0.0])},
+        newdata={"x": np.asarray([1.5, 0.126, 0.004])},
     )
     figure = plot.draw()
-    shown_axis_plot = ptm.plot_1d_smooth_dist(
+    hidden_axis_plot = ptm.plot_1d_smooth_dist(
         ptm.onion_dist(nparam=4),
         term,
         samples,
         rgrid=11,
-        newdata={"x": np.asarray([1.0, 0.5, 0.0])},
+        newdata={"x": np.asarray([1.5, 0.126, 0.004])},
         show_reference_dist=False,
         show_ridge_baselines=True,
-        show_y_axis=True,
+        show_y_axis=False,
     )
-    shown_axis = shown_axis_plot.draw()
+    hidden_axis = hidden_axis_plot.draw()
 
     assert isinstance(plot, p9.ggplot)
     assert isinstance(plot.data, pd.DataFrame)
-    assert not figure.axes[0].get_yticklabels()
-    assert len(shown_axis.axes[0].get_yticklabels()) == 3
+    assert [label.get_text() for label in figure.axes[0].get_yticklabels()] == [
+        "0",
+        "0.13",
+        "1.5",
+    ]
+    assert not hidden_axis.axes[0].get_yticklabels()
     assert plot.mapping["color"] == "x"
     assert plot.labels.color == "x"
     _assert_gray_reference_lines(plot)
-    _assert_gray_reference_lines(shown_axis_plot, shown=False)
+    _assert_gray_reference_lines(hidden_axis_plot, shown=False)
     _assert_ridge_baselines(plot, shown=False)
-    _assert_ridge_baselines(shown_axis_plot, shown=True)
+    _assert_ridge_baselines(hidden_axis_plot, shown=True)
     _assert_ridge_ribbons_are_fill_only(plot)
     assert any(
         isinstance(layer.geom, p9.geom_line) and not layer.geom.aes_params
@@ -432,9 +437,9 @@ def test_plot_1d_smooth_dist_uses_density_axis_with_zero_spacing() -> None:
         "ci_quantiles": None,
     }
 
-    hidden = ptm.plot_1d_smooth_dist(ptm.onion_dist(nparam=4), term, samples, **kwargs)
-    shown = ptm.plot_1d_smooth_dist(
-        ptm.onion_dist(nparam=4), term, samples, show_y_axis=True, **kwargs
+    shown = ptm.plot_1d_smooth_dist(ptm.onion_dist(nparam=4), term, samples, **kwargs)
+    hidden = ptm.plot_1d_smooth_dist(
+        ptm.onion_dist(nparam=4), term, samples, show_y_axis=False, **kwargs
     )
     hidden_axis = hidden.draw().axes[0]
     shown_figure = shown.draw()
@@ -443,6 +448,7 @@ def test_plot_1d_smooth_dist_uses_density_axis_with_zero_spacing() -> None:
     assert not hidden_axis.get_yticklabels()
     assert shown.labels.y == "Density"
     assert "Density" in [text.get_text() for text in shown_figure.texts]
+    assert shown_axis.get_yticklabels()
     assert len(np.unique(shown_axis.get_yticks())) == len(shown_axis.get_yticks())
     assert len(shown_axis.get_yticks()) > 1
     _assert_ridge_baselines(shown, shown=True)
@@ -536,7 +542,7 @@ def test_density_ridges_add_opt_in_hdi() -> None:
     assert len(hdi.draw().axes) == 1
 
 
-def test_plot_2d_smooth_dist_colors_ridges_and_hides_y_tick_labels() -> None:
+def test_plot_2d_smooth_dist_labels_continuous_ridges() -> None:
     term, model = _tensor2()
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
@@ -547,7 +553,7 @@ def test_plot_2d_smooth_dist_colors_ridges_and_hides_y_tick_labels() -> None:
         samples,
         rgrid=7,
         newdata={
-            "x": np.asarray([1.0, 0.5, 0.0]),
+            "x": np.asarray([1.5, 0.126, 0.004]),
             "z": np.asarray([2.0, 1.5, 1.0]),
         },
         newdata_meshgrid=True,
@@ -558,14 +564,37 @@ def test_plot_2d_smooth_dist_colors_ridges_and_hides_y_tick_labels() -> None:
     assert len(figure.axes) == 3
     assert plot.mapping["color"] == "x"
     assert plot.labels.color == "x"
-    assert plot.labels.y == "Density"
+    assert plot.labels.y == "x"
     _assert_gray_reference_lines(plot)
     _assert_ridge_baselines(plot, shown=False)
     _assert_ridge_ribbons_are_fill_only(plot)
-    assert all(not axis.get_yticklabels() for axis in figure.axes)
+    ylabels = [
+        [label.get_text() for label in axis.get_yticklabels()]
+        for axis in figure.axes
+        if axis.get_yticklabels()
+    ]
+    assert ylabels
+    assert all(labels == ["0", "0.13", "1.5"] for labels in ylabels)
     assert isinstance(plot.data, pd.DataFrame)
     baselines = plot.data.groupby("x")["baseline"].first().sort_index()
     assert np.all(np.diff(baselines) > 0)
+
+    overlaid = ptm.plot_2d_smooth_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        rgrid=7,
+        ngrid=2,
+        ridge_spacing=0.0,
+        ci_quantiles=None,
+    )
+    overlaid_figure = overlaid.draw()
+    assert overlaid.labels.y == "Density"
+    assert "Density" in [text.get_text() for text in overlaid_figure.texts]
+    assert all(
+        len(np.unique(axis.get_yticks())) == len(axis.get_yticks()) > 1
+        for axis in overlaid_figure.axes
+    )
 
 
 @pytest.mark.parametrize(
@@ -754,12 +783,38 @@ def test_plot_3d_smooth_dist_meshgrid_draws_ordered_density_ridges() -> None:
     _assert_gray_reference_lines(plot)
     _assert_ridge_baselines(plot, shown=False)
     _assert_ridge_ribbons_are_fill_only(plot)
-    assert plot.labels.y == "Density"
+    assert plot.labels.y == "z"
     assert any(isinstance(layer.geom, p9.geom_ribbon) for layer in plot.layers)
     assert len(figure.axes) == 4
-    assert all(not axis.get_yticklabels() for axis in figure.axes)
+    ylabels = [
+        [label.get_text() for label in axis.get_yticklabels()]
+        for axis in figure.axes
+        if axis.get_yticklabels()
+    ]
+    assert ylabels
+    assert all(labels == ["0.2", "0.8"] for labels in ylabels)
     baselines = plot.data.groupby("z")["baseline"].first().sort_index()
     assert np.all(np.diff(baselines) > 0)
+
+    overlaid = ptm.plot_3d_smooth_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        x="longitude",
+        y="latitude",
+        ridge_by="z",
+        rgrid=7,
+        ngrid=2,
+        ridge_spacing=0.0,
+        ci_quantiles=None,
+    )
+    overlaid_figure = overlaid.draw()
+    assert overlaid.labels.y == "Density"
+    assert "Density" in [text.get_text() for text in overlaid_figure.texts]
+    assert all(
+        len(np.unique(axis.get_yticks())) == len(axis.get_yticks()) > 1
+        for axis in overlaid_figure.axes
+    )
 
 
 def test_plot_3d_smooth_dist_adds_opt_in_hdi_and_trajectories() -> None:

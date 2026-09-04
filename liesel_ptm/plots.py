@@ -271,10 +271,15 @@ def _plot_density_ridges(
         plot += p9.geom_hline(
             yintercept=np.unique(baselines), linetype="dotted", alpha=0.35
         )
+    y_axis: list[Any] = (
+        _ridge_y_axis(ridge_spacing, baselines, groups, ridge_by)
+        if pd.api.types.is_numeric_dtype(summary[ridge_by])
+        else [p9.scale_y_continuous(breaks=[]), p9.labs(y="Density")]
+    )
     return (
         plot
-        + p9.scale_y_continuous(breaks=[])
-        + p9.labs(x="r", y="Density", color=ridge_by, fill=ridge_by)
+        + y_axis
+        + p9.labs(x="r", color=ridge_by, fill=ridge_by)
         + _no_panel_grid()
         + _rounded_scales(summary, x=None, color=ridge_by, fill=ridge_by)
     )
@@ -574,7 +579,7 @@ def plot_1d_smooth_dist(
     show_reference_dist: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
-    show_y_axis: bool = False,
+    show_y_axis: bool = True,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -596,7 +601,7 @@ def plot_1d_smooth_dist(  # type: ignore[overload-cannot-match]
     show_reference_dist: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
-    show_y_axis: bool = False,
+    show_y_axis: bool = True,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -617,7 +622,7 @@ def plot_1d_smooth_dist(
     show_reference_dist: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
-    show_y_axis: bool = False,
+    show_y_axis: bool = True,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
