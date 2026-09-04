@@ -37,6 +37,16 @@ _QUANTITY_LABELS = {
     "transformation_raw": "Raw transformation",
 }
 _QUANTITIES = set(_QUANTITY_LABELS)
+_OKABE_ITO = (
+    "#E69F00",
+    "#56B4E9",
+    "#009E73",
+    "#F0E442",
+    "#0072B2",
+    "#D55E00",
+    "#CC79A7",
+    "#000000",
+)
 
 
 def _no_panel_grid() -> p9.theme:
@@ -68,12 +78,27 @@ def _format_numbers(values: Sequence[Any]) -> list[str]:
 def _rounded_scales(data: pd.DataFrame, **aesthetics: str | None) -> list[Any]:
     scales = []
     for aesthetic, column in aesthetics.items():
-        kind = (
-            "continuous"
-            if column is None or pd.api.types.is_numeric_dtype(data[column])
-            else "discrete"
+        is_discrete = column is not None and not pd.api.types.is_numeric_dtype(
+            data[column]
         )
-        scales.append(getattr(p9, f"scale_{aesthetic}_{kind}")(labels=_format_numbers))
+        if is_discrete and aesthetic in {"color", "fill"}:
+            groups = _ordered_groups(data[column])
+            if len(groups) <= len(_OKABE_ITO):
+                scale = getattr(p9, f"scale_{aesthetic}_manual")(
+                    values=_OKABE_ITO,
+                    limits=groups,
+                    labels=_format_numbers,
+                )
+            else:
+                scale = getattr(p9, f"scale_{aesthetic}_cmap_d")(
+                    cmap_name="viridis",
+                    limits=groups,
+                    labels=_format_numbers,
+                )
+        else:
+            kind = "discrete" if is_discrete else "continuous"
+            scale = getattr(p9, f"scale_{aesthetic}_{kind}")(labels=_format_numbers)
+        scales.append(scale)
     return scales
 
 

@@ -11,6 +11,17 @@ from matplotlib.text import Text
 
 import liesel_ptm as ptm
 
+_OKABE_ITO = [
+    "#E69F00",
+    "#56B4E9",
+    "#009E73",
+    "#F0E442",
+    "#0072B2",
+    "#D55E00",
+    "#CC79A7",
+    "#000000",
+]
+
 
 def _assert_gray_reference_lines(plot: p9.ggplot, *, shown: bool = True) -> None:
     reference_layers = [
@@ -29,6 +40,15 @@ def _assert_cluster_linetypes(plot: p9.ggplot) -> None:
     scale = plot.scales.get_scales("linetype")
     assert scale is not None
     assert scale.map([True, False]) == ["solid", "dashed"]
+
+
+def _assert_okabe_ito_scales(plot: p9.ggplot, n_categories: int) -> None:
+    color = plot.scales.get_scales("color")
+    fill = plot.scales.get_scales("fill")
+    assert isinstance(color, p9.scale_color_manual)
+    assert isinstance(fill, p9.scale_fill_manual)
+    assert color.map(color.final_limits) == _OKABE_ITO[:n_categories]
+    assert fill.map(fill.final_limits) == _OKABE_ITO[:n_categories]
 
 
 def _assert_ridge_baselines(plot: p9.ggplot, *, shown: bool) -> None:
@@ -173,6 +193,51 @@ def _conditional_response():
     return response, samples, model
 
 
+@pytest.mark.parametrize("n_categories", range(1, 9))
+def test_discrete_scales_use_okabe_ito_up_to_eight_categories(
+    n_categories: int,
+) -> None:
+    groups = [f"group-{i}" for i in range(n_categories)]
+    data = pd.DataFrame(
+        {
+            "group": pd.Categorical(
+                groups,
+                categories=[*groups, "unused"],
+            )
+        }
+    )
+    plot = p9.ggplot(data) + ptm.plots._rounded_scales(
+        data, color="group", fill="group"
+    )
+
+    _assert_okabe_ito_scales(plot, n_categories)
+
+
+def test_discrete_scales_use_viridis_from_nine_categories() -> None:
+    groups = [f"group-{i}" for i in range(9)]
+    data = pd.DataFrame({"group": groups})
+    plot = p9.ggplot(data) + ptm.plots._rounded_scales(
+        data, color="group", fill="group"
+    )
+    color = plot.scales.get_scales("color")
+    fill = plot.scales.get_scales("fill")
+
+    assert isinstance(color, p9.scale_color_cmap_d)
+    assert isinstance(fill, p9.scale_fill_cmap_d)
+    assert color.map(color.final_limits) == fill.map(fill.final_limits)
+    assert color.map(color.final_limits)[::8] == ["#440154", "#fde725"]
+
+
+def test_numeric_color_and_fill_scales_remain_continuous() -> None:
+    data = pd.DataFrame({"group": np.arange(9)})
+    plot = p9.ggplot(data) + ptm.plots._rounded_scales(
+        data, color="group", fill="group"
+    )
+
+    assert isinstance(plot.scales.get_scales("color"), p9.scale_color_continuous)
+    assert isinstance(plot.scales.get_scales("fill"), p9.scale_fill_continuous)
+
+
 def test_plot_intercept_dist_renders_mean_band_and_reference() -> None:
     builder = gam.MVTermBuilder.from_df(pd.DataFrame({"x": [0.0, 1.0]}), jnp.eye(4))
     term = builder.intercept(scale=1.0)
@@ -222,6 +287,7 @@ def test_plot_conditional_density_uses_unique_condition_ridges() -> None:
     baselines = data["baseline"].drop_duplicates().to_numpy()
     np.testing.assert_allclose(baselines, [0.0, 1.15 * float(data["mean"].max())])
     _assert_ridge_baselines(plot, shown=False)
+    _assert_okabe_ito_scales(plot, 2)
 
     spaced = ptm.plot_conditional_dist(
         response,
@@ -745,6 +811,8 @@ def test_plot_cluster_dist_can_show_and_hide_unobserved_levels() -> None:
     assert shown_plot.mapping["color"] == "group"
     _assert_cluster_linetypes(shown_plot)
     _assert_cluster_linetypes(hidden_plot)
+    _assert_okabe_ito_scales(shown_plot, 3)
+    _assert_okabe_ito_scales(hidden_plot, 2)
     _assert_gray_reference_lines(shown_plot)
     _assert_gray_reference_lines(hidden_plot, shown=False)
     _assert_ridge_baselines(shown_plot, shown=False)

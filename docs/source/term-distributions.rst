@@ -71,12 +71,14 @@ three-input and region glyphs. Panel grids are removed by default.
 
 Grouped distribution plots map color, and uncertainty ribbons map fill, to the
 conditioning variable by default. This provides a legend identifying each ridge or
-curve. Numeric ridge values are ordered from low to high, so higher values have
-higher vertical offsets and use the high end of the color scale. Callers can replace
-the default scales directly. Term-induced plots draw reference distributions as gray
-dotted lines with 0.5 opacity by default; pass ``show_reference_dist=False`` to omit
-them. Cluster plots use solid lines for observed clusters and dashed lines for
-unobserved clusters. Conditional response plots do not draw reference distributions::
+curve. Categorical values use the Okabe-Ito palette for up to eight plotted
+categories and discrete viridis for nine or more. Numeric ridge values are ordered
+from low to high, so higher values have higher vertical offsets and use the high end
+of the color scale. Callers can replace the default scales directly. Term-induced
+plots draw reference distributions as gray dotted lines with 0.5 opacity by default;
+pass ``show_reference_dist=False`` to omit them. Cluster plots use solid lines for
+observed clusters and dashed lines for unobserved clusters. Conditional response
+plots do not draw reference distributions::
 
    plot = ptm.plot_2d_smooth_dist(
        dist,
