@@ -82,6 +82,9 @@ modeled response to the reported response. For example, a response modeled as
 When ``response_bijector`` is supplied, ``rgrid`` must be an explicit array in
 reported-scale units. Density and CDF values follow the transformed distribution;
 the fitted and raw transformation curves are composed with the bijector's inverse.
+Conditional plot x-axes use the response variable's name, prefixed with
+``Transformed`` when a bijector is supplied. This can be overridden with
+``p9.labs(x=...)``.
 
 Plots
 -----

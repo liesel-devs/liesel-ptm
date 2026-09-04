@@ -309,6 +309,9 @@ def plot_conditional_dist(
     """
     if quantity not in _QUANTITIES:
         raise ValueError(f"Unknown quantity {quantity!r}.")
+    x_label = (
+        response.name if response_bijector is None else f"Transformed {response.name}"
+    )
     quantiles = (0.05, 0.5, 0.95) if ci_quantiles is None else ci_quantiles
     summary = summarise_conditional_dist(
         response,
@@ -365,7 +368,7 @@ def plot_conditional_dist(
             show_ridge_baselines=show_ridge_baselines,
             ci_quantiles=ci_quantiles,
             hdi_prob=hdi_prob,
-        ) + p9.labs(color="Condition", fill="Condition")
+        ) + p9.labs(x=x_label, color="Condition", fill="Condition")
 
     plot = p9.ggplot(
         summary,
@@ -387,7 +390,7 @@ def plot_conditional_dist(
         plot
         + p9.geom_line()
         + p9.labs(
-            x="r",
+            x=x_label,
             y=_QUANTITY_LABELS[quantity],
             color="Condition",
             fill="Condition",

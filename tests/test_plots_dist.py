@@ -281,6 +281,7 @@ def test_plot_conditional_density_uses_unique_condition_ridges() -> None:
 
     assert isinstance(plot.data, pd.DataFrame)
     data = plot.data
+    assert plot.labels.x == response.name
     assert list(data["_condition"].cat.categories) == [
         "conditional_x=0, conditional_z=0",
         "conditional_x=1, conditional_z=1",
@@ -386,6 +387,7 @@ def test_plot_conditional_dist_transforms_response_distribution(
     reported = tfd.TransformedDistribution(distribution=fitted, bijector=bijector)
     expected = reported.prob(rgrid) if quantity == "density" else reported.cdf(rgrid)
     assert isinstance(plot.data, pd.DataFrame)
+    assert plot.labels.x == f"Transformed {response.name}"
     np.testing.assert_allclose(plot.data["r"], rgrid)
     np.testing.assert_allclose(plot.data["mean"], expected, rtol=1e-5)
 
@@ -448,6 +450,7 @@ def test_plot_conditional_non_density_overlays_grouped_curves() -> None:
 
     assert plot.mapping["group"] == "_condition"
     assert plot.mapping["color"] == "_condition"
+    assert plot.labels.x == response.name
     assert len(figure.axes[0].lines) == 2
     _assert_ridge_baselines(plot, shown=False)
     assert not any(
