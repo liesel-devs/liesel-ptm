@@ -12,15 +12,23 @@ from matplotlib.text import Text
 import liesel_ptm as ptm
 
 
-def _assert_gray_reference_lines(plot: p9.ggplot) -> None:
+def _assert_gray_reference_lines(plot: p9.ggplot, *, shown: bool = True) -> None:
     reference_layers = [
         layer
         for layer in plot.layers
         if isinstance(layer.geom, p9.geom_line)
-        and layer.geom.aes_params.get("linetype") == "dotted"
+        and layer.geom.aes_params.get("color") == "gray"
     ]
-    assert reference_layers
-    assert all(layer.geom.aes_params["color"] == "gray" for layer in reference_layers)
+    assert len(reference_layers) == int(shown)
+    if shown:
+        assert reference_layers[0].geom.aes_params["linetype"] == "dotted"
+        assert reference_layers[0].geom.aes_params["alpha"] == 0.5
+
+
+def _assert_cluster_linetypes(plot: p9.ggplot) -> None:
+    scale = plot.scales.get_scales("linetype")
+    assert scale is not None
+    assert scale.map([True, False]) == ["solid", "dashed"]
 
 
 def _assert_ridge_baselines(plot: p9.ggplot, *, shown: bool) -> None:
@@ -270,19 +278,24 @@ def test_plot_intercept_dist_adds_sampled_trajectories_only_on_request() -> None
         )
     }
 
-    default = ptm.plot_intercept_dist(
+    default_plot = ptm.plot_intercept_dist(
         ptm.onion_dist(nparam=4), term, samples, rgrid=11
-    ).draw()
-    sampled = ptm.plot_intercept_dist(
+    )
+    sampled_plot = ptm.plot_intercept_dist(
         ptm.onion_dist(nparam=4),
         term,
         samples,
         rgrid=11,
+        show_reference_dist=False,
         show_n_samples=2,
         seed=2,
-    ).draw()
+    )
+    default = default_plot.draw()
+    sampled = sampled_plot.draw()
 
     assert len(sampled.axes[0].lines) > len(default.axes[0].lines)
+    _assert_gray_reference_lines(default_plot)
+    _assert_gray_reference_lines(sampled_plot, shown=False)
 
 
 def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
@@ -304,6 +317,7 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
         samples,
         rgrid=11,
         newdata={"x": np.asarray([1.0, 0.5, 0.0])},
+        show_reference_dist=False,
         show_ridge_baselines=True,
         show_y_axis=True,
     )
@@ -316,6 +330,7 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
     assert plot.mapping["color"] == "x"
     assert plot.labels.color == "x"
     _assert_gray_reference_lines(plot)
+    _assert_gray_reference_lines(shown_axis_plot, shown=False)
     _assert_ridge_baselines(plot, shown=False)
     _assert_ridge_baselines(shown_axis_plot, shown=True)
     _assert_ridge_ribbons_are_fill_only(plot)
@@ -341,6 +356,7 @@ def test_plot_labels_round_numeric_values_to_two_decimals() -> None:
         ridge_by="z",
         rgrid=7,
         ngrid=4,
+        show_reference_dist=False,
         show_ridge_baselines=True,
     )
     figure = plot.draw()
@@ -355,6 +371,7 @@ def test_plot_labels_round_numeric_values_to_two_decimals() -> None:
         len(label.rpartition(".")[2]) <= 2 for label in numeric_labels if "." in label
     )
     _assert_ridge_baselines(plot, shown=True)
+    _assert_gray_reference_lines(plot, shown=False)
 
 
 def test_plot_1d_smooth_dist_supports_opt_in_trajectories() -> None:
@@ -365,19 +382,30 @@ def test_plot_1d_smooth_dist_supports_opt_in_trajectories() -> None:
         / 50.0
     }
 
-    default = ptm.plot_1d_smooth_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=9, ngrid=2
-    ).draw()
-    sampled = ptm.plot_1d_smooth_dist(
+    default_plot = ptm.plot_1d_smooth_dist(
         ptm.onion_dist(nparam=4),
         term,
         samples,
+        quantity="cdf",
         rgrid=9,
         ngrid=2,
+    )
+    sampled_plot = ptm.plot_1d_smooth_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        quantity="cdf",
+        rgrid=9,
+        ngrid=2,
+        show_reference_dist=False,
         show_n_samples=2,
-    ).draw()
+    )
+    default = default_plot.draw()
+    sampled = sampled_plot.draw()
 
     assert len(sampled.axes[0].lines) > len(default.axes[0].lines)
+    _assert_gray_reference_lines(default_plot)
+    _assert_gray_reference_lines(sampled_plot, shown=False)
 
 
 def test_density_ridges_add_opt_in_hdi() -> None:
@@ -435,15 +463,15 @@ def test_plot_2d_smooth_dist_colors_ridges_and_hides_y_tick_labels() -> None:
 
 
 @pytest.mark.parametrize(
-    ("quantity", "label"),
+    ("quantity", "label", "show_reference_dist"),
     [
-        ("cdf", "CDF"),
-        ("transformation", "Transformation"),
-        ("transformation_raw", "Raw transformation"),
+        ("cdf", "CDF", True),
+        ("transformation", "Transformation", False),
+        ("transformation_raw", "Raw transformation", True),
     ],
 )
 def test_plot_2d_smooth_dist_labels_non_density_quantities(
-    quantity: str, label: str
+    quantity: str, label: str, show_reference_dist: bool
 ) -> None:
     term, model = _tensor2()
     assert term.model is model
@@ -456,10 +484,11 @@ def test_plot_2d_smooth_dist_labels_non_density_quantities(
         quantity=quantity,
         rgrid=7,
         ngrid=2,
+        show_reference_dist=show_reference_dist,
     )
 
     assert plot.labels.y == label
-    _assert_gray_reference_lines(plot)
+    _assert_gray_reference_lines(plot, shown=show_reference_dist)
 
 
 def test_plot_2d_smooth_dist_supports_opt_in_trajectories() -> None:
@@ -479,6 +508,7 @@ def test_plot_2d_smooth_dist_supports_opt_in_trajectories() -> None:
         samples,
         rgrid=7,
         ngrid=2,
+        show_reference_dist=False,
         show_n_samples=2,
         show_ridge_baselines=True,
     )
@@ -490,6 +520,8 @@ def test_plot_2d_smooth_dist_supports_opt_in_trajectories() -> None:
     )
     _assert_ridge_baselines(default_plot, shown=False)
     _assert_ridge_baselines(sampled_plot, shown=True)
+    _assert_gray_reference_lines(default_plot)
+    _assert_gray_reference_lines(sampled_plot, shown=False)
 
 
 def test_plot_3d_smooth_dist_stacked_orders_ridges_and_marks_points() -> None:
@@ -702,6 +734,7 @@ def test_plot_cluster_dist_can_show_and_hide_unobserved_levels() -> None:
         term,
         samples,
         rgrid=9,
+        show_reference_dist=False,
         show_unobserved=False,
         show_ridge_baselines=True,
     )
@@ -710,10 +743,27 @@ def test_plot_cluster_dist_can_show_and_hide_unobserved_levels() -> None:
     assert len(shown.axes[0].get_yticks()) == 3
     assert len(hidden.axes[0].get_yticks()) == 2
     assert shown_plot.mapping["color"] == "group"
+    _assert_cluster_linetypes(shown_plot)
+    _assert_cluster_linetypes(hidden_plot)
     _assert_gray_reference_lines(shown_plot)
+    _assert_gray_reference_lines(hidden_plot, shown=False)
     _assert_ridge_baselines(shown_plot, shown=False)
     _assert_ridge_baselines(hidden_plot, shown=True)
     _assert_ridge_ribbons_are_fill_only(shown_plot)
+
+
+def test_plot_cluster_dist_uses_cluster_linetypes_for_non_density_curves() -> None:
+    term, model = _cluster()
+    assert term.model is model
+    samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+
+    plot = ptm.plot_cluster_dist(
+        ptm.onion_dist(nparam=4), term, samples, quantity="cdf", rgrid=9
+    )
+
+    assert len(plot.draw().axes) == 1
+    _assert_cluster_linetypes(plot)
+    _assert_gray_reference_lines(plot)
 
 
 def test_plot_cluster_dist_supports_opt_in_trajectories() -> None:
@@ -745,9 +795,18 @@ def test_plot_cluster_dist_supports_categorical_linear_term() -> None:
 
     plot = ptm.plot_cluster_dist(ptm.onion_dist(nparam=4), term, samples, rgrid=9)
     figure = plot.draw()
+    cdf = ptm.plot_cluster_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        quantity="cdf",
+        rgrid=9,
+        show_reference_dist=False,
+    )
 
     assert len(figure.axes[0].get_yticks()) == 3
     assert plot.mapping["color"] == "myvar"
+    _assert_gray_reference_lines(cdf, shown=False)
 
 
 def test_categorical_linear_trajectories_use_the_selected_category() -> None:

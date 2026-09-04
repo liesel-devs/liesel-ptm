@@ -118,7 +118,7 @@ def _reference_data(
 def _plot_curves(
     summary: pd.DataFrame,
     *,
-    reference: pd.DataFrame,
+    reference: pd.DataFrame | None,
     quantity: str,
     ci_quantiles: tuple[float, float] | None,
     hdi_prob: float | None,
@@ -142,16 +142,18 @@ def _plot_curves(
             data=trajectories,
             alpha=0.25,
         )
-    return (
-        plot
-        + p9.geom_line()
-        + p9.geom_line(
+    plot += p9.geom_line()
+    if reference is not None:
+        plot += p9.geom_line(
             p9.aes("r", "reference"),
             data=reference,
             inherit_aes=False,
             linetype="dotted",
             color="gray",
+            alpha=0.5,
         )
+    return (
+        plot
         + p9.labs(x="r", y=_QUANTITY_LABELS[quantity])
         + _no_panel_grid()
         + _rounded_scales(summary, x=None, y=None)
@@ -438,6 +440,7 @@ def plot_intercept_dist(
     *,
     quantity: str = "density",
     rgrid: int | ArrayLike = 150,
+    show_reference_dist: bool = True,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -453,6 +456,7 @@ def plot_intercept_dist(  # type: ignore[overload-cannot-match]
     *,
     quantity: str = "density",
     rgrid: int | ArrayLike = 150,
+    show_reference_dist: bool = True,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -467,6 +471,7 @@ def plot_intercept_dist(
     *,
     quantity: str = "density",
     rgrid: int | ArrayLike = 150,
+    show_reference_dist: bool = True,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -499,7 +504,9 @@ def plot_intercept_dist(
         )
     return _plot_curves(
         summary,
-        reference=_reference_data(dist, term, r, quantity),
+        reference=(
+            _reference_data(dist, term, r, quantity) if show_reference_dist else None
+        ),
         quantity=quantity,
         ci_quantiles=ci_quantiles,
         hdi_prob=hdi_prob,
@@ -518,6 +525,7 @@ def plot_1d_smooth_dist(
     newdata: NewData = None,
     ngrid: int = 5,
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
     show_y_axis: bool = False,
@@ -539,6 +547,7 @@ def plot_1d_smooth_dist(  # type: ignore[overload-cannot-match]
     newdata: NewData = None,
     ngrid: int = 5,
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
     show_y_axis: bool = False,
@@ -559,6 +568,7 @@ def plot_1d_smooth_dist(
     newdata: NewData = None,
     ngrid: int = 5,
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
     show_y_axis: bool = False,
@@ -633,19 +643,21 @@ def plot_1d_smooth_dist(
                 data=trajectories,
                 alpha=0.25,
             )
-        reference = _reference_data(
-            dist, term, summary["r"].drop_duplicates().to_numpy(), quantity
-        )
-        return (
-            plot
-            + p9.geom_line()
-            + p9.geom_line(
+        plot += p9.geom_line()
+        if show_reference_dist:
+            reference = _reference_data(
+                dist, term, summary["r"].drop_duplicates().to_numpy(), quantity
+            )
+            plot += p9.geom_line(
                 p9.aes("r", "reference"),
                 data=reference,
                 inherit_aes=False,
                 linetype="dotted",
                 color="gray",
+                alpha=0.5,
             )
+        return (
+            plot
             + p9.labs(
                 x="r",
                 y=_QUANTITY_LABELS[quantity],
@@ -707,30 +719,29 @@ def plot_1d_smooth_dist(
             data=trajectories,
             alpha=0.25,
         )
-    reference = pd.concat(
-        [
-            _reference_data(
-                dist,
-                term,
-                summary["r"].drop_duplicates().to_numpy(),
-                quantity,
-            ).assign(
-                **{
-                    covariate: group,
-                    "plot_reference": lambda data, baseline=baseline: (
-                        data["reference"] + baseline
-                    ),
-                }
-            )
-            for group, baseline in zip(groups, baselines)
-        ],
-        ignore_index=True,
-    )
     if show_ridge_baselines:
         plot += p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
-    plot = (
-        plot
-        + p9.geom_line(
+    if show_reference_dist:
+        reference = pd.concat(
+            [
+                _reference_data(
+                    dist,
+                    term,
+                    summary["r"].drop_duplicates().to_numpy(),
+                    quantity,
+                ).assign(
+                    **{
+                        covariate: group,
+                        "plot_reference": lambda data, baseline=baseline: (
+                            data["reference"] + baseline
+                        ),
+                    }
+                )
+                for group, baseline in zip(groups, baselines)
+            ],
+            ignore_index=True,
+        )
+        plot += p9.geom_line(
             p9.aes("r", "plot_reference", group=covariate),
             data=reference,
             inherit_aes=False,
@@ -738,6 +749,8 @@ def plot_1d_smooth_dist(
             color="gray",
             alpha=0.5,
         )
+    plot = (
+        plot
         + p9.scale_y_continuous(
             breaks=baselines.tolist(), labels=_format_numbers(groups)
         )
@@ -767,6 +780,7 @@ def plot_2d_smooth_dist(
     newdata_meshgrid: bool = False,
     marginals: Sequence[MarginalTerm] = (),
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     facet_by: str | None = None,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
@@ -790,6 +804,7 @@ def plot_2d_smooth_dist(  # type: ignore[overload-cannot-match]
     newdata_meshgrid: bool = False,
     marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     facet_by: str | None = None,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
@@ -812,6 +827,7 @@ def plot_2d_smooth_dist(
     newdata_meshgrid: bool = False,
     marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     facet_by: str | None = None,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
@@ -883,26 +899,28 @@ def plot_2d_smooth_dist(
                 data=trajectories,
                 alpha=0.25,
             )
-        facet_values = summary[[facet_by]].drop_duplicates()
-        reference = facet_values.merge(
-            _reference_data(
-                dist,
-                term,
-                summary["r"].drop_duplicates().to_numpy(),
-                quantity,
-            ),
-            how="cross",
-        )
-        return (
-            plot
-            + p9.geom_line()
-            + p9.geom_line(
+        plot += p9.geom_line()
+        if show_reference_dist:
+            facet_values = summary[[facet_by]].drop_duplicates()
+            reference = facet_values.merge(
+                _reference_data(
+                    dist,
+                    term,
+                    summary["r"].drop_duplicates().to_numpy(),
+                    quantity,
+                ),
+                how="cross",
+            )
+            plot += p9.geom_line(
                 p9.aes("r", "reference"),
                 data=reference,
                 inherit_aes=False,
                 linetype="dotted",
                 color="gray",
+                alpha=0.5,
             )
+        return (
+            plot
             + p9.facet_wrap(
                 f"~{facet_by}",
                 labeller=cast(
@@ -926,19 +944,21 @@ def plot_2d_smooth_dist(
             )
         )
 
-    reference = (
-        summary[[facet_by, ridge_by]]
-        .drop_duplicates()
-        .merge(
-            _reference_data(
-                dist,
-                term,
-                summary["r"].drop_duplicates().to_numpy(),
-                quantity,
-            ),
-            how="cross",
+    reference = None
+    if show_reference_dist:
+        reference = (
+            summary[[facet_by, ridge_by]]
+            .drop_duplicates()
+            .merge(
+                _reference_data(
+                    dist,
+                    term,
+                    summary["r"].drop_duplicates().to_numpy(),
+                    quantity,
+                ),
+                how="cross",
+            )
         )
-    )
     return _plot_density_ridges(
         summary,
         reference=reference,
@@ -976,6 +996,7 @@ def plot_3d_smooth_dist(
     newdata_meshgrid: bool = False,
     marginals: Sequence[MarginalTerm] = (),
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
@@ -1000,6 +1021,7 @@ def plot_3d_smooth_dist(  # type: ignore[overload-cannot-match]
     newdata_meshgrid: bool = False,
     marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
@@ -1023,6 +1045,7 @@ def plot_3d_smooth_dist(
     newdata_meshgrid: bool = False,
     marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
@@ -1064,19 +1087,21 @@ def plot_3d_smooth_dist(
         n=show_n_samples,
         seed=seed,
     )
-    reference = (
-        summary[[x, y, ridge_by]]
-        .drop_duplicates()
-        .merge(
-            _reference_data(
-                dist,
-                term,
-                summary["r"].drop_duplicates().to_numpy(),
-                "density",
-            ),
-            how="cross",
+    reference = None
+    if show_reference_dist:
+        reference = (
+            summary[[x, y, ridge_by]]
+            .drop_duplicates()
+            .merge(
+                _reference_data(
+                    dist,
+                    term,
+                    summary["r"].drop_duplicates().to_numpy(),
+                    "density",
+                ),
+                how="cross",
+            )
         )
-    )
     return _plot_density_ridges(
         summary,
         reference=reference,
@@ -1304,6 +1329,7 @@ def plot_cluster_dist(
     newdata: ClusterNewData = None,
     labels: Labels = None,
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     show_unobserved: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
@@ -1325,6 +1351,7 @@ def plot_cluster_dist(  # type: ignore[overload-cannot-match]
     newdata: ClusterNewData = None,
     labels: Labels = None,
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     show_unobserved: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
@@ -1345,6 +1372,7 @@ def plot_cluster_dist(
     newdata: ClusterNewData = None,
     labels: Labels = None,
     intercept: Intercept = None,
+    show_reference_dist: bool = True,
     show_unobserved: bool = True,
     ridge_spacing: float | None = None,
     show_ridge_baselines: bool = False,
@@ -1449,19 +1477,22 @@ def plot_cluster_dist(
         if hdi_prob is not None:
             plot += p9.geom_line(p9.aes(y="hdi_low"), linetype="dashed")
             plot += p9.geom_line(p9.aes(y="hdi_high"), linetype="dashed")
-        reference = _reference_data(
-            dist, term, summary["r"].drop_duplicates().to_numpy(), quantity
-        )
-        return (
-            plot
-            + p9.geom_line()
-            + p9.geom_line(
+        plot += p9.geom_line()
+        if show_reference_dist:
+            reference = _reference_data(
+                dist, term, summary["r"].drop_duplicates().to_numpy(), quantity
+            )
+            plot += p9.geom_line(
                 p9.aes("r", "reference"),
                 data=reference,
                 inherit_aes=False,
                 linetype="dotted",
                 color="gray",
+                alpha=0.5,
             )
+        return (
+            plot
+            + p9.scale_linetype_manual(values={True: "solid", False: "dashed"})
             + p9.labs(
                 x="r",
                 y=_QUANTITY_LABELS[quantity],
@@ -1521,30 +1552,29 @@ def plot_cluster_dist(
             data=trajectories,
             alpha=0.25,
         )
-    reference = pd.concat(
-        [
-            _reference_data(
-                dist,
-                term,
-                summary["r"].drop_duplicates().to_numpy(),
-                quantity,
-            ).assign(
-                **{
-                    category: group,
-                    "plot_reference": lambda data, baseline=baseline: (
-                        data["reference"] + baseline
-                    ),
-                }
-            )
-            for group, baseline in zip(groups, baselines)
-        ],
-        ignore_index=True,
-    )
     if show_ridge_baselines:
         plot += p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
-    return (
-        plot
-        + p9.geom_line(
+    if show_reference_dist:
+        reference = pd.concat(
+            [
+                _reference_data(
+                    dist,
+                    term,
+                    summary["r"].drop_duplicates().to_numpy(),
+                    quantity,
+                ).assign(
+                    **{
+                        category: group,
+                        "plot_reference": lambda data, baseline=baseline: (
+                            data["reference"] + baseline
+                        ),
+                    }
+                )
+                for group, baseline in zip(groups, baselines)
+            ],
+            ignore_index=True,
+        )
+        plot += p9.geom_line(
             p9.aes("r", "plot_reference", group=category),
             data=reference,
             inherit_aes=False,
@@ -1552,6 +1582,9 @@ def plot_cluster_dist(
             color="gray",
             alpha=0.5,
         )
+    return (
+        plot
+        + p9.scale_linetype_manual(values={True: "solid", False: "dashed"})
         + p9.scale_y_continuous(
             breaks=baselines.tolist(), labels=_format_numbers(groups)
         )
