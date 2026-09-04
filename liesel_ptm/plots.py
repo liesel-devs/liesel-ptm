@@ -164,6 +164,7 @@ def _plot_density_ridges(
     reference: pd.DataFrame | None,
     ridge_by: str,
     ridge_spacing: float | None,
+    show_ridge_baselines: bool,
     ci_quantiles: tuple[float, float] | None,
     hdi_prob: float | None,
     trajectories: pd.DataFrame | None = None,
@@ -220,9 +221,10 @@ def _plot_density_ridges(
             color="gray",
             alpha=0.5,
         )
+    if show_ridge_baselines:
+        plot += p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
     return (
         plot
-        + p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
         + p9.scale_y_continuous(breaks=[])
         + p9.labs(x="r", y="Density", color=ridge_by, fill=ridge_by)
         + _no_panel_grid()
@@ -240,6 +242,7 @@ def plot_conditional_dist(
     include_loc: bool = False,
     include_scale: bool = False,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
 ) -> p9.ggplot:
@@ -276,6 +279,7 @@ def plot_conditional_dist(
             reference=None,
             ridge_by=condition,
             ridge_spacing=ridge_spacing,
+            show_ridge_baselines=show_ridge_baselines,
             ci_quantiles=ci_quantiles,
             hdi_prob=hdi_prob,
         ) + p9.labs(color="Condition", fill="Condition")
@@ -515,6 +519,7 @@ def plot_1d_smooth_dist(
     ngrid: int = 5,
     intercept: Intercept = None,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     show_y_axis: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
@@ -535,6 +540,7 @@ def plot_1d_smooth_dist(  # type: ignore[overload-cannot-match]
     ngrid: int = 5,
     intercept: Intercept = None,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     show_y_axis: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
@@ -554,6 +560,7 @@ def plot_1d_smooth_dist(
     ngrid: int = 5,
     intercept: Intercept = None,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     show_y_axis: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
@@ -719,9 +726,10 @@ def plot_1d_smooth_dist(
         ],
         ignore_index=True,
     )
+    if show_ridge_baselines:
+        plot += p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
     plot = (
         plot
-        + p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
         + p9.geom_line(
             p9.aes("r", "plot_reference", group=covariate),
             data=reference,
@@ -761,6 +769,7 @@ def plot_2d_smooth_dist(
     intercept: Intercept = None,
     facet_by: str | None = None,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -783,6 +792,7 @@ def plot_2d_smooth_dist(  # type: ignore[overload-cannot-match]
     intercept: Intercept = None,
     facet_by: str | None = None,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -804,6 +814,7 @@ def plot_2d_smooth_dist(
     intercept: Intercept = None,
     facet_by: str | None = None,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -933,6 +944,7 @@ def plot_2d_smooth_dist(
         reference=reference,
         ridge_by=ridge_by,
         ridge_spacing=ridge_spacing,
+        show_ridge_baselines=show_ridge_baselines,
         ci_quantiles=ci_quantiles,
         hdi_prob=hdi_prob,
         trajectories=trajectories,
@@ -965,6 +977,7 @@ def plot_3d_smooth_dist(
     marginals: Sequence[MarginalTerm] = (),
     intercept: Intercept = None,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -988,6 +1001,7 @@ def plot_3d_smooth_dist(  # type: ignore[overload-cannot-match]
     marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -1010,6 +1024,7 @@ def plot_3d_smooth_dist(
     marginals: Sequence[lsl.Var] = (),
     intercept: Intercept = None,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -1067,6 +1082,7 @@ def plot_3d_smooth_dist(
         reference=reference,
         ridge_by=ridge_by,
         ridge_spacing=ridge_spacing,
+        show_ridge_baselines=show_ridge_baselines,
         ci_quantiles=ci_quantiles,
         hdi_prob=hdi_prob,
         trajectories=trajectories,
@@ -1290,6 +1306,7 @@ def plot_cluster_dist(
     intercept: Intercept = None,
     show_unobserved: bool = True,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -1310,6 +1327,7 @@ def plot_cluster_dist(  # type: ignore[overload-cannot-match]
     intercept: Intercept = None,
     show_unobserved: bool = True,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -1329,6 +1347,7 @@ def plot_cluster_dist(
     intercept: Intercept = None,
     show_unobserved: bool = True,
     ridge_spacing: float | None = None,
+    show_ridge_baselines: bool = False,
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
     show_n_samples: int | None = None,
@@ -1521,9 +1540,10 @@ def plot_cluster_dist(
         ],
         ignore_index=True,
     )
+    if show_ridge_baselines:
+        plot += p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
     return (
         plot
-        + p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
         + p9.geom_line(
             p9.aes("r", "plot_reference", group=category),
             data=reference,

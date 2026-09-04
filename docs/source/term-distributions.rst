@@ -61,12 +61,13 @@ Plots
 -----
 
 The high-level plotting functions accept the distribution, term, and samples directly
-and return a :class:`plotnine.ggplot`. Density plots use ridge baselines; CDF and
-transformation plots overlay curves. Posterior trajectories are disabled by default
-and can be enabled reproducibly with ``show_n_samples=`` and ``seed=``. Quantile
-ribbons are shown on ordinary distribution plots by default; ``hdi_prob=`` adds HDI
-display. Both uncertainty displays are opt-in for stacked three-input and region
-glyphs. Panel grids are removed by default.
+and return a :class:`plotnine.ggplot`. Density plots use ridge baselines, whose
+horizontal guides are hidden by default; pass ``show_ridge_baselines=True`` to show
+them. CDF and transformation plots overlay curves. Posterior trajectories are
+disabled by default and can be enabled reproducibly with ``show_n_samples=`` and
+``seed=``. Quantile ribbons are shown on ordinary distribution plots by default;
+``hdi_prob=`` adds HDI display. Both uncertainty displays are opt-in for stacked
+three-input and region glyphs. Panel grids are removed by default.
 
 Grouped distribution plots map color, and uncertainty ribbons map fill, to the
 conditioning variable by default. This provides a legend identifying each ridge or

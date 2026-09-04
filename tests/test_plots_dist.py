@@ -23,6 +23,21 @@ def _assert_gray_reference_lines(plot: p9.ggplot) -> None:
     assert all(layer.geom.aes_params["color"] == "gray" for layer in reference_layers)
 
 
+def _assert_ridge_baselines(plot: p9.ggplot, *, shown: bool) -> None:
+    baseline_layers = [
+        layer for layer in plot.layers if isinstance(layer.geom, p9.geom_hline)
+    ]
+    assert len(baseline_layers) == int(shown)
+    if shown:
+        layer = baseline_layers[0]
+        assert layer.geom.aes_params == {"alpha": 0.35, "linetype": "dotted"}
+        assert isinstance(plot.data, pd.DataFrame)
+        np.testing.assert_allclose(
+            np.sort(layer._data["yintercept"]),
+            np.sort(plot.data["baseline"].drop_duplicates()),
+        )
+
+
 def _assert_ridge_ribbons_are_fill_only(plot: p9.ggplot) -> None:
     ribbons = [layer for layer in plot.layers if isinstance(layer.geom, p9.geom_ribbon)]
     assert ribbons
@@ -198,6 +213,7 @@ def test_plot_conditional_density_uses_unique_condition_ridges() -> None:
     ]
     baselines = data["baseline"].drop_duplicates().to_numpy()
     np.testing.assert_allclose(baselines, [0.0, 1.15 * float(data["mean"].max())])
+    _assert_ridge_baselines(plot, shown=False)
 
     spaced = ptm.plot_conditional_dist(
         response,
@@ -205,12 +221,14 @@ def test_plot_conditional_density_uses_unique_condition_ridges() -> None:
         newdata=newdata,
         rgrid=jnp.array([-1.0, 0.0, 1.0]),
         ridge_spacing=0.7,
+        show_ridge_baselines=True,
         ci_quantiles=None,
     )
     assert isinstance(spaced.data, pd.DataFrame)
     np.testing.assert_allclose(
         spaced.data["baseline"].drop_duplicates().to_numpy(), [0.0, 0.7]
     )
+    _assert_ridge_baselines(spaced, shown=True)
 
 
 def test_plot_conditional_non_density_overlays_grouped_curves() -> None:
@@ -225,6 +243,7 @@ def test_plot_conditional_non_density_overlays_grouped_curves() -> None:
         rgrid=jnp.array([-1.0, 0.0, 1.0]),
         include_loc=True,
         include_scale=True,
+        show_ridge_baselines=True,
         ci_quantiles=None,
     )
     figure = plot.draw()
@@ -232,6 +251,7 @@ def test_plot_conditional_non_density_overlays_grouped_curves() -> None:
     assert plot.mapping["group"] == "_condition"
     assert plot.mapping["color"] == "_condition"
     assert len(figure.axes[0].lines) == 2
+    _assert_ridge_baselines(plot, shown=False)
     assert not any(
         isinstance(layer.geom, p9.geom_line)
         and layer.geom.aes_params.get("linetype") == "dotted"
@@ -278,14 +298,16 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
         newdata={"x": np.asarray([1.0, 0.5, 0.0])},
     )
     figure = plot.draw()
-    shown_axis = ptm.plot_1d_smooth_dist(
+    shown_axis_plot = ptm.plot_1d_smooth_dist(
         ptm.onion_dist(nparam=4),
         term,
         samples,
         rgrid=11,
         newdata={"x": np.asarray([1.0, 0.5, 0.0])},
+        show_ridge_baselines=True,
         show_y_axis=True,
-    ).draw()
+    )
+    shown_axis = shown_axis_plot.draw()
 
     assert isinstance(plot, p9.ggplot)
     assert isinstance(plot.data, pd.DataFrame)
@@ -294,6 +316,8 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
     assert plot.mapping["color"] == "x"
     assert plot.labels.color == "x"
     _assert_gray_reference_lines(plot)
+    _assert_ridge_baselines(plot, shown=False)
+    _assert_ridge_baselines(shown_axis_plot, shown=True)
     _assert_ridge_ribbons_are_fill_only(plot)
     assert any(
         isinstance(layer.geom, p9.geom_line) and not layer.geom.aes_params
@@ -308,7 +332,7 @@ def test_plot_labels_round_numeric_values_to_two_decimals() -> None:
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    figure = ptm.plot_3d_smooth_dist(
+    plot = ptm.plot_3d_smooth_dist(
         ptm.onion_dist(nparam=4),
         term,
         samples,
@@ -317,7 +341,9 @@ def test_plot_labels_round_numeric_values_to_two_decimals() -> None:
         ridge_by="z",
         rgrid=7,
         ngrid=4,
-    ).draw()
+        show_ridge_baselines=True,
+    )
+    figure = plot.draw()
 
     numeric_labels = [
         text.get_text()
@@ -328,6 +354,7 @@ def test_plot_labels_round_numeric_values_to_two_decimals() -> None:
     assert all(
         len(label.rpartition(".")[2]) <= 2 for label in numeric_labels if "." in label
     )
+    _assert_ridge_baselines(plot, shown=True)
 
 
 def test_plot_1d_smooth_dist_supports_opt_in_trajectories() -> None:
@@ -399,6 +426,7 @@ def test_plot_2d_smooth_dist_colors_ridges_and_hides_y_tick_labels() -> None:
     assert plot.labels.color == "x"
     assert plot.labels.y == "Density"
     _assert_gray_reference_lines(plot)
+    _assert_ridge_baselines(plot, shown=False)
     _assert_ridge_ribbons_are_fill_only(plot)
     assert all(not axis.get_yticklabels() for axis in figure.axes)
     assert isinstance(plot.data, pd.DataFrame)
@@ -442,21 +470,26 @@ def test_plot_2d_smooth_dist_supports_opt_in_trajectories() -> None:
         / 100.0
     }
 
-    default = ptm.plot_2d_smooth_dist(
+    default_plot = ptm.plot_2d_smooth_dist(
         ptm.onion_dist(nparam=4), term, samples, rgrid=7, ngrid=2
-    ).draw()
-    sampled = ptm.plot_2d_smooth_dist(
+    )
+    sampled_plot = ptm.plot_2d_smooth_dist(
         ptm.onion_dist(nparam=4),
         term,
         samples,
         rgrid=7,
         ngrid=2,
         show_n_samples=2,
-    ).draw()
+        show_ridge_baselines=True,
+    )
+    default = default_plot.draw()
+    sampled = sampled_plot.draw()
 
     assert sum(len(axis.lines) for axis in sampled.axes) > sum(
         len(axis.lines) for axis in default.axes
     )
+    _assert_ridge_baselines(default_plot, shown=False)
+    _assert_ridge_baselines(sampled_plot, shown=True)
 
 
 def test_plot_3d_smooth_dist_stacked_orders_ridges_and_marks_points() -> None:
@@ -581,6 +614,7 @@ def test_plot_3d_smooth_dist_meshgrid_draws_ordered_density_ridges() -> None:
     assert plot.mapping["color"] == "z"
     assert plot.labels.color == "z"
     _assert_gray_reference_lines(plot)
+    _assert_ridge_baselines(plot, shown=False)
     _assert_ridge_ribbons_are_fill_only(plot)
     assert plot.labels.y == "Density"
     assert any(isinstance(layer.geom, p9.geom_ribbon) for layer in plot.layers)
@@ -663,18 +697,22 @@ def test_plot_cluster_dist_can_show_and_hide_unobserved_levels() -> None:
 
     shown_plot = ptm.plot_cluster_dist(ptm.onion_dist(nparam=4), term, samples, rgrid=9)
     shown = shown_plot.draw()
-    hidden = ptm.plot_cluster_dist(
+    hidden_plot = ptm.plot_cluster_dist(
         ptm.onion_dist(nparam=4),
         term,
         samples,
         rgrid=9,
         show_unobserved=False,
-    ).draw()
+        show_ridge_baselines=True,
+    )
+    hidden = hidden_plot.draw()
 
     assert len(shown.axes[0].get_yticks()) == 3
     assert len(hidden.axes[0].get_yticks()) == 2
     assert shown_plot.mapping["color"] == "group"
     _assert_gray_reference_lines(shown_plot)
+    _assert_ridge_baselines(shown_plot, shown=False)
+    _assert_ridge_baselines(hidden_plot, shown=True)
     _assert_ridge_ribbons_are_fill_only(shown_plot)
 
 
