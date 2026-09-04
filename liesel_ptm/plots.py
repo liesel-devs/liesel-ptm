@@ -7,6 +7,7 @@ import liesel_gam as gam
 import numpy as np
 import pandas as pd
 import plotnine as p9
+import tensorflow_probability.substrates.jax.bijectors as tfb
 from jax import Array
 from jax.typing import ArrayLike
 
@@ -293,6 +294,7 @@ def plot_conditional_dist(
     condition_labels: Sequence[str] | None = None,
     quantity: str = "density",
     rgrid: int | ArrayLike = 150,
+    response_bijector: tfb.Bijector | None = None,
     include_loc: bool = False,
     include_scale: bool = False,
     ridge_spacing: float | None = None,
@@ -300,7 +302,11 @@ def plot_conditional_dist(
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
 ) -> p9.ggplot:
-    """Plot conditional PTM distributions at condition rows in newdata."""
+    """Plot conditional PTM distributions at condition rows in newdata.
+
+    ``response_bijector`` maps modeled responses to the plotted scale and requires
+    an explicit ``rgrid`` in plotted-scale units.
+    """
     if quantity not in _QUANTITIES:
         raise ValueError(f"Unknown quantity {quantity!r}.")
     quantiles = (0.05, 0.5, 0.95) if ci_quantiles is None else ci_quantiles
@@ -309,6 +315,7 @@ def plot_conditional_dist(
         samples,
         newdata=newdata,
         rgrid=rgrid,
+        response_bijector=response_bijector,
         include_loc=include_loc,
         include_scale=include_scale,
         quantiles=quantiles,

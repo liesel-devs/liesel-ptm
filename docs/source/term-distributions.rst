@@ -63,6 +63,26 @@ fixed to zero and one. Set ``include_loc=True`` and/or ``include_scale=True`` fo
 corresponding conditional parameters. When either is included, ``rgrid`` must be an
 explicit response-scale array.
 
+Conditional summaries and plots can report the response on another scale with a
+scalar bijector from the JAX TensorFlow Probability substrate. The bijector maps the
+modeled response to the reported response. For example, a response modeled as
+``log(y)`` can be displayed on the original scale with ``tfb.Exp()``::
+
+   import jax.numpy as jnp
+   import tensorflow_probability.substrates.jax.bijectors as tfb
+
+   plot = ptm.plot_conditional_dist(
+       model.response,
+       samples,
+       newdata=cases,
+       rgrid=jnp.linspace(0.01, 20.0, 200),
+       response_bijector=tfb.Exp(),
+   )
+
+When ``response_bijector`` is supplied, ``rgrid`` must be an explicit array in
+reported-scale units. Density and CDF values follow the transformed distribution;
+the fitted and raw transformation curves are composed with the bijector's inverse.
+
 Plots
 -----
 

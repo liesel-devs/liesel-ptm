@@ -7,6 +7,8 @@ import liesel.model as lsl
 import liesel_gam as gam
 import numpy as np
 import pandas as pd
+import tensorflow_probability.substrates.jax.bijectors as tfb
+import tensorflow_probability.substrates.jax.distributions as tfd
 from jax import Array
 from jax.typing import ArrayLike
 
@@ -117,6 +119,7 @@ def _summarise_dist(
     quantiles: Sequence[float],
     hdi_prob: float,
     covariates: Mapping[str, ArrayLike | Sequence[Any]] | None = None,
+    response_bijector: tfb.Bijector | None = None,
 ) -> pd.DataFrame:
     if isinstance(rgrid, int):
         if rgrid <= 0:
@@ -127,11 +130,21 @@ def _summarise_dist(
         if r.ndim != 1 or not len(r):
             raise ValueError("Array rgrid must be a nonempty one-dimensional vector.")
     r_batched = r.reshape((-1,) + (1,) * len(fitted.batch_shape))
+    model_r_batched = (
+        r_batched if response_bijector is None else response_bijector.inverse(r_batched)
+    )
+    reported = (
+        fitted
+        if response_bijector is None
+        else tfd.TransformedDistribution(
+            distribution=fitted, bijector=response_bijector
+        )
+    )
     quantities = {
-        "density": fitted.prob(r_batched),
-        "cdf": fitted.cdf(r_batched),
-        "transformation": fitted.transformation_and_logdet(r_batched)[0],
-        "transformation_raw": raw.transformation_and_logdet_spline(r_batched)[0],
+        "density": reported.prob(r_batched),
+        "cdf": reported.cdf(r_batched),
+        "transformation": fitted.transformation_and_logdet(model_r_batched)[0],
+        "transformation_raw": raw.transformation_and_logdet_spline(model_r_batched)[0],
     }
     summary = pd.concat(
         [
@@ -305,12 +318,29 @@ def summarise_conditional_dist(
     *,
     newdata: ConditionalNewData,
     rgrid: int | ArrayLike = 150,
+    response_bijector: tfb.Bijector | None = None,
     include_loc: bool = False,
     include_scale: bool = False,
     quantiles: Sequence[float] = (0.05, 0.5, 0.95),
     hdi_prob: float = 0.9,
 ) -> pd.DataFrame:
-    """Summarise conditional PTM distributions at condition rows in newdata."""
+    """Summarise conditional PTM distributions at condition rows in newdata.
+
+    ``response_bijector`` maps modeled responses to the reported scale and requires
+    an explicit ``rgrid`` in reported-scale units.
+    """
+    if response_bijector is not None:
+        if not isinstance(response_bijector, tfb.Bijector):
+            raise TypeError("response_bijector must be a JAX TFP bijector or None.")
+        if (
+            response_bijector.forward_min_event_ndims != 0
+            or response_bijector.inverse_min_event_ndims != 0
+        ):
+            raise ValueError("response_bijector must be a scalar-event bijector.")
+        if isinstance(rgrid, int):
+            raise ValueError(
+                "rgrid must be an explicit array when response_bijector is supplied."
+            )
     if isinstance(rgrid, int) and (include_loc or include_scale):
         raise ValueError(
             "rgrid must be an explicit array when location or scale is included."
@@ -332,6 +362,7 @@ def summarise_conditional_dist(
         covariates={
             str(name): combinations[name].to_numpy() for name in combinations.columns
         },
+        response_bijector=response_bijector,
     )
 
 

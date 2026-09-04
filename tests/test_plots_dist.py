@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import plotnine as p9
 import pytest
+import tensorflow_probability.substrates.jax.bijectors as tfb
+import tensorflow_probability.substrates.jax.distributions as tfd
 from matplotlib.text import Text
 
 import liesel_ptm as ptm
@@ -358,6 +360,34 @@ def test_plot_conditional_dist_accepts_custom_condition_labels(
         text.get_text() for text in figure.findobj(Text)
     }
     _assert_okabe_ito_scales(plot, 2)
+
+
+@pytest.mark.parametrize("quantity", ["density", "cdf"])
+def test_plot_conditional_dist_transforms_response_distribution(
+    quantity: str,
+) -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+    rgrid = jnp.array([0.5, 1.0, 2.0])
+    bijector = tfb.Exp()
+
+    plot = ptm.plot_conditional_dist(
+        response,
+        samples,
+        newdata={"conditional_x": [0.0], "conditional_z": [0.0]},
+        quantity=quantity,
+        rgrid=rgrid,
+        response_bijector=bijector,
+        ci_quantiles=None,
+    )
+
+    constructor = ptm.onion_dist(nparam=4)
+    fitted = constructor(coef=jnp.zeros(4), loc=0.0, scale=1.0)
+    reported = tfd.TransformedDistribution(distribution=fitted, bijector=bijector)
+    expected = reported.prob(rgrid) if quantity == "density" else reported.cdf(rgrid)
+    assert isinstance(plot.data, pd.DataFrame)
+    np.testing.assert_allclose(plot.data["r"], rgrid)
+    np.testing.assert_allclose(plot.data["mean"], expected, rtol=1e-5)
 
 
 @pytest.mark.parametrize(

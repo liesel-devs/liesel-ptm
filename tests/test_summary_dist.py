@@ -4,6 +4,8 @@ import liesel_gam as gam
 import numpy as np
 import pandas as pd
 import pytest
+import tensorflow_probability.substrates.jax.bijectors as tfb
+import tensorflow_probability.substrates.jax.distributions as tfd
 
 import liesel_ptm as ptm
 
@@ -189,6 +191,103 @@ def test_summarise_conditional_dist_preserves_condition_order(newdata) -> None:
         summary["quantity"] == "density", ["conditional_x", "conditional_z"]
     ].drop_duplicates()
     assert conditions.to_records(index=False).tolist() == [(0.0, 1.0), (1.0, 0.0)]
+
+
+def test_summarise_conditional_dist_transforms_response_distribution() -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+    rgrid = jnp.array([0.5, 1.0, 2.0])
+    bijector = tfb.Exp()
+
+    summary = ptm.summarise_conditional_dist(
+        response,
+        samples,
+        newdata={"conditional_x": [0.0], "conditional_z": [0.0]},
+        rgrid=rgrid,
+        response_bijector=bijector,
+    )
+
+    constructor = ptm.onion_dist(nparam=4)
+    fitted = constructor(coef=jnp.zeros(4), loc=0.0, scale=1.0)
+    raw = constructor(
+        coef=jnp.zeros(4), loc=0.0, scale=1.0, centered=False, scaled=False
+    )
+    reported = tfd.TransformedDistribution(distribution=fitted, bijector=bijector)
+    model_rgrid = bijector.inverse(rgrid)
+    expected = {
+        "density": reported.prob(rgrid),
+        "cdf": reported.cdf(rgrid),
+        "transformation": fitted.transformation_and_logdet(model_rgrid)[0],
+        "transformation_raw": raw.transformation_and_logdet_spline(model_rgrid)[0],
+    }
+
+    np.testing.assert_allclose(summary["r"].unique(), rgrid)
+    for quantity, values in expected.items():
+        actual = summary.loc[summary["quantity"] == quantity, "mean"]
+        np.testing.assert_allclose(actual, values, rtol=1e-5)
+
+
+def test_summarise_conditional_dist_none_bijector_preserves_results() -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+    newdata = {"conditional_x": [0.0], "conditional_z": [0.0]}
+    rgrid = jnp.array([-1.0, 0.0, 1.0])
+
+    default = ptm.summarise_conditional_dist(
+        response, samples, newdata=newdata, rgrid=rgrid
+    )
+    explicit_none = ptm.summarise_conditional_dist(
+        response,
+        samples,
+        newdata=newdata,
+        rgrid=rgrid,
+        response_bijector=None,
+    )
+
+    pd.testing.assert_frame_equal(default, explicit_none)
+
+
+@pytest.mark.parametrize(
+    ("response_bijector", "rgrid", "error", "message"),
+    [
+        (object(), jnp.array([1.0]), TypeError, "JAX TFP bijector"),
+        (
+            tfb.ScaleMatvecDiag(jnp.ones(2)),
+            jnp.array([1.0]),
+            ValueError,
+            "scalar-event bijector",
+        ),
+        (tfb.Exp(), 10, ValueError, "rgrid must be an explicit array"),
+    ],
+)
+def test_summarise_conditional_dist_validates_response_bijector(
+    response_bijector, rgrid, error: type[Exception], message: str
+) -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+
+    with pytest.raises(error, match=message):
+        ptm.summarise_conditional_dist(
+            response,
+            samples,
+            newdata={"conditional_x": [0.0], "conditional_z": [0.0]},
+            rgrid=rgrid,
+            response_bijector=response_bijector,
+        )
+
+
+def test_summarise_conditional_dist_retains_noninjective_tfp_error() -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+
+    with pytest.raises(NotImplementedError, match="cdf.*not implemented"):
+        ptm.summarise_conditional_dist(
+            response,
+            samples,
+            newdata={"conditional_x": [0.0], "conditional_z": [0.0]},
+            rgrid=jnp.array([0.5, 1.0]),
+            response_bijector=tfb.AbsoluteValue(),
+        )
 
 
 @pytest.mark.parametrize(
