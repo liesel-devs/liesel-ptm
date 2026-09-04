@@ -75,6 +75,25 @@ def _format_numbers(values: Sequence[Any]) -> list[str]:
     return [_format_number(value) for value in values]
 
 
+def _ridge_y_axis(
+    ridge_spacing: float,
+    baselines: np.ndarray,
+    groups: Sequence[Any],
+    label: str,
+) -> list[Any]:
+    if ridge_spacing == 0.0 and len(groups) > 1:
+        return [
+            p9.scale_y_continuous(labels=_format_numbers),
+            p9.labs(y="Density"),
+        ]
+    return [
+        p9.scale_y_continuous(
+            breaks=baselines.tolist(), labels=_format_numbers(groups)
+        ),
+        p9.labs(y=label),
+    ]
+
+
 def _rounded_scales(data: pd.DataFrame, **aesthetics: str | None) -> list[Any]:
     scales = []
     for aesthetic, column in aesthetics.items():
@@ -249,7 +268,9 @@ def _plot_density_ridges(
             alpha=0.5,
         )
     if show_ridge_baselines:
-        plot += p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
+        plot += p9.geom_hline(
+            yintercept=np.unique(baselines), linetype="dotted", alpha=0.35
+        )
     return (
         plot
         + p9.scale_y_continuous(breaks=[])
@@ -745,7 +766,9 @@ def plot_1d_smooth_dist(
             alpha=0.25,
         )
     if show_ridge_baselines:
-        plot += p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
+        plot += p9.geom_hline(
+            yintercept=np.unique(baselines), linetype="dotted", alpha=0.35
+        )
     if show_reference_dist:
         reference = pd.concat(
             [
@@ -776,10 +799,8 @@ def plot_1d_smooth_dist(
         )
     plot = (
         plot
-        + p9.scale_y_continuous(
-            breaks=baselines.tolist(), labels=_format_numbers(groups)
-        )
-        + p9.labs(x="r", y=covariate, color=covariate, fill=covariate)
+        + _ridge_y_axis(ridge_spacing, baselines, groups, covariate)
+        + p9.labs(x="r", color=covariate, fill=covariate)
         + _no_panel_grid()
         + _rounded_scales(summary, x=None, color=covariate, fill=covariate)
     )
@@ -1578,7 +1599,9 @@ def plot_cluster_dist(
             alpha=0.25,
         )
     if show_ridge_baselines:
-        plot += p9.geom_hline(yintercept=baselines, linetype="dotted", alpha=0.35)
+        plot += p9.geom_hline(
+            yintercept=np.unique(baselines), linetype="dotted", alpha=0.35
+        )
     if show_reference_dist:
         reference = pd.concat(
             [
@@ -1610,12 +1633,9 @@ def plot_cluster_dist(
     return (
         plot
         + p9.scale_linetype_manual(values={True: "solid", False: "dashed"})
-        + p9.scale_y_continuous(
-            breaks=baselines.tolist(), labels=_format_numbers(groups)
-        )
+        + _ridge_y_axis(ridge_spacing, baselines, groups, category)
         + p9.labs(
             x="r",
-            y=category,
             color=category,
             fill=category,
             linetype="Observed",

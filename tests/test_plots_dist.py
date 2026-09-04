@@ -304,6 +304,18 @@ def test_plot_conditional_density_uses_unique_condition_ridges() -> None:
     )
     _assert_ridge_baselines(spaced, shown=True)
 
+    overlaid = ptm.plot_conditional_dist(
+        response,
+        samples,
+        newdata=newdata,
+        rgrid=jnp.array([-1.0, 0.0, 1.0]),
+        ridge_spacing=0.0,
+        show_ridge_baselines=True,
+        ci_quantiles=None,
+    )
+    assert not overlaid.draw().axes[0].get_yticklabels()
+    _assert_ridge_baselines(overlaid, shown=True)
+
 
 def test_plot_conditional_non_density_overlays_grouped_curves() -> None:
     response, samples, model = _conditional_response()
@@ -406,6 +418,34 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
     )
     baselines = plot.data.groupby("x")["baseline"].first().sort_index()
     assert np.all(np.diff(baselines) > 0)
+
+
+def test_plot_1d_smooth_dist_uses_density_axis_with_zero_spacing() -> None:
+    term, model = _smooth()
+    assert term.model is model
+    samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+    kwargs: dict[str, Any] = {
+        "rgrid": 7,
+        "newdata": {"x": np.asarray([0.0, 0.5, 1.0])},
+        "ridge_spacing": 0.0,
+        "show_ridge_baselines": True,
+        "ci_quantiles": None,
+    }
+
+    hidden = ptm.plot_1d_smooth_dist(ptm.onion_dist(nparam=4), term, samples, **kwargs)
+    shown = ptm.plot_1d_smooth_dist(
+        ptm.onion_dist(nparam=4), term, samples, show_y_axis=True, **kwargs
+    )
+    hidden_axis = hidden.draw().axes[0]
+    shown_figure = shown.draw()
+    shown_axis = shown_figure.axes[0]
+
+    assert not hidden_axis.get_yticklabels()
+    assert shown.labels.y == "Density"
+    assert "Density" in [text.get_text() for text in shown_figure.texts]
+    assert len(np.unique(shown_axis.get_yticks())) == len(shown_axis.get_yticks())
+    assert len(shown_axis.get_yticks()) > 1
+    _assert_ridge_baselines(shown, shown=True)
 
 
 def test_plot_labels_round_numeric_values_to_two_decimals() -> None:
@@ -808,6 +848,12 @@ def test_plot_cluster_dist_can_show_and_hide_unobserved_levels() -> None:
 
     assert len(shown.axes[0].get_yticks()) == 3
     assert len(hidden.axes[0].get_yticks()) == 2
+    assert [label.get_text() for label in shown.axes[0].get_yticklabels()] == [
+        "a",
+        "b",
+        "c",
+    ]
+    assert shown_plot.labels.y == "group"
     assert shown_plot.mapping["color"] == "group"
     _assert_cluster_linetypes(shown_plot)
     _assert_cluster_linetypes(hidden_plot)
@@ -818,6 +864,33 @@ def test_plot_cluster_dist_can_show_and_hide_unobserved_levels() -> None:
     _assert_ridge_baselines(shown_plot, shown=False)
     _assert_ridge_baselines(hidden_plot, shown=True)
     _assert_ridge_ribbons_are_fill_only(shown_plot)
+
+
+def test_plot_cluster_dist_uses_density_axis_with_zero_spacing() -> None:
+    term, model = _cluster()
+    assert term.model is model
+    samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+
+    plot = ptm.plot_cluster_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        rgrid=7,
+        ridge_spacing=0.0,
+        show_ridge_baselines=True,
+    )
+    figure = plot.draw()
+    axis = figure.axes[0]
+    ticks = axis.get_yticks()
+    labels = [label.get_text() for label in axis.get_yticklabels()]
+
+    assert plot.labels.y == "Density"
+    assert "Density" in [text.get_text() for text in figure.texts]
+    assert len(np.unique(ticks)) == len(ticks)
+    assert len(ticks) > 1
+    assert not set(labels) & {"a", "b", "c"}
+    assert plot.labels.color == "group"
+    _assert_ridge_baselines(plot, shown=True)
 
 
 def test_plot_cluster_dist_uses_cluster_linetypes_for_non_density_curves() -> None:

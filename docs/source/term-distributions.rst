@@ -91,7 +91,10 @@ plots do not draw reference distributions::
 The one-dimensional density ridgeline hides its y-axis by default. Pass
 ``show_y_axis=True`` to restore the conditioning-value labels. Two- and three-input
 density ridges use an otherwise empty ``Density`` axis because the ridge values are
-identified by the legend.
+identified by the legend. When multiple ridges use ``ridge_spacing=0.0``, labeled
+ridge plots show an ordinary ``Density`` axis instead of placing every category label
+at zero. Nonzero spacing retains the category labels. Coincident opt-in baseline
+guides are drawn only once.
 
 Three-input tensors
 -------------------
