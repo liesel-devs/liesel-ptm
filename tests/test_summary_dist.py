@@ -163,15 +163,14 @@ def test_summarise_intercept_dist_reports_all_quantities() -> None:
 @pytest.mark.parametrize(
     "newdata",
     [
-        {"conditional_x": [0.0, 1.0, 1.0], "conditional_z": [1.0, 0.0, 0.0]},
+        {"conditional_x": [0.0, 1.0], "conditional_z": [1.0, 0.0]},
         [
             {"conditional_x": 0.0, "conditional_z": 1.0},
-            {"conditional_x": 1.0, "conditional_z": 0.0},
             {"conditional_x": 1.0, "conditional_z": 0.0},
         ],
     ],
 )
-def test_summarise_conditional_dist_uses_unique_rows(newdata) -> None:
+def test_summarise_conditional_dist_preserves_condition_order(newdata) -> None:
     response, samples, model = _conditional_response()
     assert response.model is model
 
@@ -190,6 +189,25 @@ def test_summarise_conditional_dist_uses_unique_rows(newdata) -> None:
         summary["quantity"] == "density", ["conditional_x", "conditional_z"]
     ].drop_duplicates()
     assert conditions.to_records(index=False).tolist() == [(0.0, 1.0), (1.0, 0.0)]
+
+
+@pytest.mark.parametrize(
+    "newdata",
+    [
+        {"conditional_x": [0.0, 1.0, 1.0], "conditional_z": [1.0, 0.0, 0.0]},
+        [
+            {"conditional_x": 0.0, "conditional_z": 1.0},
+            {"conditional_x": 1.0, "conditional_z": 0.0},
+            {"conditional_x": 1.0, "conditional_z": 0.0},
+        ],
+    ],
+)
+def test_summarise_conditional_dist_rejects_duplicate_conditions(newdata) -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+
+    with pytest.raises(ValueError, match="duplicate condition rows"):
+        ptm.summarise_conditional_dist(response, samples, newdata=newdata)
 
 
 @pytest.mark.parametrize(

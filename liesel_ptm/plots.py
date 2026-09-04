@@ -290,6 +290,7 @@ def plot_conditional_dist(
     samples: Mapping[str, ArrayLike],
     *,
     newdata: ConditionalNewData,
+    condition_labels: Sequence[str] | None = None,
     quantity: str = "density",
     rgrid: int | ArrayLike = 150,
     include_loc: bool = False,
@@ -299,7 +300,7 @@ def plot_conditional_dist(
     ci_quantiles: tuple[float, float] | None = (0.05, 0.95),
     hdi_prob: float | None = None,
 ) -> p9.ggplot:
-    """Plot conditional PTM distributions at unique rows of newdata."""
+    """Plot conditional PTM distributions at condition rows in newdata."""
     if quantity not in _QUANTITIES:
         raise ValueError(f"Unknown quantity {quantity!r}.")
     quantiles = (0.05, 0.5, 0.95) if ci_quantiles is None else ci_quantiles
@@ -318,13 +319,35 @@ def plot_conditional_dist(
     condition = "_condition"
     while condition in summary:
         condition = f"_{condition}"
-    labels = summary[names].apply(
-        lambda row: ", ".join(f"{name}={_format_number(row[name])}" for name in names),
-        axis=1,
-    )
-    summary[condition] = pd.Categorical(
-        labels, categories=pd.unique(labels), ordered=True
-    )
+    if condition_labels is None:
+        labels = summary[names].apply(
+            lambda row: ", ".join(
+                f"{name}={_format_number(row[name])}" for name in names
+            ),
+            axis=1,
+        )
+        summary[condition] = pd.Categorical(
+            labels, categories=pd.unique(labels), ordered=True
+        )
+    else:
+        if isinstance(condition_labels, str) or any(
+            not isinstance(label, str) for label in condition_labels
+        ):
+            raise TypeError("condition_labels must be a sequence of strings.")
+        labels = list(condition_labels)
+        codes, conditions = pd.factorize(
+            pd.MultiIndex.from_frame(summary[names]), sort=False
+        )
+        if len(labels) != len(conditions):
+            raise ValueError(
+                "condition_labels must contain one label per condition; "
+                f"got {len(labels)} labels for {len(conditions)} conditions."
+            )
+        if len(set(labels)) != len(labels):
+            raise ValueError("condition_labels must be unique.")
+        summary[condition] = pd.Categorical.from_codes(
+            codes, categories=labels, ordered=True
+        )
 
     if quantity == "density":
         return _plot_density_ridges(

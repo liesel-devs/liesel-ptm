@@ -163,22 +163,24 @@ def _unique_newdata(newdata: ConditionalNewData) -> pd.DataFrame:
             raise ValueError("All newdata rows must contain the same covariates.")
         if any(np.ndim(value) != 0 for row in rows for value in row.values()):
             raise ValueError("All values in newdata rows must be scalar.")
-        return pd.DataFrame(rows, columns=pd.Index(names)).drop_duplicates(
-            ignore_index=True
-        )
+        combinations = pd.DataFrame(rows, columns=pd.Index(names))
+    else:
+        columns = {}
+        for name, values in newdata.items():
+            array = np.asarray(values)
+            if array.ndim != 1 or not len(array):
+                raise ValueError(
+                    "All newdata values must be nonempty one-dimensional arrays."
+                )
+            columns[name] = array
+        lengths = {len(values) for values in columns.values()}
+        if len(lengths) != 1:
+            raise ValueError("All newdata arrays must have the same length.")
+        combinations = pd.DataFrame(columns)
 
-    columns = {}
-    for name, values in newdata.items():
-        array = np.asarray(values)
-        if array.ndim != 1 or not len(array):
-            raise ValueError(
-                "All newdata values must be nonempty one-dimensional arrays."
-            )
-        columns[name] = array
-    lengths = {len(values) for values in columns.values()}
-    if len(lengths) != 1:
-        raise ValueError("All newdata arrays must have the same length.")
-    return pd.DataFrame(columns).drop_duplicates(ignore_index=True)
+    if combinations.duplicated().any():
+        raise ValueError("newdata contains duplicate condition rows.")
+    return combinations
 
 
 def _response_dist(
@@ -308,7 +310,7 @@ def summarise_conditional_dist(
     quantiles: Sequence[float] = (0.05, 0.5, 0.95),
     hdi_prob: float = 0.9,
 ) -> pd.DataFrame:
-    """Summarise conditional PTM distributions at unique rows of newdata."""
+    """Summarise conditional PTM distributions at condition rows in newdata."""
     if isinstance(rgrid, int) and (include_loc or include_scale):
         raise ValueError(
             "rgrid must be an explicit array when location or scale is included."

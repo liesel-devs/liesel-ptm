@@ -33,9 +33,10 @@ values by default, while categorical covariates use every mapped level. Supplied
 Conditional distributions
 -------------------------
 
-``summarise_conditional_dist`` evaluates the response distribution at every distinct
-row supplied in ``newdata``. It does not infer covariate values or form a Cartesian
-grid. New data may be supplied as equal-length arrays or as scalar-valued records::
+``summarise_conditional_dist`` evaluates the response distribution at every row
+supplied in ``newdata``. Duplicate condition rows are rejected. It does not infer
+covariate values or form a Cartesian grid. New data may be supplied as equal-length
+arrays or as scalar-valued records::
 
    cases = [
        {"x": 0.5, "group": "a"},
@@ -50,7 +51,12 @@ grid. New data may be supplied as equal-length arrays or as scalar-valued record
        model.response,
        samples,
        newdata=cases,
+       condition_labels=["Control", "Treatment"],
    )
+
+Without ``condition_labels``, plot legends identify conditions from their covariate
+values. Custom labels must contain one unique string per condition row, in input
+order.
 
 By default, only the shape transformation is included and location and scale are
 fixed to zero and one. Set ``include_loc=True`` and/or ``include_scale=True`` for the

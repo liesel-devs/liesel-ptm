@@ -264,7 +264,6 @@ def test_plot_conditional_density_uses_unique_condition_ridges() -> None:
     newdata = [
         {"conditional_x": 0.0, "conditional_z": 0.0},
         {"conditional_x": 1.0, "conditional_z": 1.0},
-        {"conditional_x": 1.0, "conditional_z": 1.0},
     ]
 
     plot = ptm.plot_conditional_dist(
@@ -316,6 +315,88 @@ def test_plot_conditional_density_uses_unique_condition_ridges() -> None:
     )
     assert not overlaid.draw().axes[0].get_yticklabels()
     _assert_ridge_baselines(overlaid, shown=True)
+
+
+@pytest.mark.parametrize(
+    ("newdata", "quantity"),
+    [
+        (
+            {"conditional_x": [0.0, 1.0], "conditional_z": [0.0, 1.0]},
+            "density",
+        ),
+        (
+            [
+                {"conditional_x": 0.0, "conditional_z": 0.0},
+                {"conditional_x": 1.0, "conditional_z": 1.0},
+            ],
+            "cdf",
+        ),
+    ],
+)
+def test_plot_conditional_dist_accepts_custom_condition_labels(
+    newdata, quantity: str
+) -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+
+    plot = ptm.plot_conditional_dist(
+        response,
+        samples,
+        newdata=newdata,
+        condition_labels=["Control", "Treatment"],
+        quantity=quantity,
+        rgrid=jnp.array([-1.0, 0.0, 1.0]),
+        ci_quantiles=None,
+    )
+    figure = plot.draw()
+
+    assert isinstance(plot.data, pd.DataFrame)
+    assert list(plot.data["_condition"].cat.categories) == ["Control", "Treatment"]
+    assert plot.mapping["color"] == "_condition"
+    assert plot.labels.color == "Condition"
+    assert {"Control", "Treatment"} <= {
+        text.get_text() for text in figure.findobj(Text)
+    }
+    _assert_okabe_ito_scales(plot, 2)
+
+
+@pytest.mark.parametrize(
+    ("condition_labels", "error", "message"),
+    [
+        ("Control", TypeError, "sequence of strings"),
+        (["Control", 1], TypeError, "sequence of strings"),
+        (["Control"], ValueError, "one label per condition"),
+        (["Same", "Same"], ValueError, "unique"),
+    ],
+)
+def test_plot_conditional_dist_validates_condition_labels(
+    condition_labels, error: type[Exception], message: str
+) -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+
+    with pytest.raises(error, match=message):
+        ptm.plot_conditional_dist(
+            response,
+            samples,
+            newdata={"conditional_x": [0.0, 1.0], "conditional_z": [0.0, 1.0]},
+            condition_labels=condition_labels,
+            rgrid=jnp.array([-1.0, 0.0, 1.0]),
+        )
+
+
+def test_plot_conditional_dist_rejects_duplicate_conditions() -> None:
+    response, samples, model = _conditional_response()
+    assert response.model is model
+
+    with pytest.raises(ValueError, match="duplicate condition rows"):
+        ptm.plot_conditional_dist(
+            response,
+            samples,
+            newdata={"conditional_x": [0.0, 0.0], "conditional_z": [1.0, 1.0]},
+            condition_labels=["Control", "Control"],
+            rgrid=jnp.array([-1.0, 0.0, 1.0]),
+        )
 
 
 def test_plot_conditional_non_density_overlays_grouped_curves() -> None:
