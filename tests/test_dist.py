@@ -3,6 +3,7 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 import tensorflow_probability.substrates.jax.distributions as tfd
 
@@ -817,3 +818,241 @@ class TestDistGPTM:
         assert q.shape == (b, n)
         assert cdf.shape == (b, n)
         assert jnp.allclose(cdf, prob, atol=1e-4)
+
+
+class TestResponseMoments:
+    @staticmethod
+    def skewt(**kwargs):
+        options = {
+            "coef": jnp.linspace(-0.2, 0.2, 10),
+            "loc": 1.0,
+            "scale": 2.0,
+            "skewness": 0.7,
+            "df": 20.0,
+        }
+        options.update(kwargs)
+        return ptm.onion_dist(
+            a=-6.0,
+            b=6.0,
+            nparam=10,
+            loc_scale=False,
+            parametric_distribution=tfd.TwoPieceStudentT,
+        )(**options)
+
+    @staticmethod
+    def reference_moments(dist):
+        # Independent NumPy reduction of higher-resolution public quantiles.
+        from scipy.special import roots_legendre
+
+        nodes, weights = roots_legendre(2048)
+        probabilities = jnp.asarray((nodes + 1) / 2, dtype=dist.dtype)
+        probabilities = probabilities.reshape((-1,) + (1,) * len(dist.batch_shape))
+        values = np.asarray(dist.quantile(probabilities))
+        weights = (weights / 2).reshape((-1,) + (1,) * len(dist.batch_shape))
+        mean = np.sum(weights * values, axis=0)
+        variance = np.sum(weights * (values - mean) ** 2, axis=0)
+        return mean, variance
+
+    @pytest.mark.parametrize(
+        "centered,scaled", [(False, False), (True, False), (False, True), (True, True)]
+    )
+    def test_skewt_moments_match_complete_quantiles(self, centered, scaled):
+        dist = self.skewt(
+            centered=centered, scaled=scaled, integration_bounds=(-3.0, 3.0)
+        )
+        mean, variance = self.reference_moments(dist)
+        np.testing.assert_allclose(dist.mean(), mean, rtol=5e-4, atol=1e-4)
+        np.testing.assert_allclose(dist.variance(), variance, rtol=5e-4, atol=1e-4)
+        np.testing.assert_allclose(dist.stddev(), np.sqrt(variance), rtol=5e-4)
+        np.testing.assert_allclose(dist.stddev() ** 2, dist.variance(), rtol=1e-6)
+
+    def test_affine_mean_includes_scale_and_full_tails(self):
+        Dist = ptm.onion_dist(a=-6.0, b=6.0, nparam=10)
+        options = {
+            "coef": jnp.linspace(-0.3, 0.3, 10),
+            "integration_bounds": (-1.0, 1.0),
+        }
+        standardized = Dist(loc=0.0, scale=1.0, **options)
+        shifted = Dist(loc=3.0, scale=2.5, **options)
+        expected_mean, expected_variance = self.reference_moments(standardized)
+        np.testing.assert_allclose(shifted.mean(), 3 + 2.5 * expected_mean, atol=3e-4)
+        np.testing.assert_allclose(
+            shifted.variance(), 2.5**2 * expected_variance, rtol=3e-4
+        )
+        assert (
+            abs(float(standardized.mean() - standardized.transformation_spline_mean()))
+            > 0.1
+        )
+
+    def test_finite_bounds_only_affect_normalization(self):
+        narrow = self.skewt(integration_bounds=(-1.0, 1.0))
+        wide = self.skewt(integration_bounds=(-6.0, 6.0))
+        np.testing.assert_array_equal(narrow.mean(), wide.mean())
+        np.testing.assert_array_equal(narrow.variance(), wide.variance())
+        assert not np.isclose(
+            narrow.transformation_spline_mean(), wide.transformation_spline_mean()
+        )
+
+    def test_batched_moments_and_jitted_gradients(self):
+        coef = jnp.broadcast_to(jnp.linspace(-0.2, 0.2, 10), (2, 1, 10))
+        loc = jnp.array([[0.0, 1.0, 2.0]])
+
+        Dist = ptm.onion_dist(
+            a=-6.0,
+            b=6.0,
+            nparam=10,
+            loc_scale=False,
+            parametric_distribution=tfd.TwoPieceStudentT,
+        )
+
+        @jax.jit
+        def objective(coef, loc, scale, skewness, df):
+            dist = Dist(coef=coef, loc=loc, scale=scale, skewness=skewness, df=df)
+            return jnp.sum(dist.mean() + dist.variance())
+
+        parameters = (coef, loc, jnp.array(2.0), jnp.array(0.7), jnp.array(20.0))
+        grads = jax.grad(objective, argnums=(0, 1, 2, 3, 4))(*parameters)
+        for gradient, parameter in zip(grads, parameters, strict=True):
+            assert gradient.shape == parameter.shape
+            assert jnp.all(jnp.isfinite(gradient))
+            assert jnp.linalg.norm(gradient) > 0
+        dist = self.skewt(coef=coef, loc=loc)
+        assert (
+            dist.mean().shape == dist.variance().shape == dist.stddev().shape == (2, 3)
+        )
+        expected_mean, expected_variance = self.reference_moments(dist)
+        np.testing.assert_allclose(dist.mean(), expected_mean, atol=1e-4)
+        np.testing.assert_allclose(dist.variance(), expected_variance, rtol=5e-4)
+
+    def test_response_diagnostic_detects_heavy_tail_error(self):
+        dist = self.skewt(coef=jnp.zeros(10), df=3.0, response_moment_order=128)
+        diagnostic = dist.moment_quadrature_diagnostic(target="response")
+        np.testing.assert_allclose(diagnostic["mean"], dist.mean())
+        np.testing.assert_allclose(diagnostic["variance"], dist.variance())
+        assert not bool(diagnostic["ok"])
+        assert diagnostic["variance_abs_error"] > 0.01
+        with pytest.raises(ValueError, match="target"):
+            dist.moment_quadrature_diagnostic(target="invalid")
+        with pytest.raises(ValueError, match="reference_order"):
+            dist.moment_quadrature_diagnostic(target="response", reference_order=128)
+
+    @pytest.mark.parametrize(
+        "order,error", [(0, ValueError), (-1, ValueError), (1.5, TypeError)]
+    )
+    def test_invalid_response_order(self, order, error):
+        with pytest.raises(error, match="response_moment_order"):
+            self.skewt(response_moment_order=order)
+
+    def test_response_rule_is_lazy_and_does_not_change_model(self, monkeypatch):
+        from liesel_ptm import dist as dist_module
+
+        orders = []
+        original = dist_module._gauss_legendre_nodes_and_weights
+
+        def record(order, dtype):
+            orders.append(order)
+            return original(order, dtype)
+
+        monkeypatch.setattr(dist_module, "_gauss_legendre_nodes_and_weights", record)
+        low = self.skewt(centered=True, scaled=True, response_moment_order=32)
+        high = self.skewt(centered=True, scaled=True, response_moment_order=64)
+        for method, argument in [("log_prob", 0.25), ("cdf", 0.25), ("quantile", 0.25)]:
+            np.testing.assert_array_equal(
+                getattr(low, method)(argument), getattr(high, method)(argument)
+            )
+        np.testing.assert_array_equal(
+            low.transformation_spline_mean(), high.transformation_spline_mean()
+        )
+        np.testing.assert_array_equal(
+            low.transformation_spline_variance(), high.transformation_spline_variance()
+        )
+        assert 32 not in orders and 64 not in orders
+        assert np.isfinite(low.mean())
+        assert 32 in orders
+
+    def test_exact_pseudo_moments_and_nonfinite_diagnostic(self):
+        distributions = [
+            (
+                GaussianPseudoTransformationDist(
+                    coef=jnp.zeros(1), loc=3.0, scale=2.0, response_moment_order=16
+                ),
+                tfd.Normal(3.0, 2.0),
+            ),
+            (
+                PseudoTransformationDist(
+                    coef=jnp.zeros(1),
+                    parametric_distribution=tfd.Exponential,
+                    rate=jnp.array([1.0, 2.0]),
+                    response_moment_order=16,
+                ),
+                tfd.Exponential(jnp.array([1.0, 2.0])),
+            ),
+            (
+                PseudoTransformationDist(
+                    coef=jnp.zeros(1),
+                    reference_distribution=tfd.Normal(3.0, 2.0),
+                    centered=True,
+                    scaled=True,
+                    response_moment_order=16,
+                ),
+                tfd.Normal(3.0, 2.0),
+            ),
+            (
+                LocScalePseudoTransformationDist(
+                    coef=jnp.zeros(1),
+                    loc=3.0,
+                    scale=2.0,
+                    parametric_distribution=tfd.Normal,
+                    response_moment_order=16,
+                ),
+                tfd.Normal(3.0, 2.0),
+            ),
+        ]
+        for dist, expected in distributions:
+            np.testing.assert_allclose(
+                dist.mean(), jnp.broadcast_to(expected.mean(), dist.batch_shape)
+            )
+            np.testing.assert_allclose(
+                dist.variance(), jnp.broadcast_to(expected.variance(), dist.batch_shape)
+            )
+            diagnostic = dist.moment_quadrature_diagnostic(target="response")
+            np.testing.assert_allclose(diagnostic["mean"], dist.mean())
+            assert bool(diagnostic["ok"])
+            assert dist.response_moment_order == 16
+        undefined = PseudoTransformationDist(
+            coef=jnp.zeros(1),
+            parametric_distribution=tfd.StudentT,
+            df=0.5,
+            loc=0.0,
+            scale=1.0,
+        )
+        assert np.isnan(undefined.mean())
+        assert np.isnan(undefined.variance())
+        assert not bool(undefined.moment_quadrature_diagnostic(target="response")["ok"])
+
+    def test_pseudo_preserves_underlying_stats_errors(self):
+        class NoMean(tfd.Normal):
+            def _mean(self):
+                raise NotImplementedError("no mean")
+
+        dist = PseudoTransformationDist(
+            coef=jnp.zeros(1), parametric_distribution=NoMean, loc=0.0, scale=1.0
+        )
+        with pytest.raises(NotImplementedError, match="no mean"):
+            dist.mean()
+
+        np.testing.assert_allclose(dist.variance(), 1.0)
+
+        class NoVariance(tfd.Normal):
+            def _variance(self):
+                raise NotImplementedError("no variance")
+
+            def _stddev(self):
+                raise NotImplementedError("no variance")
+
+        dist = PseudoTransformationDist(
+            coef=jnp.zeros(1), parametric_distribution=NoVariance, loc=3.0, scale=1.0
+        )
+        np.testing.assert_allclose(dist.mean(), 3.0)
+        with pytest.raises(NotImplementedError, match="no variance"):
+            dist.variance()

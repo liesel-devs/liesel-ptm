@@ -3,7 +3,7 @@ from __future__ import annotations
 import operator
 from collections.abc import Callable
 from functools import cache, partial
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import jax
 import jax.numpy as jnp
@@ -18,14 +18,16 @@ KeyArray = Any
 Array = Any
 
 
-def _validate_gauss_legendre_order(order: int) -> int:
+def _validate_gauss_legendre_order(
+    order: int, name: str = "gauss_legendre_order"
+) -> int:
     try:
         order = operator.index(order)
     except TypeError as err:
-        raise TypeError("gauss_legendre_order must be a positive integer.") from err
+        raise TypeError(f"{name} must be a positive integer.") from err
 
     if order <= 0:
-        raise ValueError("gauss_legendre_order must be a positive integer.")
+        raise ValueError(f"{name} must be a positive integer.")
 
     return order
 
@@ -76,9 +78,17 @@ def _integration_breaks_from_knots(
     return jnp.asarray(breaks_np, dtype=dtype)
 
 
+@cache
+def _numpy_gauss_legendre_nodes_and_weights(
+    order: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    # Cache host arrays only: caching JAX arrays can retain tracers across jit calls.
+    return np.polynomial.legendre.leggauss(order)
+
+
 def _gauss_legendre_nodes_and_weights(order: int, dtype: Any) -> tuple[Array, Array]:
     order = _validate_gauss_legendre_order(order)
-    nodes, weights = np.polynomial.legendre.leggauss(order)
+    nodes, weights = _numpy_gauss_legendre_nodes_and_weights(order)
     return jnp.asarray(nodes, dtype=dtype), jnp.asarray(weights, dtype=dtype)
 
 
@@ -199,21 +209,27 @@ class TransformationDist(tfd.Distribution):
     name
         Name of the distribution.
     centered
-        If True, the transformation is centered such that any side-effect the \
-        spline transformation might have on the location of the distribution is \
-        negated.
+        If True, center the intermediate spline distribution using its finite-bound \
+        raw mean. This need not preserve the parametric response mean after a \
+        nonlinear parametric inverse.
     scaled
-        If True, the transformation is scaled such that any side-effect the \
-        spline transformation might have on the scale of the distribution is \
-        negated.
+        If True, scale the intermediate spline distribution using its finite-bound \
+        raw variance. This need not preserve the parametric response variance after \
+        a nonlinear parametric inverse.
     batched
         Accepted for backward compatibility. Computation always follows TFP \
         scalar-event batching.
     gauss_legendre_order
         Number of Gauss-Legendre nodes per knot interval for spline moments.
     integration_bounds
-        Optional lower and upper integration bounds. Defaults to the first and \
-        last spline knot.
+        Lower and upper bounds for raw spline moments used in centering/scaling. \
+        Defaults to the first and last spline knot. Response moments integrate \
+        the complete quantile function independently of these bounds, while \
+        respecting the configured centering/scaling.
+    response_moment_order
+        Number of Gauss-Legendre points for response moments (default: 512). \
+        Independent of spline quadrature; evaluated only when moments are requested. \
+        Heavy tails may require a higher order and the optional response diagnostic.
     **parametric_distribution_kwargs
         Additional keyword arguments passed to the parametric distribution.
 
@@ -249,6 +265,7 @@ class TransformationDist(tfd.Distribution):
         batched: bool = True,
         gauss_legendre_order: int = 8,
         integration_bounds: tuple[float, float] | None = None,
+        response_moment_order: int = 512,
         **parametric_distribution_kwargs,
     ):
         coef = jnp.asarray(coef)
@@ -267,6 +284,9 @@ class TransformationDist(tfd.Distribution):
         self.knots = self.bspline.knots
         self.bspline._check_tfp_coef_core_shape(coef)
         self.gauss_legendre_order = gauss_legendre_order
+        self.response_moment_order = _validate_gauss_legendre_order(
+            response_moment_order, "response_moment_order"
+        )
         default_integration_bounds = (
             self.bspline._outer_knot_left,
             self.bspline._outer_knot_right,
@@ -349,38 +369,39 @@ class TransformationDist(tfd.Distribution):
         )
         return jnp.broadcast_to(value, sample_shape + result_batch_shape)
 
-    def _mean(self, **kwargs) -> Array:
-        if self.parametric_distribution is None:
-            parametric_mean = jnp.array(0.0, dtype=self.dtype)
-        else:
-            parametric_mean = self.parametric_distribution._mean(**kwargs)
+    def _response_moments(self, order: int | None = None) -> tuple[Array, Array]:
+        """Integrate complete response quantiles, separately from spline normalization.
 
-        parametric_mean = self._broadcast_to_batch(parametric_mean)
-
-        if self.centered:
-            return parametric_mean
-
-        return self._broadcast_to_batch(
-            parametric_mean + self.transformation_spline_mean()
+        These are numerical approximations over (0, 1), not certificates of moment
+        existence. Heavy tails and finite-precision quantiles can require a higher
+        order; use ``moment_quadrature_diagnostic(target="response")`` to compare
+        resolutions. No additional integration is performed during fitting.
+        """
+        if order is None:
+            order = self.response_moment_order
+        nodes, weights = _gauss_legendre_nodes_and_weights(order, self.dtype)
+        zero = jnp.asarray(0.0, dtype=self.dtype)
+        one = jnp.asarray(1.0, dtype=self.dtype)
+        probabilities = jnp.clip(
+            (nodes + one) / 2,
+            jnp.nextafter(zero, one),
+            jnp.nextafter(one, zero),
         )
+        shape = (-1,) + (1,) * len(self.batch_shape)
+        values = self.quantile(jnp.reshape(probabilities, shape))
+        weights = jnp.reshape(weights / 2, shape)
+        mean = jnp.sum(weights * values, axis=0)
+        variance = jnp.sum(weights * (values - mean) ** 2, axis=0)
+        return mean, variance
+
+    def _mean(self, **kwargs) -> Array:
+        return self._response_moments()[0]
+
+    def _variance(self, **kwargs) -> Array:
+        return self._response_moments()[1]
 
     def _stddev(self, **kwargs) -> Array:
-        if self.parametric_distribution is None:
-            parametric_stddev: float | Array = jnp.array(1.0, dtype=self.dtype)
-        else:
-            try:
-                parametric_stddev = self.parametric_distribution._stddev(**kwargs)
-            except NotImplementedError:
-                parametric_stddev = jnp.sqrt(self.parametric_distribution._variance())
-
-        parametric_stddev = self._broadcast_to_batch(parametric_stddev)
-
-        if self.scaled:
-            return parametric_stddev
-
-        return self._broadcast_to_batch(
-            parametric_stddev * jnp.sqrt(self.transformation_spline_variance())
-        )
+        return jnp.sqrt(self._variance(**kwargs))
 
     def _cdf(self, value: Array) -> Array | float:
         z = self._transformation(value)
@@ -666,7 +687,7 @@ class TransformationDist(tfd.Distribution):
         return transf_spline, logdet
 
     def transformation_spline_mean(self) -> Array:
-        """Expected value under the spline transformation."""
+        """Finite-bound raw spline mean used for normalization, not a response mean."""
         return self._transformation_spline_mean_gl()
 
     def _integrate_piecewise_gauss_legendre(
@@ -706,7 +727,7 @@ class TransformationDist(tfd.Distribution):
         )
 
     def transformation_spline_variance(self, mean: Array | None = None) -> Array:
-        """Variance under the spline transformation."""
+        """Finite-bound raw spline variance used for normalization."""
         return self._transformation_spline_variance_gl(mean=mean)
 
     def _transformation_spline_variance_gl(
@@ -734,29 +755,52 @@ class TransformationDist(tfd.Distribution):
         reference_order: int | None = None,
         rtol: float = 1e-4,
         atol: float = 1e-5,
+        *,
+        target: Literal["spline", "response"] = "spline",
     ) -> dict[str, Array]:
         """
-        Compare spline moments at the configured order against a higher-order rule.
+        Compare raw spline or response moments against a higher-order rule.
 
-        This diagnostic is opt-in and intentionally separate from likelihood and
-        moment computation so it does not add work.
+        ``target="spline"`` (the default) checks the finite-bound moments used for
+        centering/scaling. ``target="response"`` checks the full response moments
+        at ``response_moment_order``. The returned arrays have coefficient batch
+        shape for spline moments and full distribution batch shape for responses.
+
+        This opt-in check adds no work to likelihood or moment calls. Agreement
+        between resolutions does not prove that moments exist or that omitted
+        spline tails / finite-precision response tails are negligible.
         """
+        if target not in ("spline", "response"):
+            raise ValueError("target must be 'spline' or 'response'.")
+        order = (
+            self.response_moment_order
+            if target == "response"
+            else self.gauss_legendre_order
+        )
         if reference_order is None:
-            reference_order = max(
-                2 * self.gauss_legendre_order, self.gauss_legendre_order + 8
+            reference_order = (
+                2 * order if target == "response" else max(2 * order, order + 8)
             )
-        reference_order = _validate_gauss_legendre_order(reference_order)
-        if reference_order <= self.gauss_legendre_order:
-            raise ValueError("reference_order must exceed gauss_legendre_order.")
+        reference_order = _validate_gauss_legendre_order(
+            reference_order, "reference_order"
+        )
+        if reference_order <= order:
+            raise ValueError(
+                "reference_order must exceed the configured quadrature order."
+            )
 
-        mean = self._transformation_spline_mean_gl(order=self.gauss_legendre_order)
-        mean_reference = self._transformation_spline_mean_gl(order=reference_order)
-        variance = self._transformation_spline_variance_gl(
-            mean=mean, order=self.gauss_legendre_order
-        )
-        variance_reference = self._transformation_spline_variance_gl(
-            mean=mean_reference, order=reference_order
-        )
+        if target == "response":
+            mean, variance = self._response_moments(order=order)
+            mean_reference, variance_reference = self._response_moments(
+                order=reference_order
+            )
+        else:
+            mean = self._transformation_spline_mean_gl(order=order)
+            mean_reference = self._transformation_spline_mean_gl(order=reference_order)
+            variance = self._transformation_spline_variance_gl(mean=mean, order=order)
+            variance_reference = self._transformation_spline_variance_gl(
+                mean=mean_reference, order=reference_order
+            )
 
         mean_abs_error = jnp.abs(mean - mean_reference)
         variance_abs_error = jnp.abs(variance - variance_reference)
@@ -766,8 +810,16 @@ class TransformationDist(tfd.Distribution):
         variance_rel_error = variance_abs_error / jnp.maximum(
             jnp.abs(variance_reference), jnp.asarray(atol, dtype=self.dtype)
         )
-        mean_ok = mean_abs_error <= atol + rtol * jnp.abs(mean_reference)
-        variance_ok = variance_abs_error <= atol + rtol * jnp.abs(variance_reference)
+        mean_ok = (
+            jnp.isfinite(mean)
+            & jnp.isfinite(mean_reference)
+            & (mean_abs_error <= atol + rtol * jnp.abs(mean_reference))
+        )
+        variance_ok = (
+            jnp.isfinite(variance)
+            & jnp.isfinite(variance_reference)
+            & (variance_abs_error <= atol + rtol * jnp.abs(variance_reference))
+        )
 
         return {
             "mean": mean,
@@ -879,8 +931,14 @@ class LocScaleTransformationDist(TransformationDist):
     gauss_legendre_order
         Number of Gauss-Legendre nodes per knot interval for spline moments.
     integration_bounds
-        Optional lower and upper integration bounds. Defaults to the first and \
-        last spline knot.
+        Lower and upper bounds for raw spline moments used in centering/scaling. \
+        Defaults to the first and last spline knot. Response moments integrate \
+        the complete quantile function independently of these bounds, while \
+        respecting the configured centering/scaling.
+    response_moment_order
+        Number of Gauss-Legendre points for response moments (default: 512). \
+        Independent of spline quadrature; evaluated only when moments are requested. \
+        Heavy tails may require a higher order and the optional response diagnostic.
 
     Notes
     -----
@@ -903,6 +961,7 @@ class LocScaleTransformationDist(TransformationDist):
         reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
         gauss_legendre_order: int = 8,
         integration_bounds: tuple[float, float] | None = None,
+        response_moment_order: int = 512,
     ) -> None:
         super().__init__(
             coef=coef,
@@ -919,6 +978,7 @@ class LocScaleTransformationDist(TransformationDist):
             batched=batched,
             gauss_legendre_order=gauss_legendre_order,
             integration_bounds=integration_bounds,
+            response_moment_order=response_moment_order,
         )
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
@@ -1013,8 +1073,13 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
     gauss_legendre_order
         Number of Gauss-Legendre nodes per knot interval for spline moments.
     integration_bounds
-        Optional lower and upper integration bounds. Defaults to the first and \
-        last spline knot.
+        Lower and upper bounds for raw spline moments used in centering/scaling. \
+        Defaults to the first and last spline knot. Response moments integrate \
+        the complete quantile function independently of these bounds, while \
+        respecting the configured centering/scaling.
+    response_moment_order
+        Accepted for interface compatibility. Pseudo-distribution response moments \
+        are exact and do not require quadrature.
 
     Notes
     -----
@@ -1038,6 +1103,7 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
         batched: bool = True,
         gauss_legendre_order: int = 8,
         integration_bounds: tuple[float, float] | None = None,
+        response_moment_order: int = 512,
     ) -> None:
         super().__init__(
             coef=_as_unused_pseudo_coef(coef),
@@ -1052,6 +1118,7 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
             batched=batched,
             gauss_legendre_order=gauss_legendre_order,
             integration_bounds=integration_bounds,
+            response_moment_order=response_moment_order,
         )
 
     @partial(jax.jit, static_argnums=0)
@@ -1061,6 +1128,14 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
     @partial(jax.jit, static_argnums=0)
     def inverse_transformation(self, value: Array) -> Array:
         return self.inverse_transformation_parametric(value)
+
+    def _response_moments(self, order: int | None = None) -> tuple[Array, Array]:
+        distribution = self.parametric_distribution
+        assert distribution is not None
+        return (
+            self._broadcast_to_batch(distribution.mean()),
+            self._broadcast_to_batch(distribution.variance()),
+        )
 
     @cache
     def transformation_spline_mean(self):
@@ -1075,8 +1150,14 @@ class GaussianPseudoTransformationDist(LocScaleTransformationDist):
         reference_order: int | None = None,
         rtol: float = 1e-4,
         atol: float = 1e-5,
+        *,
+        target: Literal["spline", "response"] = "spline",
     ) -> dict[str, Array]:
-        return _identity_moment_quadrature_diagnostic(self.dtype)
+        if target == "spline":
+            return _identity_moment_quadrature_diagnostic(self.dtype)
+        return super().moment_quadrature_diagnostic(
+            reference_order, rtol, atol, target=target
+        )
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         value = self._broadcast_tfp_value(value)
@@ -1123,8 +1204,13 @@ class PseudoTransformationDist(TransformationDist):
     gauss_legendre_order
         Number of Gauss-Legendre nodes per knot interval for spline moments.
     integration_bounds
-        Optional lower and upper integration bounds. Defaults to the first and \
-        last spline knot.
+        Lower and upper bounds for raw spline moments used in centering/scaling. \
+        Defaults to the first and last spline knot. Response moments integrate \
+        the complete quantile function independently of these bounds, while \
+        respecting the configured centering/scaling.
+    response_moment_order
+        Accepted for interface compatibility. Pseudo-distribution response moments \
+        are exact and do not require quadrature.
 
     Notes
     -----
@@ -1148,6 +1234,7 @@ class PseudoTransformationDist(TransformationDist):
         reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
         gauss_legendre_order: int = 8,
         integration_bounds: tuple[float, float] | None = None,
+        response_moment_order: int = 512,
         **parametric_distribution_kwargs,
     ) -> None:
         super().__init__(
@@ -1163,6 +1250,7 @@ class PseudoTransformationDist(TransformationDist):
             batched=batched,
             gauss_legendre_order=gauss_legendre_order,
             integration_bounds=integration_bounds,
+            response_moment_order=response_moment_order,
             **parametric_distribution_kwargs,
         )
 
@@ -1173,6 +1261,21 @@ class PseudoTransformationDist(TransformationDist):
     @partial(jax.jit, static_argnums=0)
     def inverse_transformation(self, value: Array) -> Array:
         return self.inverse_transformation_parametric(value)
+
+    def _mean(self, **kwargs) -> Array:
+        distribution = self.parametric_distribution
+        if distribution is None:
+            distribution = self.reference_distribution
+        return self._broadcast_to_batch(distribution.mean(**kwargs))
+
+    def _variance(self, **kwargs) -> Array:
+        distribution = self.parametric_distribution
+        if distribution is None:
+            distribution = self.reference_distribution
+        return self._broadcast_to_batch(distribution.variance(**kwargs))
+
+    def _response_moments(self, order: int | None = None) -> tuple[Array, Array]:
+        return self._mean(), self._variance()
 
     @cache
     def transformation_spline_mean(self):
@@ -1187,8 +1290,14 @@ class PseudoTransformationDist(TransformationDist):
         reference_order: int | None = None,
         rtol: float = 1e-4,
         atol: float = 1e-5,
+        *,
+        target: Literal["spline", "response"] = "spline",
     ) -> dict[str, Array]:
-        return _identity_moment_quadrature_diagnostic(self.dtype)
+        if target == "spline":
+            return _identity_moment_quadrature_diagnostic(self.dtype)
+        return super().moment_quadrature_diagnostic(
+            reference_order, rtol, atol, target=target
+        )
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         value = self._broadcast_tfp_value(value)
@@ -1229,8 +1338,13 @@ class LocScalePseudoTransformationDist(TransformationDist):
     gauss_legendre_order
         Number of Gauss-Legendre nodes per knot interval for spline moments.
     integration_bounds
-        Optional lower and upper integration bounds. Defaults to the first and \
-        last spline knot.
+        Lower and upper bounds for raw spline moments used in centering/scaling. \
+        Defaults to the first and last spline knot. Response moments integrate \
+        the complete quantile function independently of these bounds, while \
+        respecting the configured centering/scaling.
+    response_moment_order
+        Accepted for interface compatibility. Pseudo-distribution response moments \
+        are exact and do not require quadrature.
 
     Notes
     -----
@@ -1254,6 +1368,7 @@ class LocScalePseudoTransformationDist(TransformationDist):
         batched: bool = True,
         gauss_legendre_order: int = 8,
         integration_bounds: tuple[float, float] | None = None,
+        response_moment_order: int = 512,
     ) -> None:
         super().__init__(
             coef=_as_unused_pseudo_coef(coef),
@@ -1270,6 +1385,7 @@ class LocScalePseudoTransformationDist(TransformationDist):
             batched=batched,
             gauss_legendre_order=gauss_legendre_order,
             integration_bounds=integration_bounds,
+            response_moment_order=response_moment_order,
         )
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
@@ -1337,6 +1453,16 @@ class LocScalePseudoTransformationDist(TransformationDist):
     def inverse_transformation(self, value: Array) -> Array:
         return self.inverse_transformation_parametric(value)
 
+    def _response_moments(self, order: int | None = None) -> tuple[Array, Array]:
+        # This is an affine image of the standard normal reference, even when
+        # the supplied parametric distribution is not normal.
+        distribution = self.parametric_distribution
+        assert distribution is not None
+        return (
+            self._broadcast_to_batch(distribution.mean()),
+            self._broadcast_to_batch(distribution.variance()),
+        )
+
     @cache
     def transformation_spline_mean(self):
         return 0.0
@@ -1350,8 +1476,14 @@ class LocScalePseudoTransformationDist(TransformationDist):
         reference_order: int | None = None,
         rtol: float = 1e-4,
         atol: float = 1e-5,
+        *,
+        target: Literal["spline", "response"] = "spline",
     ) -> dict[str, Array]:
-        return _identity_moment_quadrature_diagnostic(self.dtype)
+        if target == "spline":
+            return _identity_moment_quadrature_diagnostic(self.dtype)
+        return super().moment_quadrature_diagnostic(
+            reference_order, rtol, atol, target=target
+        )
 
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         value = self._broadcast_tfp_value(value)
