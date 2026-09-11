@@ -748,7 +748,9 @@ class LocScalePTM:
 
         if uses_predicted_locscale:
             locscale = self.graph.predict(
-                samples, predict=[self.loc.name, self.scale.name], newdata=newdata
+                gs.Position(samples),
+                predict=[self.loc.name, self.scale.name],
+                newdata=None if newdata is None else gs.Position(newdata),
             )
 
             loc_ = locscale[self.loc.name] if loc is None else loc

@@ -29,7 +29,9 @@ def plot_term(
     else:
         xgrid = jnp.asarray(grid)
 
-    term_samples = term.predict(dict(samples), newdata={term.basis.x.name: xgrid})
+    term_samples = term.predict(
+        gs.Position(dict(samples)), newdata=gs.Position({term.basis.x.name: xgrid})
+    )
     ci_quantiles_ = (0.05, 0.95) if ci_quantiles is None else ci_quantiles
     hdi_prob_ = 0.9 if hdi_prob is None else hdi_prob
     term_summary = (

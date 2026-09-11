@@ -1044,7 +1044,7 @@ class TestResponseMoments:
         np.testing.assert_allclose(dist.variance(), 1.0)
 
         class NoVariance(tfd.Normal):
-            def _variance(self):
+            def _variance(self, **kwargs):
                 raise NotImplementedError("no variance")
 
             def _stddev(self):

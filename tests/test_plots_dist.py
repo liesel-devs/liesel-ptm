@@ -62,6 +62,7 @@ def _assert_ridge_baselines(plot: p9.ggplot, *, shown: bool) -> None:
         layer = baseline_layers[0]
         assert layer.geom.aes_params == {"alpha": 0.35, "linetype": "dotted"}
         assert isinstance(plot.data, pd.DataFrame)
+        assert isinstance(layer._data, pd.DataFrame)
         np.testing.assert_allclose(
             np.sort(layer._data["yintercept"]),
             np.sort(plot.data["baseline"].drop_duplicates()),

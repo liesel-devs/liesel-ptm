@@ -24,7 +24,7 @@ from liesel.goose.kernel import (
 )
 from liesel.goose.mh import mh_step
 from liesel.goose.pytree import register_dataclass_as_pytree
-from liesel.goose.types import Array, KeyArray, ModelState, Position
+from liesel.goose.types import Array, KeyArray, ModelState, Position, Scalar
 
 from .logprob import FlatLogProb
 
@@ -37,7 +37,7 @@ class IWLSFixedKernelState:
     :class:`.liesel.goose.da.DAKernelState` protocol.
     """
 
-    step_size: float
+    step_size: Scalar
     da_state: DualAvgState | None = None
     chol_info: Array = field(default_factory=lambda: jnp.empty((0, 0)))
 
@@ -85,13 +85,13 @@ class IWLSKernelFixed(
 
     def _flat_log_prob_fn(
         self, model_state: ModelState, unravel_fn: Callable[[Array], Position]
-    ) -> Callable[[Array], float]:
+    ) -> Callable[[Array], Scalar]:
         """
         Returns a callable which takes a flat position and returns the log-probability
         of the model.
         """
 
-        def flat_log_prob_fn(flat_position: Array) -> float:
+        def flat_log_prob_fn(flat_position: Array) -> Scalar:
             position = unravel_fn(flat_position)
             new_model_state = self.model.update_state(position, model_state)
             return self.model.log_prob(new_model_state)
