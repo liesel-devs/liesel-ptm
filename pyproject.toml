@@ -9,7 +9,7 @@ authors = [
 ]
 dependencies = [
     "liesel>=0.5",
-    "liesel-gam>=0.2.1",
+    "liesel-gam>=0.2.2",
     "plotnine>=0.14.5",
     "interpax>=0.3.14",
     "properscoring>=0.1",
