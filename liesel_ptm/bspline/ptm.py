@@ -63,33 +63,6 @@ class PTMKnots:
 LogIncKnots = PTMKnots  # Alias
 
 
-def sfn(exp_shape):
-    """
-    Compute normalization factor for PTM spline coefficients.
-
-    Parameters
-    ----------
-    exp_shape
-        Exponentiated shape parameters.
-
-    Returns
-    -------
-    Normalization factor.
-    """
-    order = 3
-    p = jnp.shape(exp_shape)[-1] + 1
-
-    outer_border = exp_shape[..., jnp.array([0, -1])] / 6
-    inner_border = 5 * exp_shape[..., jnp.array([1, -2])] / 6
-    middle = exp_shape[..., 2:-2]
-    summed_exp_shape = (
-        outer_border.sum(axis=-1, keepdims=True)
-        + inner_border.sum(axis=-1, keepdims=True)
-        + middle.sum(axis=-1, keepdims=True)
-    )
-    return (1 / (p - order)) * summed_exp_shape
-
-
 def log_sfn(shape):
     """
     Compute log normalization factor for PTM spline coefficients.
@@ -121,36 +94,6 @@ def log_sfn(shape):
     log_T = jax.scipy.special.logsumexp(shape + log_w)
 
     return log_T - jnp.log(J - order)
-
-
-def cumsum_leading_zero(exp_shape: Array) -> Array:
-    """
-    Cumulative sum with a leading zero.
-    """
-    zeros_shape = jnp.shape(exp_shape)[:-1] + (1,)
-    exp_shape = jnp.concatenate((jnp.zeros(zeros_shape), exp_shape), axis=-1)
-    return jnp.cumsum(exp_shape, axis=-1)
-
-
-def normalization_coef(shape: Array, dknots: Array) -> Array:
-    """
-    Construct spline coefficients with average slope one over the domain.
-
-    Parameters
-    ----------
-    shape
-        Shape parameters.
-    dknots
-        Knot differences.
-
-    Returns
-    -------
-    Spline coefficients.
-    """
-    exp_shape = jnp.exp(shape)
-    cumsum_exp_shape = cumsum_leading_zero(exp_shape)
-    coef = (dknots / sfn(exp_shape)) * cumsum_exp_shape
-    return coef
 
 
 def normalization_coef_log(shape: Array, dknots: Array) -> Array:

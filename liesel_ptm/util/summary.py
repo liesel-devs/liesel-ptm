@@ -30,31 +30,6 @@ def cache_results(
     return results
 
 
-def summarise_by_quantiles(
-    a: Array,
-    names_prefix: str = "",
-    axis: Sequence[int] | int = (0, 1),
-    lo: float = 0.1,
-    hi: float = 0.9,
-) -> pd.DataFrame:
-    mean = np.asarray(a.mean(axis=axis))
-    sd = np.asarray(a.std(axis=axis))
-    median = np.asarray(np.quantile(a, q=0.5, axis=axis))
-    q_lo = np.asarray(np.quantile(a, q=lo, axis=axis))
-    q_hi = np.asarray(np.quantile(a, q=hi, axis=axis))
-
-    df = {}
-    sep = "_" if names_prefix else ""
-    df[f"{names_prefix}{sep}mean"] = mean
-    df[f"{names_prefix}{sep}sd"] = sd
-    df[f"{names_prefix}{sep}median"] = median
-    df[f"{names_prefix}{sep}lo"] = q_lo
-    df[f"{names_prefix}{sep}hi"] = q_hi
-    df = pd.DataFrame(df)
-
-    return df
-
-
 def summarise_by_samples(
     key: KeyArray, a: Array, name: str, n: int = 100
 ) -> pd.DataFrame:

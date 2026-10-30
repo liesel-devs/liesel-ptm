@@ -25,39 +25,6 @@ def _check_shapes(d: PyTreeDict, axis: int = 1) -> tuple[int, int]:
     return C, S
 
 
-def split_dict_exact(d: PyTreeDict, k: int, axis: int = 1) -> list[PyTreeDict]:
-    """
-    Split dict of arrays (C,S,...) into k equal blocks along `axis`.
-    Requires S % k == 0. Returns list of k dicts with arrays (C, M, ...).
-    """
-    if k <= 0:
-        raise ValueError("k must be positive.")
-    _, S = _check_shapes(d, axis=axis)
-    if S % k != 0:
-        raise ValueError(f"Exact split requires S % k == 0, got S={S}, k={k}.")
-    M = S // k
-
-    # reshape (C, S, ...) -> (C, k, M, ...) and then select each block i
-    def reshape_one(a):
-        # Move split axis to position 1 if needed (here default axis=1 already).
-        if axis != 1:
-            a = jnp.moveaxis(a, axis, 1)
-        new_shape = (a.shape[0], k, M) + a.shape[2:]
-        a = a.reshape(new_shape)
-        return a  # (C, k, M, ...)
-
-    reshaped = {key: reshape_one(val) for key, val in d.items()}
-
-    blocks: list[PyTreeDict] = []
-    for i in range(k):
-        block = {key: val[:, i, ...] for key, val in reshaped.items()}  # (C, M, ...)
-        if axis != 1:
-            # move the M axis back to original `axis`
-            block = {key: jnp.moveaxis(val, 1, axis) for key, val in block.items()}
-        blocks.append(block)
-    return blocks
-
-
 def split_dict_rough(d: PyTreeDict, k: int, axis: int = 1) -> list[PyTreeDict]:
     """
     Split dict of arrays (C,S,...) into k blocks along `axis`, with the last

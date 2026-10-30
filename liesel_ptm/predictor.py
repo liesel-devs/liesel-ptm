@@ -1190,22 +1190,3 @@ class SimplePTMPredictor(Sum):
         mispline = MISplineCoef(knots)
         fn = mispline.get_onion_fn_simple()
         return cls(name, fn=fn)
-
-
-class PTMPredictor(lsl.Var):
-    def __init__(self, name: str, fn: Callable[[Array, Array, Array], Array]) -> None:
-        self.intercept = Sum(name + "_intercept")
-        self.log_slope = Sum(name + "_log_slipe")
-        self.coef = Sum(name + "_coef")
-
-        super().__init__(lsl.Calc(fn, self.coef, self.intercept, self.coef), name=name)
-
-    @classmethod
-    def new_ptm(cls, knots: Array, name: str) -> Self:
-        mispline = MISplineCoef(knots)
-        return cls(name, fn=mispline.get_ptm_fn())
-
-    @classmethod
-    def new_onion(cls, knots: Array, name: str) -> Self:
-        mispline = MISplineCoef(knots)
-        return cls(name, fn=mispline.get_onion_fn())

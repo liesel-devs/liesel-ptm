@@ -1,7 +1,6 @@
 from typing import Any
 
 import jax.numpy as jnp
-import scipy
 
 Array = Any
 
@@ -21,37 +20,6 @@ def mixed_model(penalty: Array, rank: Array | int | None = None) -> Array:
     D = 1 / jnp.sqrt(jnp.ones_like(evalues).at[:rank].set(evalues[:rank]))
     Z = (U.T * jnp.expand_dims(D, 1)).T
     return Z
-
-
-class LinearConstraintQR:
-    @staticmethod
-    def general(constraint: Array) -> Array:
-        constraint = jnp.asarray(constraint)
-        n_constraints = constraint.shape[0]
-        q, _ = jnp.linalg.qr(constraint.T, mode="complete")
-        return q[:, n_constraints:]
-
-    @classmethod
-    def nullspace(cls, of: Array) -> Array:
-        ker = scipy.linalg.null_space(of)
-        return cls.general(constraint=ker.T)
-
-    @classmethod
-    def sumzero_coef(cls, ncoef: int) -> Array:
-        j = jnp.ones(shape=(1, ncoef))
-        return cls.general(constraint=j)
-
-    @classmethod
-    def sumzero_smooth(cls, basis: Array) -> Array:
-        nobs = jnp.shape(basis)[0]
-        j = jnp.ones(shape=nobs)
-        A = jnp.expand_dims(j @ basis, 0)
-        return cls.general(constraint=A)
-
-    @classmethod
-    def sumzero_smooth2(cls, basis: Array) -> Array:
-        A = jnp.mean(basis, axis=0, keepdims=True)
-        return cls.general(constraint=A)
 
 
 class LinearConstraintEVD:

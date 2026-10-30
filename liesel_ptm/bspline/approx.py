@@ -277,39 +277,6 @@ def bspline_basis_deriv2(x, knots, order):
     return jnp.where(mask, 0.0, basis_grad)
 
 
-def avg_slope_bspline(knots: Array, coef: Array, order: int):
-    """
-    Compute the average slope of a B-spline.
-
-    Parameters
-    ----------
-    knots
-        Knot positions.
-    coef
-        Spline coefficients.
-    order
-        Order of the spline.
-
-    Returns
-    -------
-    Average slope.
-    """
-    dk = jnp.diff(knots).mean()
-    p = jnp.shape(coef)[-1]
-    coef = jnp.diff(coef)
-
-    outer_border = coef[..., jnp.array([0, -1])] / 6
-    inner_border = 5 * coef[..., jnp.array([1, -2])] / 6
-    middle = coef[..., 2:-2]
-    summed_coef = (
-        outer_border.sum(axis=-1, keepdims=True)
-        + inner_border.sum(axis=-1, keepdims=True)
-        + middle.sum(axis=-1, keepdims=True)
-    )
-
-    return summed_coef / (dk * (p - order))
-
-
 class BSplineApprox:
     """
     Approximate B-spline evaluations on a fixed grid.
