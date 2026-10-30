@@ -133,6 +133,12 @@ def integrate_piecewise_gauss_legendre(
     return jnp.sum(y * integration_weights, axis=(0, 1))
 
 
+@jax.jit
+def _composite_quantile(distribution: tfd.Distribution, value: Array) -> Array:
+    # TFP's iterative quantiles otherwise compile fresh scans on every call.
+    return distribution.quantile(value)
+
+
 def onion_dist(
     a: float = -4.0,
     b: float = 4.0,
@@ -847,7 +853,12 @@ class TransformationDist(tfd.Distribution):
         u = self.reference_distribution.cdf(value)
         u = jnp.where(u >= 1.0, max_float, u)  # safeguard against numerical issues
         u = jnp.where(u <= 0.0, tiny, u)  # safeguard against numerical issues
-        y = self.parametric_distribution.quantile(u)
+        if isinstance(
+            self.parametric_distribution, tfd.AutoCompositeTensorDistribution
+        ):
+            y = _composite_quantile(self.parametric_distribution, u)
+        else:
+            y = self.parametric_distribution.quantile(u)
 
         return y
 
