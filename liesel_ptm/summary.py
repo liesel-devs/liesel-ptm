@@ -307,7 +307,6 @@ def _response_dist(
             if include_scale
             else jnp.ones(sample_shape + (nconditions,))
         )
-    kwargs["batched"] = True
     fitted = constructor(*args, **kwargs)
     raw = constructor(*args, **(kwargs | {"centered": False, "scaled": False}))
     return cast(TransformationDist, fitted), cast(TransformationDist, raw)

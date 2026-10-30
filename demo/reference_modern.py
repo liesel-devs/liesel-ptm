@@ -15,7 +15,6 @@ import pandas as pd
 import tensorflow_probability.substrates.jax.distributions as tfd
 
 import liesel_ptm as ptm
-from liesel_ptm.model.model import PTMDist
 
 
 def build_model() -> lsl.Model:
@@ -46,7 +45,7 @@ def build_model() -> lsl.Model:
     shape += builder.lin("group", dimension_scale=0.3, name="h.group")
 
     response = registry.get_obs("y")
-    response.dist_node = PTMDist(
+    response.dist_node = ptm.PTMDist(
         knots.knots,
         loc=loc,
         scale=scale,

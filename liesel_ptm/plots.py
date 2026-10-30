@@ -1502,7 +1502,7 @@ def plot_cluster_dist(
             label_codes = {label: code for code, label in enumerate(label_values)}
             codes = np.asarray([label_codes[label] for label in groups])
         coef = _normalise_sample_dims(
-            _predict(term, samples, {category: codes}), term.value.ndim
+            _predict(term, samples, {category: jnp.asarray(codes)}), term.value.ndim
         )
         if intercept is not None:
             intercept_coef = _normalise_sample_dims(

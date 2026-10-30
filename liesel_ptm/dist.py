@@ -92,13 +92,6 @@ def _gauss_legendre_nodes_and_weights(order: int, dtype: Any) -> tuple[Array, Ar
     return jnp.asarray(nodes, dtype=dtype), jnp.asarray(weights, dtype=dtype)
 
 
-def _as_unused_pseudo_coef(coef: Array) -> Array:
-    coef = jnp.asarray(coef)
-    if coef.ndim < 1:
-        return jnp.reshape(coef, (1,))
-    return coef
-
-
 def integrate_piecewise_gauss_legendre(
     f: Callable[[Array], Array],
     breaks: Array,
@@ -138,22 +131,6 @@ def integrate_piecewise_gauss_legendre(
     )
 
     return jnp.sum(y * integration_weights, axis=(0, 1))
-
-
-def _identity_moment_quadrature_diagnostic(dtype: Any) -> dict[str, Array]:
-    zero = jnp.asarray(0.0, dtype=dtype)
-    one = jnp.asarray(1.0, dtype=dtype)
-    return {
-        "mean": zero,
-        "variance": one,
-        "mean_reference": zero,
-        "variance_reference": one,
-        "mean_abs_error": zero,
-        "variance_abs_error": zero,
-        "mean_rel_error": zero,
-        "variance_rel_error": zero,
-        "ok": jnp.asarray(True),
-    }
 
 
 def onion_dist(
@@ -216,9 +193,6 @@ class TransformationDist(tfd.Distribution):
         If True, scale the intermediate spline distribution using its finite-bound \
         raw variance. This need not preserve the parametric response variance after \
         a nonlinear parametric inverse.
-    batched
-        Accepted for backward compatibility. Computation always follows TFP \
-        scalar-event batching.
     gauss_legendre_order
         Number of Gauss-Legendre nodes per knot interval for spline moments.
     integration_bounds
@@ -262,7 +236,6 @@ class TransformationDist(tfd.Distribution):
         name: str = "TransformationDist",
         centered: bool = False,
         scaled: bool = False,
-        batched: bool = True,
         gauss_legendre_order: int = 8,
         integration_bounds: tuple[float, float] | None = None,
         response_moment_order: int = 512,
@@ -322,8 +295,6 @@ class TransformationDist(tfd.Distribution):
             self.parametric_distribution = parametric_distribution(
                 **parametric_distribution_kwargs
             )
-
-        self.batched = batched
 
         super().__init__(
             dtype=coef.dtype,
@@ -925,9 +896,6 @@ class LocScaleTransformationDist(TransformationDist):
         If True, the transformation is centered.
     scaled
         If True, the transformation is scaled.
-    batched
-        Accepted for backward compatibility. Computation always follows TFP \
-        scalar-event batching.
     gauss_legendre_order
         Number of Gauss-Legendre nodes per knot interval for spline moments.
     integration_bounds
@@ -957,7 +925,6 @@ class LocScaleTransformationDist(TransformationDist):
         name: str = "LocScaleTransformationDist",
         centered: bool = False,
         scaled: bool = False,
-        batched: bool = True,
         reference_distribution=tfd.Normal(loc=0.0, scale=1.0),
         gauss_legendre_order: int = 8,
         integration_bounds: tuple[float, float] | None = None,
@@ -975,7 +942,6 @@ class LocScaleTransformationDist(TransformationDist):
             scale=scale,
             centered=centered,
             scaled=scaled,
-            batched=batched,
             gauss_legendre_order=gauss_legendre_order,
             integration_bounds=integration_bounds,
             response_moment_order=response_moment_order,
@@ -1037,134 +1003,3 @@ class LocScaleTransformationDist(TransformationDist):
         y = value * sd + m
 
         return y
-
-
-class GaussianPseudoTransformationDist(LocScaleTransformationDist):
-    """
-    Gaussian pseudo-transformation distribution.
-
-    A simplified version of :class:`LocScaleTransformationDist` with
-    identity spline behavior. This class is used to be compatible in interface to
-    :class:`LocScaleTransformationDist` while conveniently representing a Gaussian
-    distribution.
-
-
-    Parameters
-    ----------
-    coef
-        Coefficients for the spline basis (kept for consistency).
-    loc
-        Location parameter for the Normal layer.
-    scale
-        Scale parameter for the Normal layer.
-    validate_args
-        Whether to validate input arguments.
-    allow_nan_stats
-        Whether to allow NaN statistics.
-    name
-        Name of the distribution.
-    centered
-        If True, the transformation is centered.
-    scaled
-        If True, the transformation is scaled.
-    batched
-        Accepted for backward compatibility. Computation always follows TFP \
-        scalar-event batching.
-    gauss_legendre_order
-        Number of Gauss-Legendre nodes per knot interval for spline moments.
-    integration_bounds
-        Lower and upper bounds for raw spline moments used in centering/scaling. \
-        Defaults to the first and last spline knot. Response moments integrate \
-        the complete quantile function independently of these bounds, while \
-        respecting the configured centering/scaling.
-    response_moment_order
-        Accepted for interface compatibility. Pseudo-distribution response moments \
-        are exact and do not require quadrature.
-
-    Notes
-    -----
-    - Inherits attributes from :class:`LocScaleTransformationDist`.
-    - The spline transformation is effectively the identity.
-    """
-
-    knots = jnp.linspace(-3.0, 3.0, 10)
-    bspline = PTMSpline(knots)
-
-    def __init__(
-        self,
-        coef: Array,
-        loc: Array,
-        scale: Array,
-        validate_args: bool = False,
-        allow_nan_stats: bool = True,
-        name: str = "GaussianPseudoTransformationDist",
-        centered: bool = False,
-        scaled: bool = False,
-        batched: bool = True,
-        gauss_legendre_order: int = 8,
-        integration_bounds: tuple[float, float] | None = None,
-        response_moment_order: int = 512,
-    ) -> None:
-        super().__init__(
-            coef=_as_unused_pseudo_coef(coef),
-            bspline=self.bspline,
-            validate_args=validate_args,
-            allow_nan_stats=allow_nan_stats,
-            name=name,
-            loc=jnp.atleast_1d(loc),
-            scale=jnp.atleast_1d(scale),
-            centered=centered,
-            scaled=scaled,
-            batched=batched,
-            gauss_legendre_order=gauss_legendre_order,
-            integration_bounds=integration_bounds,
-            response_moment_order=response_moment_order,
-        )
-
-    @partial(jax.jit, static_argnums=0)
-    def transformation_and_logdet(self, value: Array) -> tuple[Array, Array]:
-        return self.transformation_and_logdet_parametric(value)
-
-    @partial(jax.jit, static_argnums=0)
-    def inverse_transformation(self, value: Array) -> Array:
-        return self.inverse_transformation_parametric(value)
-
-    def _response_moments(self, order: int | None = None) -> tuple[Array, Array]:
-        distribution = self.parametric_distribution
-        assert distribution is not None
-        return (
-            self._broadcast_to_batch(distribution.mean()),
-            self._broadcast_to_batch(distribution.variance()),
-        )
-
-    @cache
-    def transformation_spline_mean(self):
-        return 0.0
-
-    @cache
-    def transformation_spline_variance(self, mean: Array | None = None) -> Array:
-        return 1.0
-
-    def moment_quadrature_diagnostic(
-        self,
-        reference_order: int | None = None,
-        rtol: float = 1e-4,
-        atol: float = 1e-5,
-        *,
-        target: Literal["spline", "response"] = "spline",
-    ) -> dict[str, Array]:
-        if target == "spline":
-            return _identity_moment_quadrature_diagnostic(self.dtype)
-        return super().moment_quadrature_diagnostic(
-            reference_order, rtol, atol, target=target
-        )
-
-    def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
-        value = self._broadcast_tfp_value(value)
-        return value, tf.zeros_like(value)
-
-    def _transformation_spline(self, value: Array) -> Array:
-        return self._broadcast_tfp_value(value)
-
-    def inverse_transformation_spline(self, value: Array) -> Array:
-        return self._broadcast_tfp_value(value)

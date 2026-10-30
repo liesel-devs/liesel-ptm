@@ -12,7 +12,6 @@ import numpy as np
 import pandas as pd
 
 import liesel_ptm as ptm
-from liesel_ptm.model.model import PTMDist
 
 
 def build_model() -> lsl.Model:
@@ -55,7 +54,7 @@ def build_model() -> lsl.Model:
     # The modern Weibull variance prior is intentionally unclipped.
     response = lsl.Var.new_obs(
         y,
-        dist=PTMDist(
+        dist=ptm.PTMDist(
             knots.knots,
             loc=loc,
             scale=scale,

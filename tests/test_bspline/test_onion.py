@@ -610,8 +610,9 @@ class TestTfpLayout:
         fx_ref, fxd_ref = self._full_broadcast_forward_reference(
             bs, value, coef, batch_shape=batch_shape
         )
-        assert jnp.allclose(fx, fx_ref)
-        assert jnp.allclose(fx_value, fx_ref)
+        # Equivalent float32 evaluation paths differ slightly near zero.
+        assert jnp.allclose(fx, fx_ref, atol=1e-6)
+        assert jnp.allclose(fx_value, fx_ref, atol=1e-6)
         assert jnp.allclose(fxd, fxd_ref)
 
         x = bs.dot_inverse_tfp(fx, coef, batch_shape=batch_shape)
