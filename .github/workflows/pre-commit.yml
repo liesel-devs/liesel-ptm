@@ -2,35 +2,23 @@ name: pre-commit
 
 on:
   push:
-    branches: [main]
+    branches: [main, codex/cleanup]
   pull_request:
-    branches: [main]
+    branches: [main, codex/cleanup]
+
+permissions:
+  contents: read
 
 jobs:
   pre-commit:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: "Set up Python"
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
-          python-version-file: "pyproject.toml"
-
-      - name: Set up R
-        uses: r-lib/actions/setup-r@v2
-        with:
-          r-version: 'release'
-          use-public-rspm: true
-
-      - name: Install Package
+          python-version: "3.13"
+      - name: Install package and development tools
         run: uv sync --locked --group dev
-
       - name: Run pre-commit
-        run: uv run pre-commit run -a
+        run: uv run --locked pre-commit run -a

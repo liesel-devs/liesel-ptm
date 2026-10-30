@@ -2,15 +2,44 @@ name: docs
 
 on:
   push:
-    branches: [main] # branch to trigger deployment
+    branches: [main, codex/cleanup]
+  pull_request:
+    branches: [main, codex/cleanup]
+
+permissions:
+  contents: read
 
 concurrency:
-    group: gh-${{ github.ref }}-docs
-    cancel-in-progress: true
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  pages:
+  build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install package and development tools
+        run: uv sync --locked --group dev
+      - name: Build documentation
+        run: uv run --locked sphinx-build -W --keep-going -b html docs/source docs/build/html
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/build/html
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -18,8 +47,5 @@ jobs:
       pages: write
       id-token: write
     steps:
-    - id: deployment
-      uses: sphinx-notes/pages@v3
-      with:
-        documentation_path: ./docs/source
-        python_version: 3.13
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -8,11 +8,14 @@ authors = [
     { name = "Johannes Brachem" },
 ]
 dependencies = [
-    "liesel>=0.5",
+    "liesel>=0.6.0.dev0",
     "liesel-gam>=0.2.4",
-    "plotnine>=0.14.5",
+    "jax>=0.8.0",
+    "numpy>=2.0",
+    "pandas>=2.2.3",
+    "plotnine>=0.15.0",
     "interpax>=0.3.14",
-    "properscoring>=0.1",
+    "tfp-nightly>=0.26.0.dev20250811",
 ]
 
 [tool.uv.sources]
@@ -21,9 +24,8 @@ liesel = { git = "https://github.com/liesel-devs/liesel.git", branch = "vi-moder
 [dependency-groups]
 dev = [
     "ipykernel>=6.29.5",
-    "mypy>=1.15.0",
-    "myst-nb>=1.3.0",
     "nbval>=0.11.0",
+    "optax>=0.2.5",
     "pre-commit>=4.2.0",
     "pytest>=8.3.5",
     "pytest-cov>=6.1.1",
@@ -32,7 +34,6 @@ dev = [
     "sphinx-autodoc-typehints>=3.2.0",
     "sphinx-book-theme>=1.1.4",
     "sphinx-copybutton>=0.5.2",
-    "sphinx-remove-toctrees>=1.0.0.post1",
 ]
 
 [tool.pytest.ini_options]
@@ -41,7 +42,6 @@ testpaths = "tests"
 filterwarnings = [
     "error",
     "ignore::FutureWarning:arviz",
-    "ignore:invalid escape sequence.*:SyntaxWarning:properscoring.*",
     "ignore:jax.interpreters.xla.pytype_aval_mappings is deprecated:DeprecationWarning:tensorflow_probability.python.internal.backend.jax.ops",
     "ignore:jax.core.pytype_aval_mappings is deprecated.:DeprecationWarning:tensorflow_probability.python.internal.backend.jax.ops",
     "ignore:shape requires ndarray or scalar arguments, got <class 'NoneType'> at position 0. In a future JAX release this will be an error.:DeprecationWarning:tensorflow_probability.python.internal.backend.jax.random_generators",
@@ -77,12 +77,6 @@ quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
 
-
-[tool.mypy]
-files = ["liesel_ptm", "tests"]
-ignore_missing_imports = true
-scripts_are_modules = true
-disable_error_code = "annotation-unchecked"
 
 [tool.ty.src]
 exclude = ["**/*.ipynb"]
