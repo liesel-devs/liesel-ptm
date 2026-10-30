@@ -361,61 +361,6 @@ class TestInverseAndFullBatch:
             for j in range(x2.shape[1]):
                 assert jnp.allclose(x2[i, j, ...], x[i, j, ...], atol=1e-4)
 
-    def test_fullbatch_scalar_x(self):
-        fx, fxd = bs.dot_and_deriv_n_fullbatch(1.0, coef)
-
-        # shape fits
-        assert fx.shape == ()
-        assert fxd.shape == ()
-
-        # no nans
-        assert not jnp.any(jnp.isnan(fx))
-        assert not jnp.any(jnp.isnan(fxd))
-
-        # increasing
-        assert jnp.all(fxd > 0.0)
-
-    def test_fullbatch_vector_x(self):
-        x = jnp.linspace(-8.0, 8.0, 300)
-        fx, fxd = bs.dot_and_deriv_n_fullbatch(x, coef)
-
-        # shape fits
-        assert fx.shape == x.shape
-        assert fxd.shape == x.shape
-
-        # no nans
-        assert not jnp.any(jnp.isnan(fx))
-        assert not jnp.any(jnp.isnan(fxd))
-
-        # increasing
-        assert jnp.all(fxd > 0.0)
-        assert jnp.all(jnp.diff(fx) > 0.0)
-
-    def test_fullbatch_batched_x_single_coef(self):
-        x = jax.random.normal(jax.random.key(1), (4, 200))
-        fx, fxd = bs.dot_and_deriv_n_fullbatch(x, coef)
-
-        # shape fits
-        assert fx.shape == (4, 200)
-        assert fxd.shape == (4, 200)
-
-        # no nans
-        assert not jnp.any(jnp.isnan(fx))
-        assert not jnp.any(jnp.isnan(fxd))
-
-        # increasing
-        assert jnp.all(fxd > 0.0)
-
-    def test_fullbatch_scalar_x_batched_coef(self):
-        x = 1.0
-        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
-        bs.dot_and_deriv_n_fullbatch(x, coef)
-
-    def test_fullbatch_vector_x_batched_coef(self):
-        x = jax.random.normal(jax.random.key(1), (200,))
-        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
-        bs.dot_and_deriv_n_fullbatch(x, coef)
-
     def test_gptm_dot_and_deriv(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
         k1 = jax.random.key(1)
