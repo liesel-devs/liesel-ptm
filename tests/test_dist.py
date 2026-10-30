@@ -462,6 +462,12 @@ class TestSplineMomentQuadrature:
 
 class TestDistOneCoef:
     @pytest.mark.parametrize("method", ["quantile", "log_prob"])
+    def test_distribution_rejects_parameter_overrides(self, method):
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
+        with pytest.raises(TypeError):
+            getattr(dist, method)(0.5, loc=2.0)
+
+    @pytest.mark.parametrize("method", ["quantile", "log_prob"])
     def test_distribution_reuses_compilation_across_parameter_draws(
         self, caplog, method
     ):

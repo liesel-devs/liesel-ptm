@@ -407,6 +407,8 @@ class TransformationDist(tfd.Distribution):
             return jnp.log(jnp.clip(prob, tiny, 1.0))
 
     def _log_prob(self, value: Array, **kwargs) -> Array | float:
+        if kwargs:
+            raise TypeError(f"Unexpected keyword argument: {next(iter(kwargs))!r}")
         z, logdet = self.transformation_and_logdet(value)
         return self.reference_distribution.log_prob(z) + logdet
 
@@ -427,6 +429,8 @@ class TransformationDist(tfd.Distribution):
 
     # Spline kernels share compiled code across distribution/parameter draws.
     def _quantile(self, value: Array, **kwargs) -> Array:
+        if kwargs:
+            raise TypeError(f"Unexpected keyword argument: {next(iter(kwargs))!r}")
         z = self.reference_distribution.quantile(value)
         return self.inverse_transformation(z)
 
