@@ -26,10 +26,8 @@ from ..iwls_proposals import (
     CholInfo,
     GaussianLocCholInfo,
     GaussianScaleCholInfo,
-    ObservedCholInfoOrIdentity,
     PTMCholInfoFixed,
 )
-from ..logprob import FlatLogProb
 from ..predictor import (
     LocPredictor,
     ScalePredictor,
@@ -37,7 +35,7 @@ from ..predictor import (
     setup_loc_scale,
 )
 from ..swap_dists import SwapSpec, TemporarilySwapDists, spec_bounded
-from ..util.summary import cache_results, summarise_by_samples
+from ..util.summary import summarise_by_samples
 from ..var import PTMCoef, ScaleWeibull
 
 Array = Any
@@ -596,11 +594,7 @@ class LocScalePTM:
 
                 positive_definite_tests = []
                 for param_name in result.position:
-                    logprob = FlatLogProb(
-                        model=gs.LieselInterface(model_),
-                        model_state=result.model_state,
-                        param_names=[param_name],
-                    )
+                    logprob = lsl.FlatLogProb(model_, position_keys=[param_name])
 
                     pos = model_.extract_position(
                         [param_name], model_state=result.model_state
@@ -608,9 +602,7 @@ class LocScalePTM:
                     flat_position, _ = jax.flatten_util.ravel_pytree(pos)
                     if len(flat_position) < 2:  # skip scalar parameters
                         continue
-                    finfo = -logprob.hessian(
-                        flat_position, model_state=result.model_state
-                    )
+                    finfo = -logprob.hessian(flat_position)
 
                     augmentation = 1e-5 * jnp.eye(jnp.shape(flat_position)[-1])
                     evals = jnp.linalg.eigvalsh(finfo + augmentation)
@@ -1045,23 +1037,21 @@ class LocScalePTM:
             if self.interface is None:
                 raise ValueError(f"{self.interface=} must not be None.")
             if self.is_gaussian or strategy in ["iwls-nuts", "iwls-iwls_fixed"]:
-                # this fails if term is a linear term or for another reason has
-                # no .scale attribute.
+                # Terms without a structured Gaussian prior use observed information.
                 try:
                     cinfo_class = GaussianLocCholInfo
                     cinfo = cinfo_class.from_smooth(
                         term, model=self.interface, n=int(self.response.value.size)
                     )
-                except AttributeError:
-                    # this will fall back to an ordinary IWLS kernel using the observed
-                    # fisher information
-                    # But if there are NaNs in the fisher information's Choleksy
-                    # decomposition, it will use an identity matrix instead.
-                    cinfo = ObservedCholInfoOrIdentity.from_smooth(term, self.interface)
+                except (AttributeError, KeyError):
+                    cinfo = None
 
                 term.coef.inference = gs.MCMCSpec(
                     gs.IWLSKernel,
-                    kernel_kwargs={"chol_info_fn": cinfo.chol_info}
+                    kernel_kwargs={
+                        "chol_info_fn": cinfo.chol_info if cinfo is not None else None,
+                        "fallback_chol_info": "identity",
+                    }
                     | iwls_locscale_kernel_kwargs,
                     jitter_dist=jitter_dist,
                 )
@@ -1134,22 +1124,20 @@ class LocScalePTM:
             if self.interface is None:
                 raise ValueError(f"{self.interface=} must not be None.")
             if self.is_gaussian or strategy == "iwls-nuts":
-                # this fails if term is a linear term or for another reason has
-                # no .scale attribute.
+                # Terms without a structured Gaussian prior use observed information.
                 try:
                     cinfo = GaussianScaleCholInfo.from_smooth(
                         term, model=self.interface, n=int(self.response.value.size)
                     )
-                except AttributeError:
-                    # this will fall back to an ordinary IWLS kernel using the observed
-                    # fisher information
-                    # But if there are NaNs in the fisher information's Choleksy
-                    # decomposition, it will use an identity matrix instead.
-                    cinfo = ObservedCholInfoOrIdentity.from_smooth(term, self.interface)
+                except (AttributeError, KeyError):
+                    cinfo = None
 
                 term.coef.inference = gs.MCMCSpec(
                     gs.IWLSKernel,
-                    kernel_kwargs={"chol_info_fn": cinfo.chol_info}
+                    kernel_kwargs={
+                        "chol_info_fn": cinfo.chol_info if cinfo is not None else None,
+                        "fallback_chol_info": "identity",
+                    }
                     | iwls_locscale_kernel_kwargs,
                     jitter_dist=jitter_dist,
                 )
@@ -1448,12 +1436,11 @@ class LocScalePTM:
         )
         eb.set_epochs(epochs)
 
+        engine = eb.build()
+        engine.sample_all_epochs()
+        results = engine.get_results()
         if cache_path is not None:
-            results = cache_results(eb, filename=cache_path)
-        else:
-            engine = eb.build()
-            engine.sample_all_epochs()
-            results = engine.get_results()
+            results.pkl_save(Path(cache_path))
 
         return results
 

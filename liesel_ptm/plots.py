@@ -29,7 +29,6 @@ from .summary import (
     summarise_intercept_dist,
     summarise_nd_smooth_dist,
 )
-from .util.plots import plot_loss, plot_param_history
 
 _QUANTITY_LABELS = {
     "density": "Density",
@@ -1908,6 +1907,4 @@ __all__ = [
     "plot_conditional_dist",
     "plot_regions_dist",
     "plot_intercept_dist",
-    "plot_loss",
-    "plot_param_history",
 ]
