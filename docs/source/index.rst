@@ -8,20 +8,27 @@ Penalized Transformation Models in Liesel
 
 Penalized Transformation Models are a class of flexible structured additive
 distributional regression models. This is a Python library for estimating these models
-with Markov Chain Monte Carlo (MCMC) methods.
+with optimization, variational inference, and Markov Chain Monte Carlo (MCMC).
+Liesel provides inference and model graphs; liesel-gam provides predictors, terms,
+priors, and Gaussian IWLS proposals. Liesel-PTM provides transformations,
+distributions, computed intercepts, and distribution summaries and plots.
 
 Learn more in the paper:
 
-Brachem, J., Wiemann, P. F. V., & Kneib, T. (2024). Bayesian penalized transformation models: Structured additive location-scale regression for arbitrary conditional distributions (No. arXiv:2404.07440). arXiv. `https://doi.org/10.48550/arXiv.2404.07440 <https://doi.org/10.48550/arXiv.2404.07440>`_
+Brachem, J., Wiemann, P. F. V., & Kneib, T. (2026).
+`Bayesian Penalized Transformation Models: Structured Additive Location-Scale Regression for Arbitrary Conditional Distributions <https://doi.org/10.1080/10618600.2026.2703269>`_.
+*Journal of Computational and Graphical Statistics*.
 
 Installation
 ------------
 
-The library can be installed from GitHub:
+Requires Python 3.13. Until Liesel releases the required optimization/VI APIs,
+install its development branch alongside this library:
 
 .. code:: bash
 
-    $ pip install git+https://github.com/liesel-devs/liesel-ptm.git
+    pip install "liesel @ git+https://github.com/liesel-devs/liesel.git@vi-modernization" \
+      "git+https://github.com/liesel-devs/liesel-ptm.git@codex/cleanup"
 
 
 Getting Started
@@ -71,6 +78,54 @@ shape. Data are synthetic; construct predictors and terms with ``liesel_gam``.
     )
     model = lsl.Model(response)
 
+``centered=True, scaled=True`` gives location and scale their mean/standard-deviation
+interpretation. Shape effects depending on covariates require ``bspline="onion"``.
+For staged optimization, VI, and prediction, see the
+`modern reference example <https://github.com/liesel-devs/liesel-ptm/blob/codex/cleanup/demo/reference_modern.py>`_.
+
+Legacy PTM
+----------
+
+The original PTM uses a shared shape predictor and computed location/scale
+intercepts. Construct it with :class:`~liesel_ptm.LocationIntercept`,
+:class:`~liesel_ptm.LogScaleIntercept`, and ``centered=False, scaled=False``.
+Use the same liesel-gam random-walk construction for shape as above. The
+`complete legacy example <https://github.com/liesel-devs/liesel-ptm/blob/codex/cleanup/demo/reference_legacy.py>`_
+includes a smoothing-variance Gibbs update. Its Weibull variance prior is unclipped.
+
+For that model, configure Gaussian IWLS proposals for location/scale and a joint
+NUTS block for shape with :meth:`~liesel_ptm.LegacyPTM.setup_mcmc`::
+
+    legacy = ptm.LegacyPTM(model)
+    engine_builder = legacy.setup_mcmc(
+        loc_terms=model.vars["loc_terms"],
+        log_scale_terms=model.vars["log_scale_terms"],
+        shape=model.vars["delta"],
+        seed=43,
+        num_chains=2,
+    )
+    engine_builder.add_adaptation(500)
+    engine_builder.add_posterior(1000)
+    engine = engine_builder.build()
+    engine.sample_all_epochs()
+    samples = engine.get_results().get_posterior_samples()
+    prediction = legacy.predict(
+        samples,
+        predict=["loc", "scale", "delta"],
+        newdata={"x": jnp.array([-0.5, 0.5])},
+    )
+
+Both computed intercepts are recorded for every posterior draw.
+:meth:`~liesel_ptm.LegacyPTM.predict` uses those records for new covariates without
+changing the fitted graph. Use longer chains and inspect diagnostics for inference.
+
+Distribution effects
+--------------------
+
+The `plotting notebook <https://github.com/liesel-devs/liesel-ptm/blob/codex/cleanup/demo/term-distribution-plots.ipynb>`_
+illustrates smooth, categorical, tensor and spatial effects with simulated coefficient
+draws. See the guide for summary and plotting options:
+
 .. toctree::
     :maxdepth: 2
 
@@ -92,6 +147,9 @@ API Reference
     ~liesel_ptm.TransformationDist
     ~liesel_ptm.LocScaleTransformationDist
     ~liesel_ptm.PTMKnots
+    ~liesel_ptm.OnionKnots
+    ~liesel_ptm.OnionSpline
+    ~liesel_ptm.onion_dist
     ~liesel_ptm.LocationIntercept
     ~liesel_ptm.LogScaleIntercept
     ~liesel_ptm.LegacyPTM
@@ -115,6 +173,23 @@ API Reference
     ~liesel_ptm.plot_cluster_dist
     ~liesel_ptm.plot_conditional_dist
     ~liesel_ptm.plot_regions_dist
+
+.. rubric:: Censoring and survival
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+
+    ~liesel_ptm.survival_dist.CensoredDistribution
+    ~liesel_ptm.survival_dist.LeftCensoredDistribution
+    ~liesel_ptm.survival_dist.RightCensoredDistribution
+    ~liesel_ptm.survival_dist.IntervalCensoredDistribution
+    ~liesel_ptm.survival_dist.uncensored
+    ~liesel_ptm.survival_dist.left_censored
+    ~liesel_ptm.survival_dist.right_censored
+    ~liesel_ptm.survival_dist.interval_censored
+    ~liesel_ptm.survival_dist.setup_censored_vars
+    ~liesel_ptm.survival_dist.subset_var
 
 Acknowledgements and Funding
 --------------------------------

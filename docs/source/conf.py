@@ -23,23 +23,22 @@ extensions = [
     # "sphinx.ext.linkcode",
     "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
-    "sphinx_remove_toctrees",  # speed up builds with many stub pages
     "sphinx.ext.intersphinx",
     "sphinx_copybutton",
-    "myst_nb",
 ]
 
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
-    "scipy": ("https://docs.scipy.org/doc/scipy-1.8.1/", None),
-    "jax": ("https://jax.readthedocs.io/en/latest/", None),
+    "scipy": ("https://docs.scipy.org/doc/scipy/", None),
+    "jax": ("https://docs.jax.dev/en/latest/", None),
     "tensorflow_probability": (  # we can use "tfp" as a prefix, too
         "https://www.tensorflow.org/probability/api_docs/python",
-        "https://github.com/GPflow/tensorflow-intersphinx/raw/master/tfp_py_objects.inv",
+        "https://raw.githubusercontent.com/GPflow/tensorflow-intersphinx/master/tfp_py_objects.inv",
     ),
 }
+intersphinx_timeout = 10
 
 # Napoleon options
 napoleon_use_param = True
@@ -87,16 +86,6 @@ html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 
 
-def linkcode_resolve(domain, info):
-    """For the linkcode extension."""
-    if domain != "py":
-        return None
-    if not info["module"]:
-        return None
-    filename = info["module"].replace(".", "/")
-    return f"https://github.com/liesel-devs/liesel-ptm/blob/main/{filename}.py"
-
-
 # Mock / ignore the following modules.
 autodoc_mock_imports = []
 autodoc_default_options = {
@@ -108,16 +97,3 @@ autosummary_filename_map = {}
 
 # Only document module members that are listed in __all__ (if defined).
 autosummary_ignore_module_all = False
-
-# Remove auto-generated API docs from the sidebar. They take too long to build.
-remove_from_toctrees = []
-
-
-# --------------------------------------------------------------------------------------
-# myst settings
-# --------------------------------------------------------------------------------------
-
-# myst configuration
-myst_heading_anchors = 3  # auto-generate 3 levels of heading anchors
-myst_enable_extensions = ["amsmath", "dollarmath", "html_image"]
-myst_dmath_double_inline = True

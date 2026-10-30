@@ -43,12 +43,12 @@ arrays or as scalar-valued records::
        {"x": 1.0, "group": "b"},
    ]
    summary = ptm.summarise_conditional_dist(
-       model.response,
+       model.vars["y"],
        samples,
        newdata=cases,
    )
    plot = ptm.plot_conditional_dist(
-       model.response,
+       model.vars["y"],
        samples,
        newdata=cases,
        condition_labels=["Control", "Treatment"],
@@ -72,7 +72,7 @@ modeled response to the reported response. For example, a response modeled as
    import tensorflow_probability.substrates.jax.bijectors as tfb
 
    plot = ptm.plot_conditional_dist(
-       model.response,
+       model.vars["y"],
        samples,
        newdata=cases,
        rgrid=jnp.linspace(0.01, 20.0, 200),
