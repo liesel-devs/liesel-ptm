@@ -146,59 +146,6 @@ class GaussianScaleCholInfo:
 
 
 @dataclass
-class PTMCholInfo:
-    coef_name: str
-    coef_scale_name: str
-    penalty: ArrayLike
-    model: ModelInterface
-    model_state: ModelState
-
-    @classmethod
-    def from_coef(cls, coef: PTMCoef, model: ModelInterface):
-        return cls(
-            coef_name=coef.latent_coef.name,
-            coef_scale_name=coef.latent_coef.dist_node["scale"].name,  # type: ignore
-            penalty=coef.penalty,
-            model=model,
-            model_state=coef.model.state,  # type: ignore
-        )
-
-    def __post_init__(self):
-        self.fisher_info = self.current_fisher_info(self.model_state)
-
-    def current_fisher_info(self, model_state: ModelState) -> Array:
-        pos = self.model.extract_position([self.coef_name], model_state)
-
-        flat_position, _ = jax.flatten_util.ravel_pytree(pos[self.coef_name])
-        logprob = FlatLogProb(self.model, model_state, [self.coef_name])
-        info = -logprob.hessian(flat_position, model_state)
-
-        def make_pd(A, jitter=1e-6):
-            A = 0.5 * (A + A.T)
-            w_min = jnp.linalg.eigvalsh(A).min()
-            # If w_min < jitter, raise all eigenvalues by (jitter - w_min)
-            shift = jnp.maximum(0.0, jitter - w_min)
-            return A + shift * jnp.eye(A.shape[0], dtype=A.dtype)
-
-        info = make_pd(jnp.atleast_2d(info))
-
-        return info
-
-    def precision(self, model_state: ModelState) -> Array:
-        pos = self.model.extract_position([self.coef_scale_name], model_state)
-        scale = pos[self.coef_scale_name]
-
-        eps = jnp.sqrt(jnp.finfo(scale.dtype).eps)  # small but not too small
-        inv_scale2 = 1.0 / jnp.clip(scale, a_min=eps) ** 2
-
-        P = self.fisher_info  # + inv_scale2 * self.penalty
-        return jnp.asarray(P * inv_scale2)
-
-    def chol_info(self, model_state: ModelState) -> Array:
-        return jnp.linalg.cholesky(self.precision(model_state))
-
-
-@dataclass
 class PTMCholInfoFixed:
     coef_name: str
     coef_scale_name: str

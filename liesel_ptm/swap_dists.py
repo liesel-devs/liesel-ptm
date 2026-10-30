@@ -39,38 +39,6 @@ ig_to_bounded_gamma = SwapSpec(
 )
 
 
-def spec_lower_bound(
-    var: lsl.Var,
-    lower_bound: float | Array = 0.05**2,
-    bijector: tfb.Bijector | None = None,
-):
-    lower_bound = jnp.asarray(lower_bound, jnp.asarray(var.value).dtype)
-
-    if var.strong:
-        spec = SwapSpec(from_name=var.name, bijector=tfb.SoftClip(low=lower_bound))
-        return spec
-
-    # if var is weak
-    fn = var.value_node.function  # type: ignore
-    try:
-        bijector = fn.__self__
-    except AttributeError as e:
-        msg1 = f"{var=} is weak. Tried to obtain a bijector from its value function, "
-        msg2 = "but this failed, because the value function does not seem to be a "
-        msg3 = "bound method."
-        raise AttributeError(msg1 + msg2 + msg3) from e
-
-    low = bijector.inverse(lower_bound)
-    parent_var = var.value_node[0]
-    if parent_var.weak:  # type: ignore
-        raise ValueError(
-            f"{var} is weak, and parent variable {parent_var} is weak, too."
-        )
-
-    spec = SwapSpec(from_name=parent_var.name, bijector=tfb.SoftClip(low=low))
-    return spec
-
-
 def _guess_bijector(dist: tfd.Distribution):
     """
     Guesses the bijector being used.
