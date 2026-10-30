@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Literal, cast
 
 import jax
@@ -348,6 +349,7 @@ class TransformationSpline:
         dot = self._evaluate_spline_value(value, coef)
         return self._squeeze_scalar_result(dot, was_scalar)
 
+    @partial(jax.jit, static_argnums=0)
     def _dot_inverse_broadcast(self, value: Array, coef: Array) -> Array:
         value, coef, was_scalar = self._broadcast_value_and_coef(value, coef)
 
@@ -454,6 +456,7 @@ class TransformationSpline:
             )
         )(value_rows, ygrid)
 
+    @partial(jax.jit, static_argnums=0)
     def _inverse_rows_chunked(self, value_rows: Array, coef_rows: Array) -> Array:
         B, n = value_rows.shape
         n_coef, p = coef_rows.shape[-2:]

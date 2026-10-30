@@ -24,7 +24,7 @@ jobs:
       - name: Install package and development tools
         run: uv sync --locked --group dev
       - name: Run retained tests
-        run: uv run --locked pytest --cov=liesel_ptm --cov-report=term-missing --cov-report=xml
+        run: uv run --locked pytest -v --durations=20 --cov=liesel_ptm --cov-report=term-missing --cov-report=xml
       - name: Run plotting notebook
         run: uv run --locked pytest --nbval-lax --nbval-current-env --nbval-cell-timeout=120 demo/term-distribution-plots.ipynb
       - name: Upload coverage

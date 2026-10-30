@@ -461,6 +461,58 @@ class TestSplineMomentQuadrature:
 
 
 class TestDistOneCoef:
+    @pytest.mark.parametrize("method", ["quantile", "log_prob"])
+    def test_distribution_reuses_compilation_across_parameter_draws(
+        self, caplog, method
+    ):
+        spline = PTMSpline(PTMKnots(-4.0, 4.0, nparam=6).knots)
+        first = ptm.LocScaleTransformationDist(
+            coef=jnp.linspace(-0.2, 0.2, 6),
+            loc=0.0,
+            scale=1.0,
+            bspline=spline,
+            centered=True,
+            scaled=True,
+        )
+        second = ptm.LocScaleTransformationDist(
+            coef=jnp.linspace(0.3, -0.1, 6),
+            loc=0.5,
+            scale=1.5,
+            bspline=spline,
+            centered=True,
+            scaled=True,
+        )
+        probabilities = jnp.array([0.1, 0.5, 0.9])
+        changed_probabilities = jnp.array([0.2, 0.6, 0.8])
+
+        with jax.log_compiles(True):
+            first_values = getattr(first, method)(probabilities).block_until_ready()
+            assert any(
+                "Finished XLA compilation" in record.getMessage()
+                for record in caplog.records
+            )
+            caplog.clear()
+            second_values = getattr(second, method)(
+                changed_probabilities
+            ).block_until_ready()
+
+        assert not any(
+            "Finished XLA compilation" in record.getMessage()
+            for record in caplog.records
+        )
+        assert not jnp.allclose(first_values, second_values)
+        if method == "quantile":
+            np.testing.assert_allclose(
+                second.cdf(second_values), changed_probabilities, atol=1e-4
+            )
+        else:
+            np.testing.assert_allclose(
+                jnp.exp(second_values),
+                jax.vmap(jax.grad(second.cdf))(changed_probabilities),
+                rtol=1e-5,
+                atol=1e-5,
+            )
+
     def test_log_prob_sample_layout(self):
         dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
         normal = normal_with_batch(())

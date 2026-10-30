@@ -406,8 +406,7 @@ class TransformationDist(tfd.Distribution):
             tiny = jnp.finfo(jnp.asarray(prob).dtype).tiny
             return jnp.log(jnp.clip(prob, tiny, 1.0))
 
-    @partial(jax.jit, static_argnums=0)
-    def _log_prob(self, value: Array) -> Array | float:
+    def _log_prob(self, value: Array, **kwargs) -> Array | float:
         z, logdet = self.transformation_and_logdet(value)
         return self.reference_distribution.log_prob(z) + logdet
 
@@ -426,8 +425,8 @@ class TransformationDist(tfd.Distribution):
 
         return self._quantile(u)
 
-    @partial(jax.jit, static_argnums=0)
-    def _quantile(self, value: Array) -> Array:
+    # Spline kernels share compiled code across distribution/parameter draws.
+    def _quantile(self, value: Array, **kwargs) -> Array:
         z = self.reference_distribution.quantile(value)
         return self.inverse_transformation(z)
 
@@ -645,7 +644,6 @@ class TransformationDist(tfd.Distribution):
         transf_param = self.transformation_parametric(value)
         return self._transformation_spline(transf_param)
 
-    @partial(jax.jit, static_argnums=0)
     def transformation_and_logdet(self, value: Array) -> tuple[Array, Array]:
         """Apply parametric then spline transforms; return value and logdet."""
         transf_param, logdet_param = self.transformation_and_logdet_parametric(value)
@@ -849,7 +847,6 @@ class TransformationDist(tfd.Distribution):
 
         return y
 
-    @partial(jax.jit, static_argnums=0)
     def inverse_transformation(self, value: Array) -> Array:
         """
         Inverse transformation combining parametric and spline parts.

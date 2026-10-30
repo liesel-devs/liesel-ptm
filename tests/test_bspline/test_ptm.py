@@ -9,6 +9,40 @@ coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
 bs = PTMSpline(knots.knots)
 
 
+@pytest.mark.parametrize("layout", ["tfp", "legacy"])
+def test_inverse_reuses_compilation_without_freezing_inputs(monkeypatch, layout):
+    spline = PTMSpline(PTMKnots(-4.0, 4.0, nparam=6).knots)
+    original = spline._evaluate_spline
+    traces = 0
+
+    def count_traces(value, coef):
+        nonlocal traces
+        traces += 1
+        return original(value, coef)
+
+    monkeypatch.setattr(spline, "_evaluate_spline", count_traces)
+
+    def inverse(value, coef):
+        if layout == "legacy":
+            return spline.dot_inverse(value, coef[None, :])
+        return spline.dot_inverse_tfp(value, coef)
+
+    value = jnp.linspace(-1.0, 1.0, 5)
+    coef = jnp.zeros(6)
+    first = inverse(value, coef)
+    first_traces = traces
+    second = inverse(value + 0.1, coef)
+    changed_coef = jnp.linspace(-0.2, 0.2, 6)
+    third = inverse(value, changed_coef)
+
+    assert first_traces > 0
+    assert traces == first_traces
+    assert jnp.allclose(first, value, atol=1e-4)
+    assert jnp.allclose(second, value + 0.1, atol=1e-4)
+    assert not jnp.allclose(third, first)
+    assert jnp.allclose(spline.dot_tfp(third, changed_coef), value, atol=1e-4)
+
+
 def test_algebraic_grid_lookup_matches_binary_search():
     approx = bs.bspline
     nodes = approx.grid[1:-1]
