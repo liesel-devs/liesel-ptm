@@ -626,3 +626,30 @@ def test_summaries_reject_non_vector_rgrid() -> None:
             samples,
             rgrid=jnp.zeros((2, 2)),
         )
+
+
+@pytest.mark.parametrize("codes", [False, True])
+@pytest.mark.parametrize("meshgrid", [False, True])
+def test_summarise_nd_smooth_dist_preserves_mapped_newdata_order(
+    codes: bool, meshgrid: bool
+) -> None:
+    term, model = _mixed_tensor()
+    assert term.model is model
+    samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+    summary = ptm.summarise_nd_smooth_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        rgrid=jnp.array([0.0]),
+        newdata={"x": [0.25, 0.75], "group": [2, 0] if codes else ["c", "a"]},
+        newdata_meshgrid=meshgrid,
+    )
+    pairs = list(
+        summary[["x", "group"]].drop_duplicates().itertuples(index=False, name=None)
+    )
+    expected = (
+        [(0.25, "c"), (0.25, "a"), (0.75, "c"), (0.75, "a")]
+        if meshgrid
+        else [(0.25, "c"), (0.75, "a")]
+    )
+    assert pairs == expected

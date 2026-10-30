@@ -612,6 +612,8 @@ def summarise_nd_smooth_dist(
         display_grid[name] = (
             list(mapping.integers_to_labels(values)) if mapping is not None else values
         )
+        if mapping is not None:
+            grid[name] = jnp.asarray(values)
 
     coef = _normalise_sample_dims(
         _predict(term, samples, grid), value_ndim=term.value.ndim
