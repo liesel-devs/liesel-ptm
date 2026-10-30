@@ -971,7 +971,7 @@ dev = [
 requires-dist = [
     { name = "interpax", specifier = ">=0.3.14" },
     { name = "liesel", git = "https://github.com/liesel-devs/liesel.git?branch=vi-modernization" },
-    { name = "liesel-gam", specifier = ">=0.2.2" },
+    { name = "liesel-gam", specifier = ">=0.2.4" },
     { name = "plotnine", specifier = ">=0.14.5" },
     { name = "properscoring", specifier = ">=0.1" },
 ]

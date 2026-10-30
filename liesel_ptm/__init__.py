@@ -7,12 +7,6 @@ from .bspline import PTMKnots as PTMKnots
 from .dist import LocScaleTransformationDist as LocScaleTransformationDist
 from .dist import TransformationDist as TransformationDist
 from .dist import onion_dist as onion_dist
-from .gam import plot_term as plot_term
-from .gam.var import lin as lin
-from .gam.var import ps as ps
-from .gam.var import ri as ri
-from .gam.var import term as term
-from .gam.var import term_ri as term_ri
 from .model import EvaluatePTM as EvaluatePTM
 from .model import LocScalePTM as LocScalePTM
 from .plots import plot_1d_smooth_dist as plot_1d_smooth_dist
@@ -31,5 +25,3 @@ from .summary import summarise_nd_smooth_dist as summarise_nd_smooth_dist
 from .util.summary import summarise_by_samples as summarise_by_samples
 from .util.testing import mock_samples as mock_samples
 from .var import PTMCoef as PTMCoef
-from .var import ScaleInverseGamma as ScaleInverseGamma
-from .var import ScaleWeibull as ScaleWeibull

@@ -28,57 +28,13 @@ $ pip install git+https://github.com/liesel-devs/liesel-ptm.git
 ## Getting Started
 
 
-This is a simple example for first steps:
+Construct predictors and terms with [liesel-gam](https://github.com/liesel-devs/liesel-gam).
+The reference examples cover the supported workflows:
 
-```python
-from jax.random import key, normal, uniform, split
-import liesel_ptm as ptm
-from liesel_ptm import ps, term, plot_term
+- [Modern GPTM](demo/reference_modern.py): location, scale, and shape predictors; optimization and VI.
+- [Original PTM](demo/reference_original.py): shared shape and computed intercepts.
 
-fx = ptm.util.SimFunctions.f3_oscillating
-
-k = key(0)
-k, sk = split(k)
-x = uniform(k, (100,), minval=-2.0, maxval=2.0)
-
-# create a bimodal density
-r = normal(sk, (100,))
-r = r.at[:50].set(r[:50] + 2.0)
-r = r.at[50:].set(0.5 * r[50:] - 2.0)
-
-y = fx(x) + r
-
-model = ptm.LocScalePTM.new_ptm(y)
-
-# add a P-spline for x
-model.loc += term.f_ig(ps(x, nbases=20, xname="x"))
-
-model.build()
+```sh
+uv run python -m demo.reference_modern
+uv run python -m demo.reference_original
 ```
-
-```python
-# draw samples
-results = model.run_mcmc(seed=1, warmup=300, posterior=500)
-samples = results.get_posterior_samples()
-```
-
-```python
-# plot standardized conditional density estimate
-model.plot_r_density(samples)
-```
-
-![](img/density.png)
-
-```python
-# plot P-spline estimate
-plot_term(model.loc.terms["f(x)"], samples)
-```
-
-![](img/effect.png)
-
-```python
-# plot model graph
-model.graph.plot_vars()
-```
-
-![](img/graph.png)
