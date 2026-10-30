@@ -1,6 +1,6 @@
-"""Original PTM with Gaussian IWLS, shape NUTS and recorded-intercept prediction.
+"""Legacy PTM with Gaussian IWLS, shape NUTS and recorded-intercept prediction.
 
-Run with ``uv run python -m demo.reference_original``. The short fit checks integration;
+Run with ``uv run python -m demo.reference_legacy``. The short fit checks integration;
 use longer chains and inspect diagnostics for statistical inference.
 """
 
@@ -73,8 +73,8 @@ def fit(
     model: lsl.Model, adaptation: int = 80, posterior: int = 12, num_chains: int = 2
 ) -> gs.SamplingResults:
     """Sample all parameters and record both computed intercepts at every draw."""
-    builder = ptm.setup_original_ptm_mcmc(
-        model,
+    legacy = ptm.LegacyPTM(model)
+    builder = legacy.setup_mcmc(
         loc_terms=model.vars["loc_terms"],
         log_scale_terms=model.vars["log_scale_terms"],
         shape=model.vars["delta"],
@@ -91,9 +91,9 @@ def fit(
 
 if __name__ == "__main__":
     model = build_model()
+    legacy = ptm.LegacyPTM(model)
     samples = fit(model).get_posterior_samples()
-    prediction = ptm.predict_original_ptm(
-        model,
+    prediction = legacy.predict(
         samples,
         predict=["loc", "scale", "delta"],
         newdata={"x": jnp.array([-0.5, 0.5])},

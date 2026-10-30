@@ -77,4 +77,4 @@ model = lsl.Model(response)
 For fitting, prediction, and more model components, see the reference examples:
 
 - [Modern GPTM](demo/reference_modern.py): location, scale, and shape predictors; optimization and VI.
-- [Original PTM](demo/reference_original.py): shared shape and computed intercepts.
+- [Legacy PTM](demo/reference_legacy.py): shared shape and computed intercepts.

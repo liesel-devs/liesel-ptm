@@ -11,7 +11,7 @@ import liesel_gam as gam
 import tensorflow_probability.substrates.jax.distributions as tfd
 from liesel.contrib import splines
 
-from .original import LocationIntercept, LogScaleIntercept
+from .legacy import LocationIntercept, LogScaleIntercept
 
 InferenceTypes = Any
 Array = Any

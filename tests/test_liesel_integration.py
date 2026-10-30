@@ -11,7 +11,7 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 from jax.flatten_util import ravel_pytree
 
 import liesel_ptm as ptm
-from demo import reference_original
+from demo import reference_legacy
 from liesel_ptm.iwls_proposals import CholInfo, PTMCholInfoFixed
 
 
@@ -112,7 +112,7 @@ def test_observed_iwls_blocks_and_cached_sampling(tmp_path, monkeypatch):
 
 
 def test_gaussian_iwls_geometry_still_targets_the_ptm_posterior():
-    model = reference_original.build_model()
+    model = reference_legacy.build_model()
     shape = model.vars["delta"].intercept.coef
     model.state = model.update_state(
         {shape.name: jnp.linspace(-0.6, 0.6, shape.value.size)}
@@ -121,8 +121,7 @@ def test_gaussian_iwls_geometry_still_targets_the_ptm_posterior():
     name = term.coef.name
     interface = gs.LieselInterface(model)
     flat, unravel = ravel_pytree(model.extract_position([name]))
-    builder = ptm.setup_original_ptm_mcmc(
-        model,
+    builder = ptm.LegacyPTM(model).setup_mcmc(
         loc_terms=model.vars["loc_terms"],
         log_scale_terms=model.vars["log_scale_terms"],
         shape=model.vars["delta"],

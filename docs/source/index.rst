@@ -68,8 +68,7 @@ API Reference
     ~liesel_ptm.PTMCoef
     ~liesel_ptm.LocationIntercept
     ~liesel_ptm.LogScaleIntercept
-    ~liesel_ptm.setup_original_ptm_mcmc
-    ~liesel_ptm.predict_original_ptm
+    ~liesel_ptm.LegacyPTM
 
 .. rubric:: Distribution summaries and plots
 

@@ -10,12 +10,11 @@ import pytest
 import tensorflow_probability.substrates.jax.distributions as tfd
 
 import liesel_ptm as ptm
-from demo import reference_original
+from demo import reference_legacy
 
 
 def setup(model, **kwargs):
-    return ptm.setup_original_ptm_mcmc(
-        model,
+    return ptm.LegacyPTM(model).setup_mcmc(
         loc_terms=model.vars["loc_terms"],
         log_scale_terms=model.vars["log_scale_terms"],
         shape=model.vars["delta"],
@@ -39,7 +38,7 @@ def test_intercept_formulas_match_empirical_moment_identification():
 
 @pytest.mark.parametrize("kernel_class", [gs.NUTSKernel, gs.HMCKernel])
 def test_kernel_coverage_gaussian_information_and_shape_block(kernel_class):
-    model = reference_original.build_model()
+    model = reference_legacy.build_model()
     shape_spec = gs.MCMCSpec(kernel_class, kernel_kwargs={"da_target_accept": 0.85})
     builder = setup(model, shape_spec=shape_spec)
     assert builder.positions_included == ["beta0", "gamma0"]
@@ -74,7 +73,7 @@ def test_kernel_coverage_gaussian_information_and_shape_block(kernel_class):
 
 
 def test_shape_prior_precision_constraints_and_unclipped_variance():
-    model = reference_original.build_model()
+    model = reference_legacy.build_model()
     shape = model.vars["delta"]
     intercept = shape.intercept
     reparam = intercept.dimension_reparam.value
@@ -100,8 +99,8 @@ def test_shape_prior_precision_constraints_and_unclipped_variance():
     assert np.isfinite(state[unconstrained.dist_node.name].value)
 
 
-def test_original_transformation_has_gaussian_identity_and_unit_tail_slopes():
-    model = reference_original.build_model()
+def test_legacy_transformation_has_gaussian_identity_and_unit_tail_slopes():
+    model = reference_legacy.build_model()
     spline = model.vars["y"].dist_node.init_dist().bspline
     tail = jnp.array([-20.0, 20.0])
     coef = jnp.linspace(-0.4, 0.4, 6)
@@ -123,8 +122,8 @@ def test_original_transformation_has_gaussian_identity_and_unit_tail_slopes():
 
 @pytest.fixture(scope="module")
 def sampled():
-    model = reference_original.build_model()
-    results = reference_original.fit(model)
+    model = reference_legacy.build_model()
+    results = reference_legacy.fit(model)
     return model, results
 
 
@@ -147,8 +146,7 @@ def test_short_sampler_records_end_of_draw_intercepts_and_updates_all_blocks(sam
         assert np.any(np.diff(samples[name], axis=1) != 0), name
     for values in results.get_posterior_acceptance_probabilities().values():
         assert np.isfinite(values).all()
-    prediction = ptm.predict_original_ptm(
-        model,
+    prediction = ptm.LegacyPTM(model).predict(
         samples,
         predict=["loc", "scale", "delta"],
         newdata={"x": jnp.array([-0.5, 0.5])},
@@ -174,7 +172,9 @@ def example_samples(model):
 def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
     monkeypatch,
 ):
-    model = reference_original.build_model()
+    model = reference_legacy.build_model()
+    legacy = ptm.LegacyPTM(model)
+    assert legacy.model is model
     samples = example_samples(model)
     before = [np.array(value) for value in jax.tree.leaves(model.state)]
     training_node = model.vars["beta0"].value_node[0].name
@@ -190,8 +190,7 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
     monkeypatch.setattr(lsl.Model, "predict", inspect_graph)
     x = jnp.array([-0.8, 0.1, 0.6, 0.9])
     for chunk_size in (1, None):
-        prediction = ptm.predict_original_ptm(
-            model,
+        prediction = legacy.predict(
             samples,
             predict=["loc", "scale"],
             newdata={"x": x},
@@ -212,36 +211,36 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
 
 @pytest.mark.parametrize("missing", ["beta0", "gamma0"])
 def test_prediction_requires_recorded_intercepts(missing):
-    model = reference_original.build_model()
+    model = reference_legacy.build_model()
     samples = example_samples(model)
     samples.pop(missing)
     with pytest.raises(ValueError, match="Missing recorded intercept"):
-        ptm.predict_original_ptm(model, samples, predict=["loc"])
+        ptm.LegacyPTM(model).predict(samples, predict=["loc"])
 
 
 def test_prediction_checks_intercept_axes_and_supports_custom_names():
-    model = reference_original.build_model()
+    model = reference_legacy.build_model()
     samples = example_samples(model)
     samples["gamma0"] = samples["gamma0"][:1]
     with pytest.raises(ValueError, match="matching sample axes"):
-        ptm.predict_original_ptm(model, samples, predict=["loc"])
+        ptm.LegacyPTM(model).predict(samples, predict=["loc"])
     samples = example_samples(model)
     for old, new in (("beta0", "offset"), ("gamma0", "log_spread")):
         model.vars[old].name = new
         samples[new] = samples.pop(old)
     builder = setup(model)
     assert builder.positions_included == ["offset", "log_spread"]
-    result = ptm.predict_original_ptm(model, samples, predict=["offset", "log_spread"])
+    result = ptm.LegacyPTM(model).predict(samples, predict=["offset", "log_spread"])
     np.testing.assert_array_equal(result["offset"], samples["offset"])
     np.testing.assert_array_equal(result["log_spread"], samples["log_spread"])
     node_name = model.vars["offset"].value_node.name
-    result = ptm.predict_original_ptm(model, samples, predict=[node_name])
+    result = ptm.LegacyPTM(model).predict(samples, predict=[node_name])
     np.testing.assert_array_equal(result[node_name], samples["offset"])
 
 
 @pytest.mark.parametrize("kind", ["plain", "anisotropic", "factored"])
 def test_setup_rejects_unsupported_location_terms(kind):
-    model = reference_original.build_model()
+    model = reference_legacy.build_model()
     variables = model.copy_vars()
     predictor = variables["loc_terms"]
     builder = gam.TermBuilder.from_dict(
@@ -264,10 +263,9 @@ def test_setup_rejects_unsupported_location_terms(kind):
 
 
 def test_setup_rejects_overlap_and_unexplained_parameters():
-    model = reference_original.build_model()
+    model = reference_legacy.build_model()
     with pytest.raises(ValueError, match="overlap"):
-        ptm.setup_original_ptm_mcmc(
-            model,
+        ptm.LegacyPTM(model).setup_mcmc(
             loc_terms=model.vars["loc_terms"],
             log_scale_terms=model.vars["loc_terms"],
             shape=model.vars["delta"],
@@ -280,7 +278,7 @@ def test_setup_rejects_overlap_and_unexplained_parameters():
 
 
 def test_shape_gibbs_and_missing_scale_inference_are_covered():
-    variables = reference_original.build_model().copy_vars()
+    variables = reference_legacy.build_model().copy_vars()
     shape = variables["delta"]
     builder = gam.MVTermBuilder.from_predictor(
         shape, term_builder=gam.TermBuilder.from_dict({})
@@ -303,7 +301,7 @@ def test_shape_gibbs_and_missing_scale_inference_are_covered():
 
 
 def test_setup_rejects_unconstrained_shape_and_invalid_shape_sampler():
-    model = reference_original.build_model()
+    model = reference_legacy.build_model()
     with pytest.raises(ValueError, match="NUTSKernel or HMCKernel"):
         setup(model, shape_spec=gs.MCMCSpec(gs.IWLSKernel))
     variables = model.copy_vars()
