@@ -189,8 +189,11 @@ def freeze_conditional(
     if isinstance(kernel, type) and issubclass(kernel, ConstantConditionalKernel):
         return inference
 
-    inference.kernel_kwargs["kernel"] = kernel
-    inference.kernel_kwargs["constant_position"] = constant_position
+    inference.kernel_kwargs = {
+        **inference.kernel_kwargs,
+        "kernel": kernel,
+        "constant_position": constant_position,
+    }
     inference.kernel = ConstantConditionalKernel  # type: ignore
     return inference
 
