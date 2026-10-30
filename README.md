@@ -29,12 +29,52 @@ $ pip install git+https://github.com/liesel-devs/liesel-ptm.git
 
 
 Construct predictors and terms with [liesel-gam](https://github.com/liesel-devs/liesel-gam).
-The reference examples cover the supported workflows:
+This minimal model has a smooth location effect, a constant scale, and a shared
+transformation shape. The data are synthetic.
+
+```python
+import jax
+import jax.numpy as jnp
+import liesel.model as lsl
+import liesel_gam as gam
+
+import liesel_ptm as ptm
+from liesel_ptm.model.model import PTMDist
+
+x = jnp.linspace(-2.0, 2.0, 100)
+y = jnp.sin(x) + jax.random.normal(jax.random.key(42), x.shape)
+builder = gam.TermBuilder(gam.DictRegistry({"x": x}))
+
+loc = gam.AdditivePredictor("loc")
+loc += builder.ps("x", k=10)
+scale = gam.AdditivePredictor("scale", inv_link=jnp.exp)
+
+knots = ptm.PTMKnots(-4.0, 4.0, nparam=6)
+shape = gam.MVAdditivePredictor.from_random_walk(
+    "delta",
+    ndim=knots.nparam,
+    intercept=False,
+).constrain("sumzero_coef")
+shape_builder = gam.MVTermBuilder.from_predictor(shape, term_builder=builder)
+shape.intercept = shape_builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
+
+response = lsl.Var.new_obs(
+    y,
+    dist=PTMDist(
+        knots.knots,
+        loc=loc,
+        scale=scale,
+        shape=shape,
+        bspline="ptm",
+        centered=True,
+        scaled=True,
+    ),
+    name="y",
+)
+model = lsl.Model(response)
+```
+
+For fitting, prediction, and more model components, see the reference examples:
 
 - [Modern GPTM](demo/reference_modern.py): location, scale, and shape predictors; optimization and VI.
 - [Original PTM](demo/reference_original.py): shared shape and computed intercepts.
-
-```sh
-uv run python -m demo.reference_modern
-uv run python -m demo.reference_original
-```
