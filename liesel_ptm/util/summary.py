@@ -1,33 +1,13 @@
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any
 
 import jax
 import jax.numpy as jnp
-import liesel.goose as gs
 import numpy as np
 import pandas as pd
 
 Array = Any
 KeyArray = Any
-
-
-def cache_results(
-    engine_builder: gs.EngineBuilder, filename: str | Path, use_cache: bool = True
-) -> gs.engine.SamplingResults:
-    if use_cache:
-        fp = Path(filename)
-        if fp.exists():
-            return gs.engine.SamplingResults.pkl_load(fp)
-
-    engine = engine_builder.build()
-    engine.sample_all_epochs()
-    results = engine.get_results()
-
-    if use_cache:
-        fp = Path(filename)
-        results.pkl_save(fp)
-    return results
 
 
 def summarise_by_samples(

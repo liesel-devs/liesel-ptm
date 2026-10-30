@@ -28,7 +28,6 @@ from .summary import summarise_cluster_dist as summarise_cluster_dist
 from .summary import summarise_conditional_dist as summarise_conditional_dist
 from .summary import summarise_intercept_dist as summarise_intercept_dist
 from .summary import summarise_nd_smooth_dist as summarise_nd_smooth_dist
-from .util.summary import cache_results as cache_results
 from .util.summary import summarise_by_samples as summarise_by_samples
 from .util.testing import mock_samples as mock_samples
 from .var import PTMCoef as PTMCoef
