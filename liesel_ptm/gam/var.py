@@ -429,47 +429,6 @@ class LinearTerm(term):
         self.role = Roles.term_linear
 
 
-class LinearTerm2(term):
-    """New version of LinearTerm, with interface consistent with the term base class."""
-
-    def __init__(
-        self,
-        value: lsl.Var | lsl.Node | Array,
-        name: str,
-        scale: lsl.Var | Array = 1000.0,
-        inference: InferenceTypes = None,
-        add_intercept: bool = False,
-        coef_name: str | None = None,
-        basis_name: str | None = None,
-    ):
-        if not isinstance(value, lsl.Var | lsl.Node):
-            x: lsl.Var | lsl.Node = lsl.Var.new_obs(value, name=f"{name}_input")
-        else:
-            x = value
-
-        if not x.name:
-            # to ensure sensible basis name
-            raise ValueError(f"{value=} must be named.")
-
-        coef_name = coef_name or f"{name}_coef"
-        basis_name = basis_name or f"B({name})"
-        basis = Basis.new_linear(value=x, name=basis_name, add_intercept=add_intercept)
-
-        nbases = jnp.shape(basis.value)[-1]
-        penalty = jnp.eye(nbases)
-        super().__init__(
-            basis=basis,
-            penalty=penalty,
-            coef_name=coef_name,
-            name=name,
-            inference=inference,
-            scale=scale,
-        )
-
-        self.coef.role = Roles.coef_linear
-        self.role = Roles.term_linear
-
-
 class Intercept(lsl.Var):
     def __init__(
         self,

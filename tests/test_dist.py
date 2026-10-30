@@ -12,8 +12,6 @@ from liesel_ptm.bspline.onion import OnionKnots, OnionSpline
 from liesel_ptm.bspline.ptm import PTMKnots, PTMSpline
 from liesel_ptm.dist import (
     GaussianPseudoTransformationDist,
-    LocScalePseudoTransformationDist,
-    PseudoTransformationDist,
     _gauss_legendre_nodes_and_weights,
     integrate_piecewise_gauss_legendre,
 )
@@ -638,60 +636,34 @@ class TestDistBatchedCoef:
         assert dist.stddev().shape == (3, 2)
 
 
-class TestPseudoDistributions:
+class TestGaussianPseudoDistribution:
     def test_spline_only_identity_methods_match_tfp_batch_broadcasting(self):
         batch_shape = (2, 3)
         loc = jnp.zeros(batch_shape)
         scale = jnp.ones(batch_shape)
-        rate = jnp.ones(batch_shape)
-        distributions = (
-            (
-                GaussianPseudoTransformationDist(
-                    coef=jnp.array([0.0]), loc=loc, scale=scale
-                ),
-                tfd.Normal(loc=loc, scale=scale),
-            ),
-            (
-                PseudoTransformationDist(
-                    coef=jnp.array([0.0]),
-                    parametric_distribution=tfd.Exponential,
-                    rate=rate,
-                ),
-                tfd.Exponential(rate=rate),
-            ),
-            (
-                LocScalePseudoTransformationDist(
-                    coef=jnp.array([0.0]),
-                    loc=loc,
-                    scale=scale,
-                    parametric_distribution=tfd.Normal,
-                ),
-                tfd.Normal(loc=loc, scale=scale),
-            ),
+        dist = GaussianPseudoTransformationDist(
+            coef=jnp.array([0.0]), loc=loc, scale=scale
         )
+        reference = tfd.Normal(loc=loc, scale=scale)
+        for value in (jnp.array(0.75), jnp.full((5, 1, 1), 0.75)):
+            expected_shape = reference.log_prob(value).shape
+            expected_value = jnp.broadcast_to(value, expected_shape)
 
-        for dist, reference in distributions:
-            for value in (jnp.array(0.75), jnp.full((5, 1, 1), 0.75)):
-                expected_shape = reference.log_prob(value).shape
-                expected_value = jnp.broadcast_to(value, expected_shape)
+            transformed, logdet = dist.transformation_and_logdet_spline(value)
+            assert transformed.shape == expected_shape
+            assert logdet.shape == expected_shape
+            assert jnp.array_equal(transformed, expected_value)
+            assert jnp.array_equal(logdet, jnp.zeros(expected_shape))
+            assert jnp.array_equal(dist._transformation_spline(value), expected_value)
+            assert jnp.array_equal(
+                dist.inverse_transformation_spline(value), expected_value
+            )
 
-                transformed, logdet = dist.transformation_and_logdet_spline(value)
-                assert transformed.shape == expected_shape
-                assert logdet.shape == expected_shape
-                assert jnp.array_equal(transformed, expected_value)
-                assert jnp.array_equal(logdet, jnp.zeros(expected_shape))
-                assert jnp.array_equal(
-                    dist._transformation_spline(value), expected_value
-                )
-                assert jnp.array_equal(
-                    dist.inverse_transformation_spline(value), expected_value
-                )
-
-            bad_value = jnp.ones((5, 2))
-            with pytest.raises((TypeError, ValueError)):
-                reference.log_prob(bad_value)
-            with pytest.raises((TypeError, ValueError)):
-                dist.transformation_and_logdet_spline(bad_value)
+        bad_value = jnp.ones((5, 2))
+        with pytest.raises((TypeError, ValueError)):
+            reference.log_prob(bad_value)
+        with pytest.raises((TypeError, ValueError)):
+            dist.transformation_and_logdet_spline(bad_value)
 
     def test_gaussian_pseudo_matches_normal(self):
         loc = jnp.array([0.0, 1.0])
@@ -714,42 +686,6 @@ class TestPseudoDistributions:
         assert jnp.allclose(dist.mean(), normal.mean())
         assert jnp.allclose(dist.stddev(), normal.stddev())
         assert dist.sample(3, seed=jax.random.key(1)).shape == (3, 2)
-
-    def test_pseudo_transformation_dist_matches_parametric_distribution(self):
-        rate = jnp.array([1.0, 2.0])
-        dist = PseudoTransformationDist(
-            coef=jnp.array([0.0]),
-            parametric_distribution=tfd.Exponential,
-            rate=rate,
-        )
-        expected = tfd.Exponential(rate=rate)
-
-        value = jnp.full((5, 1), 0.75)
-        probs = jnp.full((5, 1), 0.25)
-
-        assert jnp.allclose(dist.log_prob(value), expected.log_prob(value))
-        assert jnp.allclose(dist.cdf(value), expected.cdf(value))
-        assert jnp.allclose(dist.quantile(probs), expected.quantile(probs))
-
-    def test_loc_scale_pseudo_matches_normal_when_parametric_is_normal(self):
-        loc = jnp.array([0.0, 1.0])
-        scale = jnp.array([1.0, 2.0])
-        dist = LocScalePseudoTransformationDist(
-            coef=jnp.array([0.0]),
-            loc=loc,
-            scale=scale,
-            parametric_distribution=tfd.Normal,
-        )
-        normal = tfd.Normal(loc=loc, scale=scale)
-
-        value = jnp.ones((5, 1))
-        probs = jnp.full((5, 1), 0.75)
-
-        assert jnp.allclose(dist.log_prob(value), normal.log_prob(value))
-        assert jnp.allclose(dist.cdf(value), normal.cdf(value))
-        assert jnp.allclose(dist.quantile(probs), normal.quantile(probs))
-        assert jnp.allclose(dist.mean(), normal.mean())
-        assert jnp.allclose(dist.stddev(), normal.stddev())
 
 
 class TestDistGPTM:
@@ -970,89 +906,18 @@ class TestResponseMoments:
         assert np.isfinite(low.mean())
         assert 32 in orders
 
-    def test_exact_pseudo_moments_and_nonfinite_diagnostic(self):
-        distributions = [
-            (
-                GaussianPseudoTransformationDist(
-                    coef=jnp.zeros(1), loc=3.0, scale=2.0, response_moment_order=16
-                ),
-                tfd.Normal(3.0, 2.0),
-            ),
-            (
-                PseudoTransformationDist(
-                    coef=jnp.zeros(1),
-                    parametric_distribution=tfd.Exponential,
-                    rate=jnp.array([1.0, 2.0]),
-                    response_moment_order=16,
-                ),
-                tfd.Exponential(jnp.array([1.0, 2.0])),
-            ),
-            (
-                PseudoTransformationDist(
-                    coef=jnp.zeros(1),
-                    reference_distribution=tfd.Normal(3.0, 2.0),
-                    centered=True,
-                    scaled=True,
-                    response_moment_order=16,
-                ),
-                tfd.Normal(3.0, 2.0),
-            ),
-            (
-                LocScalePseudoTransformationDist(
-                    coef=jnp.zeros(1),
-                    loc=3.0,
-                    scale=2.0,
-                    parametric_distribution=tfd.Normal,
-                    response_moment_order=16,
-                ),
-                tfd.Normal(3.0, 2.0),
-            ),
-        ]
-        for dist, expected in distributions:
-            np.testing.assert_allclose(
-                dist.mean(), jnp.broadcast_to(expected.mean(), dist.batch_shape)
-            )
-            np.testing.assert_allclose(
-                dist.variance(), jnp.broadcast_to(expected.variance(), dist.batch_shape)
-            )
-            diagnostic = dist.moment_quadrature_diagnostic(target="response")
-            np.testing.assert_allclose(diagnostic["mean"], dist.mean())
-            assert bool(diagnostic["ok"])
-            assert dist.response_moment_order == 16
-        undefined = PseudoTransformationDist(
-            coef=jnp.zeros(1),
-            parametric_distribution=tfd.StudentT,
-            df=0.5,
-            loc=0.0,
-            scale=1.0,
+    def test_exact_gaussian_pseudo_moments(self):
+        dist = GaussianPseudoTransformationDist(
+            coef=jnp.zeros(1), loc=3.0, scale=2.0, response_moment_order=16
         )
-        assert np.isnan(undefined.mean())
-        assert np.isnan(undefined.variance())
-        assert not bool(undefined.moment_quadrature_diagnostic(target="response")["ok"])
-
-    def test_pseudo_preserves_underlying_stats_errors(self):
-        class NoMean(tfd.Normal):
-            def _mean(self):
-                raise NotImplementedError("no mean")
-
-        dist = PseudoTransformationDist(
-            coef=jnp.zeros(1), parametric_distribution=NoMean, loc=0.0, scale=1.0
+        expected = tfd.Normal(3.0, 2.0)
+        np.testing.assert_allclose(
+            dist.mean(), jnp.broadcast_to(expected.mean(), dist.batch_shape)
         )
-        with pytest.raises(NotImplementedError, match="no mean"):
-            dist.mean()
-
-        np.testing.assert_allclose(dist.variance(), 1.0)
-
-        class NoVariance(tfd.Normal):
-            def _variance(self, **kwargs):
-                raise NotImplementedError("no variance")
-
-            def _stddev(self):
-                raise NotImplementedError("no variance")
-
-        dist = PseudoTransformationDist(
-            coef=jnp.zeros(1), parametric_distribution=NoVariance, loc=3.0, scale=1.0
+        np.testing.assert_allclose(
+            dist.variance(), jnp.broadcast_to(expected.variance(), dist.batch_shape)
         )
-        np.testing.assert_allclose(dist.mean(), 3.0)
-        with pytest.raises(NotImplementedError, match="no variance"):
-            dist.variance()
+        diagnostic = dist.moment_quadrature_diagnostic(target="response")
+        np.testing.assert_allclose(diagnostic["mean"], dist.mean())
+        assert bool(diagnostic["ok"])
+        assert dist.response_moment_order == 16

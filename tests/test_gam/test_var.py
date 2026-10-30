@@ -251,45 +251,6 @@ class TestLinearTerm:
         assert term.coef.dist_node is None
 
 
-class TestLinearTerm2:
-    def test_with_intercept(self) -> None:
-        x = jnp.linspace(0, 1, 5)
-        term = gam.var.LinearTerm2(x, name="b0", add_intercept=True)
-        assert jnp.allclose(jnp.zeros_like(x), term.value)
-
-        # intercept column
-        assert jnp.allclose(1.0, term.basis.value[:, 0])
-
-        # x column
-        assert jnp.allclose(x, term.basis.value[:, 1])
-
-    def test_no_intercept(self) -> None:
-        x = jnp.linspace(0, 1, 5)
-        term = gam.var.LinearTerm2(x, name="b0")
-        assert jnp.allclose(x, term.basis.value[:, 0])
-
-    def test_bivariate_works(self) -> None:
-        x = jnp.linspace(0, 1, 5)
-        term = gam.var.LinearTerm2(jnp.c_[x, x], name="b0")
-        assert jnp.allclose(x, term.basis.value[:, 0])
-        assert jnp.allclose(x, term.basis.value[:, 1])
-        assert jnp.allclose(jnp.zeros_like(x), term.value)
-
-    def test_default_dist(self) -> None:
-        x = jnp.linspace(0, 1, 5)
-        term = gam.var.LinearTerm2(x, name="b0")
-        dist = term.coef.dist_node
-        assert dist is not None
-        assert dist["scale"].value == pytest.approx(1000.0)
-
-    def test_dist_works(self) -> None:
-        x = jnp.linspace(0, 1, 5)
-        scale = lsl.Var.new_param(1.0, name="scale")
-        term = gam.var.LinearTerm2(x, name="b0", scale=scale)
-        assert term.coef.dist_node is not None
-        assert term.coef.dist_node["scale"] is scale
-
-
 class TestSmoothTerm:
     def test_init(self) -> None:
         x = jnp.linspace(0, 1, 10)
