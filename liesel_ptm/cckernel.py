@@ -28,7 +28,7 @@ class ConstantConditionalKernel:
         self.constant_position_keys = list(self.constant_position)
         self.position_keys = position_keys
 
-        self.__class__ = _attach_class_attributes(type(self), kernel)
+        _attach_class_attributes(type(self), kernel)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.kernel, name)
@@ -210,7 +210,7 @@ def extract_parental_submodel_position(
         return params
 
     try:
-        to_float32 = not jax.config.jax_enable_x64  # type: ignore
+        to_float32 = not jax.config.jax_enable_x64
     except Exception:  # just to be really sure in case anything changes
         # this is an implicit test of whether x64 flag is enabled
         to_float32 = jnp.array(1.0).dtype == jnp.dtype("float32")

@@ -475,6 +475,27 @@ def test_summarise_cluster_dist_includes_unobserved_categories() -> None:
     assert observed == {"a": True, "b": True, "c": False}
 
 
+@pytest.mark.parametrize("newdata", [None, {"group": [2, 0]}, {"group": ["c", "a"]}])
+def test_summarise_cluster_dist_accepts_explicit_labels(newdata) -> None:
+    term, model = _cluster()
+    assert term.model is model
+    samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
+
+    summary = ptm.summarise_cluster_dist(
+        ptm.onion_dist(nparam=4),
+        term,
+        samples,
+        rgrid=jnp.array([0.0]),
+        newdata=newdata,
+        labels=["a", "b", "c"],
+    )
+
+    expected = ["a", "b", "c"] if newdata is None else ["c", "a"]
+    assert summary["group"].drop_duplicates().tolist() == expected
+    observed = summary[["group", "observed"]].drop_duplicates().set_index("group")
+    assert observed["observed"].to_dict() == {label: label != "c" for label in expected}
+
+
 def test_summarise_cluster_dist_supports_categorical_linear_term() -> None:
     categories = pd.Categorical(["a", "b", "a"], categories=["a", "b", "c"])
     builder = gam.MVTermBuilder.from_df(pd.DataFrame({"myvar": categories}), jnp.eye(4))

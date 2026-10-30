@@ -44,7 +44,7 @@ x = uniform(k, (100,), minval=-2.0, maxval=2.0)
 # create a bimodal density
 r = normal(sk, (100,))
 r = r.at[:50].set(r[:50] + 2.0)
-r = r.at[50:].set(0.5*r[50:] - 2.0)
+r = r.at[50:].set(0.5 * r[50:] - 2.0)
 
 y = fx(x) + r
 

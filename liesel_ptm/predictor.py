@@ -229,7 +229,7 @@ def loc_intercept_mh(
         log_correction = bwd_prob - fwd_prob
 
         return gs.MHProposal(
-            position=position,  # type: ignore
+            position=position,
             log_correction=log_correction,
         )
 
@@ -334,7 +334,7 @@ def scale_intercept_mh(
         log_correction = bwd_prob - fwd_prob
 
         return gs.MHProposal(
-            position=position,  # type: ignore
+            position=position,
             log_correction=log_correction,
         )
 

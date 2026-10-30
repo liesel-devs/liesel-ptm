@@ -51,7 +51,7 @@ class LogProb:
         """
         Log probability function evaluated at provided ``position``.
         """
-        updated_state = self.model.update_state(position, model_state)  # type: ignore
+        updated_state = self.model.update_state(position, model_state)
         return updated_state[f"_model_{self.component}"].value
 
     def grad(self, position: dict[str, Array | float], model_state) -> dict[str, Array]:

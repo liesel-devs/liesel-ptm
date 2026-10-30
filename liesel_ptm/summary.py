@@ -11,6 +11,7 @@ import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.distributions as tfd
 from jax import Array
 from jax.typing import ArrayLike
+from numpy.typing import NDArray
 
 from .dist import LocScaleTransformationDist, TransformationDist
 
@@ -710,14 +711,14 @@ def summarise_cluster_dist(
             if labels is not None and not isinstance(labels, gam.CategoryMapping)
             else []
         )
-        values = (
+        values: NDArray[Any] = (
             np.arange(len(categories)) if newdata is None else np.asarray(newdata[name])
         )
         if np.issubdtype(values.dtype, np.integer):
-            codes = values
+            codes = np.asarray(values, dtype=np.intp)
         else:
             label_codes = {label: code for code, label in enumerate(categories)}
-            codes = np.asarray([label_codes[value] for value in values])
+            codes = np.asarray([label_codes[value] for value in values], dtype=np.intp)
         display = [categories[code] for code in codes]
 
     observed_codes = set(np.asarray(observed_var.value).tolist())

@@ -98,6 +98,7 @@ def grouped_summary(
     Summarise an array, assuming that the last axis is some grouping axis.
     """
 
+    axis = tuple(axis)
     if a.ndim <= len(axis):
         raise ValueError("a.ndim <= len(axis)")
 
