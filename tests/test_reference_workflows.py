@@ -7,7 +7,7 @@ import pytest
 import tensorflow_probability.substrates.jax.distributions as tfd
 
 import liesel_ptm as ptm
-from demo import reference_modern, reference_original
+from demo import reference_legacy, reference_modern
 
 
 @pytest.fixture(scope="module")
@@ -98,8 +98,8 @@ def test_modern_staged_optimization_vi_prediction_and_effects():
     plt.close(figure)
 
 
-def test_original_computed_intercepts_update_and_standardize_residuals():
-    model = reference_original.build_model()
+def test_legacy_computed_intercepts_update_and_standardize_residuals():
+    model = reference_legacy.build_model()
     original_intercepts = [
         float(model.vars[name].value) for name in ("beta0", "gamma0")
     ]
@@ -122,8 +122,8 @@ def test_original_computed_intercepts_update_and_standardize_residuals():
     assert np.isfinite(model.log_prob)
 
 
-def test_original_has_shared_modern_deltas_and_the_ptm_spline():
-    model = reference_original.build_model()
+def test_legacy_has_shared_modern_deltas_and_the_ptm_spline():
+    model = reference_legacy.build_model()
     shape = model.vars["delta"]
     assert not shape.terms
     assert shape.value.shape == (6,)

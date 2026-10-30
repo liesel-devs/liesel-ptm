@@ -11,7 +11,7 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 from jax.flatten_util import ravel_pytree
 
 import liesel_ptm as ptm
-from demo import reference_original
+from demo import reference_legacy
 from liesel_ptm.iwls_proposals import CholInfo, PTMCholInfoFixed
 
 
@@ -112,7 +112,7 @@ def test_observed_iwls_blocks_and_cached_sampling(tmp_path, monkeypatch):
 
 
 def test_gaussian_iwls_geometry_still_targets_the_ptm_posterior():
-    model = reference_original.build_model()
+    model = reference_legacy.build_model()
     shape = model.vars["delta"].intercept.coef
     model.state = model.update_state(
         {shape.name: jnp.linspace(-0.6, 0.6, shape.value.size)}
@@ -121,28 +121,46 @@ def test_gaussian_iwls_geometry_still_targets_the_ptm_posterior():
     name = term.coef.name
     interface = gs.LieselInterface(model)
     flat, unravel = ravel_pytree(model.extract_position([name]))
-    # Gaussian likelihood information plus the standard-normal prior precision.
-    design = term.basis.value
-    precision = design.T @ (design / model.vars["scale"].value[:, None] ** 2)
-    precision += jnp.eye(flat.size)
-    chol = jnp.linalg.cholesky(precision)
-    kernel = gs.IWLSKernel(
-        [name], chol_info_fn=lambda state: chol, initial_step_size=0.7
+    builder = ptm.LegacyPTM(model).setup_mcmc(
+        loc_terms=model.vars["loc_terms"],
+        log_scale_terms=model.vars["log_scale_terms"],
+        shape=model.vars["delta"],
+        seed=3,
+        num_chains=1,
+        iwls_kwargs={"initial_step_size": 0.7},
     )
-    kernel.set_model(interface)
+    builder.add_posterior(1)
+    builder.build()  # Attach the helper's actual target interface to its kernels.
+    kernel = next(ker for ker in builder.kernels if name in ker.position_keys)
+    assert isinstance(kernel, gs.IWLSKernel)
+    chol_info_fn = kernel.chol_info_fn
+    assert chol_info_fn is not None
     logprob = gs.FlatInterfaceLogProb(interface, model.state, [name])
     key = jax.random.key(3)
     proposal_key, _ = jax.random.split(key)
 
+    def precision_at(value):
+        state = interface.update_state(unravel(value), model.state)
+        factor = jnp.asarray(chol_info_fn(state))
+        return factor @ factor.T
+
     def proposal_mean(value):
+        precision = precision_at(value)
         return value + 0.7**2 / 2 * jnp.linalg.solve(precision, logprob.grad(value))
 
+    chol = jnp.asarray(chol_info_fn(model.state))
     proposed = proposal_mean(flat) + 0.7 * jnp.linalg.solve(
         chol.T, jax.random.normal(proposal_key, flat.shape)
     )
-    covariance_chol = jnp.linalg.cholesky(0.7**2 * jnp.linalg.inv(precision))
-    forward = tfd.MultivariateNormalTriL(proposal_mean(flat), covariance_chol)
-    backward = tfd.MultivariateNormalTriL(proposal_mean(proposed), covariance_chol)
+
+    def proposal_distribution(value):
+        covariance_chol = jnp.linalg.cholesky(
+            0.7**2 * jnp.linalg.inv(precision_at(value))
+        )
+        return tfd.MultivariateNormalTriL(proposal_mean(value), covariance_chol)
+
+    forward = proposal_distribution(flat)
+    backward = proposal_distribution(proposed)
     expected = jnp.minimum(
         1.0,
         jnp.exp(
