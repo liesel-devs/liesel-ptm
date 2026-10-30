@@ -1,14 +1,9 @@
-from collections.abc import Callable, Sequence
-from typing import Any
+from collections.abc import Sequence
 
 import jax
 import jax.numpy as jnp
 import liesel.goose as gs
 import liesel.model as lsl
-from jax.flatten_util import ravel_pytree
-from liesel.goose.types import ModelState
-
-Array = Any
 
 
 def star_ig_gibbs(coef: lsl.Var) -> gs.GibbsKernel:
@@ -59,46 +54,3 @@ def init_star_ig_gibbs(position_keys: Sequence[str], coef: lsl.Var) -> gs.GibbsK
         raise ValueError(f"The position key must be {name}.")
 
     return star_ig_gibbs(coef)
-
-
-class IWLSKernelDiag(gs.IWLSKernel):
-    def __init__(
-        self,
-        position_keys: Sequence[str],
-        scale_key: str | None = None,
-        initial_step_size: float = 0.01,
-        da_target_accept: float = 0.8,
-        da_gamma: float = 0.05,
-        da_kappa: float = 0.75,
-        da_t0: int = 10,
-    ) -> None:
-        super().__init__(
-            position_keys=position_keys,
-            initial_step_size=initial_step_size,
-            da_target_accept=da_target_accept,
-            da_gamma=da_gamma,
-            da_kappa=da_kappa,
-            da_t0=da_t0,
-        )
-
-        self.scale_key = scale_key
-
-    def _chol_info(
-        self, model_state: ModelState, flat_hessian_fn: Callable[[Array], Array]
-    ) -> Array:
-        """
-        Computes the Cholesky decomposition of the Fisher information matrix via
-        :attr:`.flat_hessian_fn`.
-
-        The flat position is extracted from the :attr:`.model_state`. If the user
-        provided a :attr:`.chol_info_fn` when initializing the kernel, this function is
-        called instead.
-        """
-        flat_position, _ = ravel_pytree(self.position(model_state))
-        if self.scale_key is not None:
-            scale = self.model.extract_position([self.scale_key], model_state)[
-                self.scale_key
-            ]
-            return jnp.eye(jnp.shape(flat_position)[-1]) * (1 / scale)
-        else:
-            return jnp.eye(jnp.shape(flat_position)[-1])
