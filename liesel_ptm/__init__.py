@@ -9,6 +9,10 @@ from .dist import TransformationDist as TransformationDist
 from .dist import onion_dist as onion_dist
 from .model import EvaluatePTM as EvaluatePTM
 from .model import LocScalePTM as LocScalePTM
+from .original import LocationIntercept as LocationIntercept
+from .original import LogScaleIntercept as LogScaleIntercept
+from .original import predict_original_ptm as predict_original_ptm
+from .original import setup_original_ptm_mcmc as setup_original_ptm_mcmc
 from .plots import plot_1d_smooth_dist as plot_1d_smooth_dist
 from .plots import plot_2d_smooth_dist as plot_2d_smooth_dist
 from .plots import plot_3d_smooth_dist as plot_3d_smooth_dist

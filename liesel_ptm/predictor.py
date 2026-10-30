@@ -11,76 +11,10 @@ import liesel_gam as gam
 import tensorflow_probability.substrates.jax.distributions as tfd
 from liesel.contrib import splines
 
+from .original import LocationIntercept, LogScaleIntercept
+
 InferenceTypes = Any
 Array = Any
-
-
-class LocationIntercept(lsl.Var):
-    x = None  # to make PTM._set_kwargs work seamlessly
-
-    def __init__(
-        self,
-        y: lsl.Value,
-        loc_model: lsl.Var,
-        log_scale_model: lsl.Var,
-        name: str = "",
-    ) -> None:
-        value_calc = lsl.Calc(self.compute_intercept, y, loc_model, log_scale_model)
-        super().__init__(value_calc, name=name)
-        self.update()
-        # self.parameter = True
-
-    @staticmethod
-    def compute_intercept(y, loc_model, log_scale_model):
-        # this is computing the following:
-        # scale_model = jnp.exp(log_scale_model)
-        # inv_scale_model_mean = 1 / jnp.mean(1 / scale_model)
-        # return inv_scale_model_mean * residual_model_mean
-
-        # justification:
-        # 1/ scale_model = 1 / exp(log_scale_model) = exp(-log_scale_model)
-        # mean(exp(-log_scale_model)) = sum(exp(-log_scale_model)) / n
-        # = exp( logsumexp(-log_scale_model) ) - n
-        # 1 / exp(log_mean) = exp(-log_mean)
-
-        nobs = jnp.shape(jnp.atleast_1d(log_scale_model))[0]
-
-        log_mean_exp = jax.nn.logsumexp(-log_scale_model) - jnp.log(nobs)
-        inv_scale_model_mean = jnp.exp(-log_mean_exp)
-
-        residual_model_mean = jnp.mean((y - loc_model) * jnp.exp(-log_scale_model))
-
-        return inv_scale_model_mean * residual_model_mean
-
-
-class LogScaleIntercept(lsl.Var):
-    def __init__(
-        self,
-        y: lsl.Value,
-        loc: lsl.Var,
-        log_scale_model: lsl.Var,
-        name: str = "",
-    ) -> None:
-        value_calc = lsl.Calc(
-            self.compute_intercept,
-            y,
-            loc,
-            log_scale_model,
-        )
-
-        super().__init__(
-            value_calc,
-            name=name,
-        )
-
-        self.update()
-        # self.parameter = True
-
-    @staticmethod
-    def compute_intercept(y, loc, log_scale_model):
-        scale_model = jnp.exp(log_scale_model)
-        exp_scale_intercept = jnp.std((y - loc) / scale_model)
-        return jnp.log(exp_scale_intercept)
 
 
 def loc_intercept_pgibbs(

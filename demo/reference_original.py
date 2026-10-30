@@ -1,19 +1,18 @@
-"""Original PTM construction with computed intercepts and modern deltas.
+"""Original PTM with Gaussian IWLS, shape NUTS and recorded-intercept prediction.
 
-Run with ``uv run python -m demo.reference_original``. Convenient Gaussian-proposal
-IWLS plus NUTS/HMC setup on these modern terms is the remaining work in issue #7.
+Run with ``uv run python -m demo.reference_original``. The short fit checks integration;
+use longer chains and inspect diagnostics for statistical inference.
 """
 
 import jax.numpy as jnp
+import liesel.goose as gs
 import liesel.model as lsl
 import liesel_gam as gam
 import numpy as np
 import pandas as pd
-import tensorflow_probability.substrates.jax.distributions as tfd
 
 import liesel_ptm as ptm
 from liesel_ptm.model.model import PTMDist
-from liesel_ptm.predictor import LocationIntercept, LogScaleIntercept
 
 
 def build_model() -> lsl.Model:
@@ -24,18 +23,22 @@ def build_model() -> lsl.Model:
     response_value = lsl.Data(y)
     loc_terms = gam.AdditivePredictor("loc_terms", intercept=False)
     log_scale_terms = gam.AdditivePredictor("log_scale_terms", intercept=False)
-    prior = lsl.Dist(tfd.Normal, loc=0.0, scale=1.0)
-    loc_terms += gam.TermBuilder(registry, prefix_names_by="m.").lin(
-        "x", prior=prior, name="m.x"
+    loc_builder = gam.TermBuilder(registry, prefix_names_by="m.")
+    loc_terms += loc_builder.slin("x", scale=1.0, name="m.x")
+    # A centered smooth adds a conjugate smoothing-variance Gibbs update.
+    loc_terms += loc_builder.ps(
+        "x", k=5, scale=gam.VarIGPrior(1.0, 0.001), name="m.ps(x)"
     )
-    log_scale_terms += gam.TermBuilder(registry, prefix_names_by="s.").lin(
-        "x", prior=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0), name="s.x"
+    log_scale_terms += gam.TermBuilder(registry, prefix_names_by="s.").slin(
+        "x", scale=1.0, name="s.x"
     )
 
-    beta0 = LocationIntercept(response_value, loc_terms, log_scale_terms, name="beta0")
+    beta0 = ptm.LocationIntercept(
+        response_value, loc_terms, log_scale_terms, name="beta0"
+    )
     loc = gam.AdditivePredictor("loc", intercept=beta0)
     loc += loc_terms
-    gamma0 = LogScaleIntercept(response_value, loc, log_scale_terms, name="gamma0")
+    gamma0 = ptm.LogScaleIntercept(response_value, loc, log_scale_terms, name="gamma0")
     scale = gam.AdditivePredictor("scale", inv_link=jnp.exp, intercept=gamma0)
     scale += log_scale_terms
 
@@ -49,7 +52,7 @@ def build_model() -> lsl.Model:
     )
     shape.intercept = builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
 
-    # Keep the intercepts tied to training responses when predicting at new data.
+    # The modern Weibull variance prior is intentionally unclipped.
     response = lsl.Var.new_obs(
         y,
         dist=PTMDist(
@@ -66,7 +69,39 @@ def build_model() -> lsl.Model:
     return lsl.Model(response)
 
 
+def fit(
+    model: lsl.Model, adaptation: int = 80, posterior: int = 12, num_chains: int = 2
+) -> gs.SamplingResults:
+    """Sample all parameters and record both computed intercepts at every draw."""
+    builder = ptm.setup_original_ptm_mcmc(
+        model,
+        loc_terms=model.vars["loc_terms"],
+        log_scale_terms=model.vars["log_scale_terms"],
+        shape=model.vars["delta"],
+        seed=43,
+        num_chains=num_chains,
+    )
+    builder.show_progress = False
+    builder.add_adaptation(adaptation)
+    builder.add_posterior(posterior)
+    engine = builder.build()
+    engine.sample_all_epochs()
+    return engine.get_results()
+
+
 if __name__ == "__main__":
     model = build_model()
-    print({name: model.vars[name].value for name in ("beta0", "gamma0")})
-    print("Log probability:", model.log_prob)
+    samples = fit(model).get_posterior_samples()
+    prediction = ptm.predict_original_ptm(
+        model,
+        samples,
+        predict=["loc", "scale", "delta"],
+        newdata={"x": jnp.array([-0.5, 0.5])},
+    )
+    print(
+        "Recorded intercept shapes:",
+        {name: samples[name].shape for name in ("beta0", "gamma0")},
+    )
+    print(
+        "Prediction shapes:", {name: value.shape for name, value in prediction.items()}
+    )

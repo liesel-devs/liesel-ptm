@@ -66,6 +66,10 @@ API Reference
     ~liesel_ptm.LocScaleTransformationDist
     ~liesel_ptm.PTMKnots
     ~liesel_ptm.PTMCoef
+    ~liesel_ptm.LocationIntercept
+    ~liesel_ptm.LogScaleIntercept
+    ~liesel_ptm.setup_original_ptm_mcmc
+    ~liesel_ptm.predict_original_ptm
 
 .. rubric:: Distribution summaries and plots
 
