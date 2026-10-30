@@ -17,7 +17,7 @@ class TestSimplePTMPredictor:
         trafo = ptm.predictor.SimplePTMPredictor.new_ptm(ptm_knots.knots, name="trafo")
 
         assert trafo is not None
-        assert trafo.value[0, 0] == pytest.approx(knots.knots[2], abs=1e-6)
+        assert trafo.value[0, 0] == pytest.approx(float(knots.knots[2]), abs=1e-6)
         assert jnp.allclose(trafo.value[0, 1:], knots.step, atol=1e-6)
 
         assert trafo.value.shape[-1] == nparam + 1
@@ -27,12 +27,12 @@ class TestSimplePTMPredictor:
         trafo = ptm.predictor.SimplePTMPredictor.new_ptm(knots.knots, name="trafo")
         trafo += lsl.Var(jnp.zeros(nparam), name="a")
         assert trafo is not None
-        assert trafo.value[0, 0] == pytest.approx(knots.knots[2], abs=1e-6)
+        assert trafo.value[0, 0] == pytest.approx(float(knots.knots[2]), abs=1e-6)
         assert jnp.allclose(trafo.value[0, 1:], knots.step, atol=1e-6)
 
         trafo += lsl.Var(jnp.ones(nparam), name="b")
 
-        assert trafo.value[0, 0] == pytest.approx(knots.knots[2], abs=1e-6)
+        assert trafo.value[0, 0] == pytest.approx(float(knots.knots[2]), abs=1e-6)
         assert jnp.allclose(trafo.value[0, 1:], knots.step, atol=1e-6)
 
     def test_add_varying_term(self) -> None:
@@ -41,7 +41,7 @@ class TestSimplePTMPredictor:
         trafo += lsl.Var(jax.random.normal(jax.random.key(0), (nparam,)))
         assert trafo is not None
 
-        assert trafo.value[0, 0] != pytest.approx(knots.knots[2], abs=1e-6)
+        assert trafo.value[0, 0] != pytest.approx(float(knots.knots[2]), abs=1e-6)
         assert not jnp.allclose(trafo.value[0, 1:], knots.step, atol=1e-6)
 
 
@@ -50,7 +50,7 @@ class TestSimpleOnionPredictor:
         knots = onion_knots
         trafo = ptm.predictor.SimplePTMPredictor.new_onion(knots.knots, name="trafo")
         assert trafo is not None
-        assert trafo.value[0, 0] == pytest.approx(knots.knots[2], abs=1e-6)
+        assert trafo.value[0, 0] == pytest.approx(float(knots.knots[2]), abs=1e-6)
         assert jnp.allclose(trafo.value[0, 1:], knots.step, atol=1e-6)
 
         assert trafo.value.shape[-1] == nparam + 7
@@ -60,12 +60,12 @@ class TestSimpleOnionPredictor:
         trafo = ptm.predictor.SimplePTMPredictor.new_onion(knots.knots, name="trafo")
         trafo += lsl.Var(jnp.zeros(nparam), name="a")
         assert trafo is not None
-        assert trafo.value[0, 0] == pytest.approx(knots.knots[2], abs=1e-6)
+        assert trafo.value[0, 0] == pytest.approx(float(knots.knots[2]), abs=1e-6)
         assert jnp.allclose(trafo.value[0, 1:], knots.step, atol=1e-6)
 
         trafo += lsl.Var(jnp.ones(nparam), name="b")
 
-        assert trafo.value[0, 0] == pytest.approx(knots.knots[2], abs=1e-6)
+        assert trafo.value[0, 0] == pytest.approx(float(knots.knots[2]), abs=1e-6)
         assert jnp.allclose(trafo.value[0, 1:], knots.step, atol=1e-6)
 
     def test_add_varying_term(self) -> None:
@@ -74,5 +74,5 @@ class TestSimpleOnionPredictor:
         trafo += lsl.Var(jax.random.normal(jax.random.key(0), (nparam,)))
         assert trafo is not None
 
-        assert trafo.value[0, 0] == pytest.approx(knots.knots[2], abs=1e-6)
+        assert trafo.value[0, 0] == pytest.approx(float(knots.knots[2]), abs=1e-6)
         assert not jnp.allclose(trafo.value[0, 1:], knots.step, atol=1e-6)

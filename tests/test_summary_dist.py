@@ -156,6 +156,7 @@ def test_summarise_intercept_dist_reports_all_quantities() -> None:
             jnp.array([0.0])
         )[0][0],
     }
+    expected = {name: float(value) for name, value in expected.items()}
     assert set(summary["quantity"]) == set(expected)
     assert summary["sample_size"].eq(1).all()
     assert summary["r"].eq(0.0).all()
