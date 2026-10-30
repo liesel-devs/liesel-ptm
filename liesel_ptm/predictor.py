@@ -7,59 +7,12 @@ import jax
 import jax.numpy as jnp
 import liesel.goose as gs
 import liesel.model as lsl
+import liesel_gam as gam
 import tensorflow_probability.substrates.jax.distributions as tfd
 from liesel.contrib import splines
 
 InferenceTypes = Any
 Array = Any
-
-
-class Sum(lsl.Var):
-    def __init__(self, name: str) -> None:
-        def _sum(*args, **kwargs):
-            # the + 0. implicitly ensures correct dtype also for empty predictors
-            return sum(args) + sum(kwargs.values()) + jnp.asarray(0.0)
-
-        super().__init__(lsl.Calc(_sum), name=name)
-        self.update()
-        self.terms: dict[str, lsl.Var] = {}
-        """Dictionary of terms in this predictor."""
-
-    def update(self) -> Self:
-        return cast(Self, super().update())
-
-    def __add__(self, other: lsl.Var) -> Self:
-        self.value_node.add_inputs(other)
-        self.terms[other.name] = other
-        return self.update()
-
-    def __iadd__(self, other: lsl.Var | Sequence[lsl.Var]) -> Self:
-        if isinstance(other, lsl.Var):
-            self.append(other)
-        else:
-            self.extend(other)
-        return self
-
-    def append(self, term: lsl.Var) -> None:
-        if not isinstance(term, lsl.Var):
-            raise TypeError(f"{term} is of unsupported type {type(term)}.")
-
-        if term.name in self.terms:
-            raise RuntimeError(f"{self} already contains a term of name {term.name}.")
-
-        self.value_node.add_inputs(term)
-        self.terms[term.name] = term
-        self.update()
-
-    def extend(self, terms: Sequence[lsl.Var]) -> None:
-        for term in terms:
-            self.append(term)
-
-    def __getitem__(self, name) -> lsl.Var:
-        return self.terms[name]
-
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}({self.name=}, {len(self.terms)} terms)"
 
 
 class LocationIntercept(lsl.Var):
@@ -360,7 +313,7 @@ class LocPredictor(lsl.Var):
     def __init__(
         self,
         intercept: lsl.Var,
-        loc_predictor: Sum,
+        loc_predictor: gam.AdditivePredictor,
         name: str,
     ) -> None:
         self.loc_intercept = intercept
@@ -372,7 +325,9 @@ class LocPredictor(lsl.Var):
 
         super().__init__(lsl.Calc(_sum), name=name)
 
-        self._terms = {self.loc_intercept.name: self.loc_intercept}
+        self._terms: dict[str, lsl.Var | lsl.Node] = {
+            self.loc_intercept.name: self.loc_intercept
+        }
 
         self.value_node.add_inputs(self.loc_intercept)
         self.value_node.add_inputs(self.loc_predictor)
@@ -382,8 +337,8 @@ class LocPredictor(lsl.Var):
     @classmethod
     def new_compute_intercept(
         cls,
-        loc_predictor: Sum,
-        log_scale_predictor: Sum,
+        loc_predictor: gam.AdditivePredictor,
+        log_scale_predictor: gam.AdditivePredictor,
         response_value: lsl.Value,
         name: str,
     ) -> Self:
@@ -398,8 +353,8 @@ class LocPredictor(lsl.Var):
     @classmethod
     def new_psample_intercept(
         cls,
-        loc_predictor: Sum,
-        log_scale_predictor: Sum,
+        loc_predictor: gam.AdditivePredictor,
+        log_scale_predictor: gam.AdditivePredictor,
         response_name: str,
         name: str,
         response_value: lsl.Value | None = None,
@@ -460,8 +415,8 @@ class LocPredictor(lsl.Var):
     @classmethod
     def new_sample_mh_intercept(
         cls,
-        loc_predictor: Sum,
-        log_scale_predictor: Sum,
+        loc_predictor: gam.AdditivePredictor,
+        log_scale_predictor: gam.AdditivePredictor,
         response_name: str,
         name: str,
         response_value: lsl.Value | None = None,
@@ -526,7 +481,7 @@ class LocPredictor(lsl.Var):
     @classmethod
     def new_constant_intercept(
         cls,
-        loc_predictor: Sum,
+        loc_predictor: gam.AdditivePredictor,
         name: str,
     ) -> Self:
         intercept_value = 0.0
@@ -573,7 +528,7 @@ class ScalePredictor(lsl.Var):
     def __init__(
         self,
         intercept: lsl.Var,
-        log_scale_predictor: Sum,
+        log_scale_predictor: gam.AdditivePredictor,
         name: str,
     ) -> None:
         self.log_scale_intercept = intercept
@@ -586,7 +541,9 @@ class ScalePredictor(lsl.Var):
 
         super().__init__(lsl.Calc(_exp_sum), name=name)
 
-        self._terms = {self.log_scale_intercept.name: self.log_scale_intercept}
+        self._terms: dict[str, lsl.Var | lsl.Node] = {
+            self.log_scale_intercept.name: self.log_scale_intercept
+        }
 
         self.value_node.add_inputs(self.log_scale_intercept)
         self.value_node.add_inputs(self.log_scale_predictor)
@@ -597,7 +554,7 @@ class ScalePredictor(lsl.Var):
     def new_compute_intercept(
         cls,
         loc: LocPredictor,
-        log_scale_predictor: Sum,
+        log_scale_predictor: gam.AdditivePredictor,
         response_value: lsl.Value,
         name: str,
     ) -> Self:
@@ -615,7 +572,7 @@ class ScalePredictor(lsl.Var):
     def new_psample_intercept(
         cls,
         loc: LocPredictor,
-        log_scale_predictor: Sum,
+        log_scale_predictor: gam.AdditivePredictor,
         response_name: str,
         name: str,
         response_value: lsl.Value | None = None,
@@ -674,7 +631,7 @@ class ScalePredictor(lsl.Var):
     def new_sample_mh_intercept(
         cls,
         loc: LocPredictor,
-        log_scale_predictor: Sum,
+        log_scale_predictor: gam.AdditivePredictor,
         response_name: str,
         name: str,
         response_value: lsl.Value | None = None,
@@ -737,7 +694,7 @@ class ScalePredictor(lsl.Var):
     def new_constant_intercept(
         cls,
         loc: LocPredictor,
-        log_scale_predictor: Sum,
+        log_scale_predictor: gam.AdditivePredictor,
         name: str,
     ) -> Self:
         intercept_value = 0.0
@@ -798,8 +755,10 @@ def setup_loc_scale(
     subset: Array | None = None,
     mh_kwargs: dict | None = None,
 ) -> tuple[LocPredictor, ScalePredictor]:
-    loc_model = Sum(loc_name + "$(x)$")
-    scale_model = Sum("$\\log($" + scale_name + "$)(x)$")
+    loc_model = gam.AdditivePredictor(loc_name + "$(x)$", intercept=False)
+    scale_model = gam.AdditivePredictor(
+        "$\\log($" + scale_name + "$)(x)$", intercept=False
+    )
 
     if mh_kwargs is None:
         mh_kwargs = {
@@ -1127,17 +1086,9 @@ class MISplineCoef:
         return compute_coef
 
 
-class SimplePTMPredictor(Sum):
+class SimplePTMPredictor(gam.AdditivePredictor):
     def __init__(self, name: str, fn: Callable[[Array], Array]) -> None:
-        fn = jax.jit(fn)
-
-        def _sum(*args, **kwargs):
-            # the + 0. implicitly ensures correct dtype also for empty predictors
-            return fn(sum(args) + sum(kwargs.values()) + 0.0)
-
-        super(Sum, self).__init__(lsl.Calc(_sum), name=name)
-        self.update()
-        self.terms: dict[str, lsl.Var] = {}
+        super().__init__(name, inv_link=jax.jit(fn), intercept=False)
 
     @classmethod
     def new_sum(cls, name: str) -> Self:

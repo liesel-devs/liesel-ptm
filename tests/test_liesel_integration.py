@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import liesel.goose as gs
 import liesel.model as lsl
+import liesel_gam as gam
 import numpy as np
 import pytest
 import tensorflow_probability.substrates.jax.distributions as tfd
@@ -11,7 +12,6 @@ from jax.flatten_util import ravel_pytree
 
 import liesel_ptm as ptm
 from demo import reference_original
-from liesel_ptm.gam.var import LinearTerm
 from liesel_ptm.iwls_proposals import CholInfo, PTMCholInfoFixed
 
 
@@ -52,11 +52,13 @@ def legacy_linear_model():
         intercepts="compute",
         bspline="identity",
     )
+    registry = gam.DictRegistry({"x": x, "x2": x**2})
     for predictor, name in ((model.loc, "m"), (model.scale, "s")):
-        predictor += LinearTerm(
-            jnp.c_[x, x**2],
+        predictor += gam.TermBuilder(registry, prefix_names_by=name).lin(
+            "x + x2",
             name=name,
-            distribution=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
+            prior=lsl.Dist(tfd.Normal, loc=0.0, scale=1.0),
+            inference=None,
         )
     return model.build()
 

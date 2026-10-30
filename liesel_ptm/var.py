@@ -1,17 +1,12 @@
-from typing import Any, Literal, Self
+from typing import Any, Self
 
 import jax.numpy as jnp
-import liesel.goose as gs
 import liesel.model as lsl
+import liesel_gam as gam
 import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.distributions as tfd
-
-from liesel_ptm import gam
-
-from .constraint import mixed_model
-from .gam.kernel import init_star_ig_gibbs as init_star_ig_gibbs2
-from .kernel import init_star_ig_gibbs
-from .penalty import Penalty
+from liesel.contrib.splines import pspline_penalty
+from liesel_gam.constraint import penalty_to_unit_design
 
 Array = Any
 InferenceTypes = Any
@@ -65,7 +60,7 @@ class PTMCoef(lsl.Var):
 
         if diagonalize_penalty:
             rank = jnp.linalg.matrix_rank(penalty)
-            Z2 = mixed_model(penalty, rank=rank)
+            Z2 = penalty_to_unit_design(penalty, rank=rank)
             penalty = jnp.eye(nparam)
             penalty = penalty.at[rank:, rank:].set(0.0)
         else:
@@ -202,7 +197,7 @@ class PTMCoef(lsl.Var):
         """
 
         nparam = len(knots) - 4 - 1
-        penalty = Penalty.pspline(nparam=nparam, random_walk_order=1)
+        penalty = pspline_penalty(d=nparam, diff=1)
 
         if scale_penalty:
             scale_pen = jnp.linalg.norm(penalty, ord=jnp.inf)
@@ -210,7 +205,7 @@ class PTMCoef(lsl.Var):
 
         if diagonalize_penalty:
             rank = jnp.linalg.matrix_rank(penalty)
-            Z = mixed_model(penalty, rank=rank)[:, :-1]
+            Z = penalty_to_unit_design(penalty, rank=rank)[:, :-1]
             penalty = jnp.eye(nparam - 1)
 
         return cls(
@@ -267,7 +262,7 @@ class PTMCoef(lsl.Var):
         """
 
         nparam = len(knots) - 4 - 1
-        penalty = Penalty.pspline(nparam=nparam, random_walk_order=1)
+        penalty = pspline_penalty(d=nparam, diff=1)
 
         if scale_penalty:
             scale_pen = jnp.linalg.norm(penalty, ord=jnp.inf)
@@ -275,10 +270,10 @@ class PTMCoef(lsl.Var):
 
         if diagonalize_penalty:
             rank = jnp.linalg.matrix_rank(penalty)
-            Z = mixed_model(penalty, rank=rank)[:, :-1]
+            Z = penalty_to_unit_design(penalty, rank=rank)[:, :-1]
             penalty = jnp.eye(nparam - 1)
 
-        scale = ScaleInverseGamma(
+        scale = gam.ScaleIG(
             value=1.0,
             concentration=ig_concentration,
             scale=ig_scale,
@@ -296,9 +291,7 @@ class PTMCoef(lsl.Var):
             role=role,
         )
 
-        scale.variance_param.inference = gs.MCMCSpec(
-            init_star_ig_gibbs, kernel_kwargs={"coef": coef}
-        )
+        scale.setup_gibbs_inference(coef.latent_coef, penalty=coef.penalty)
 
         return coef
 
@@ -313,7 +306,7 @@ class PTMCoef(lsl.Var):
         scale_penalty: bool = True,
         diagonalize_penalty: bool = True,
         role: str = "transformation_coef",
-        scale_bijector: tfb.Bijector | None = tfb.Exp(),
+        scale_bijector: tfb.Bijector = tfb.Exp(),
     ) -> Self:
         """Create RW1 sum-to-zero coefficients with a Weibull prior on the random
         walk variance.
@@ -328,7 +321,7 @@ class PTMCoef(lsl.Var):
             Optional inference specification for the latent parameter.
         scale_inference
             Optional inference for the scale variable. Will be passed to the
-            inference argument of :class:`.ScaleWeibull`, thus acting on the
+            inference argument of :func:`liesel_gam.scale_wb`, thus acting on the
             level of the variance paramter (not the scale parameter).
         name
             Optional base name for created variables.
@@ -340,7 +333,7 @@ class PTMCoef(lsl.Var):
             Role assigned to the latent coefficient variable.
         scale_bijector
             Optional bijector applied to the scale variable. Will be passed to the
-            bijector argument of :class:`.ScaleWeibull`, thus acting on the
+            bijector argument of :func:`liesel_gam.scale_wb`, thus acting on the
             level of the variance paramter (not the scale parameter).
 
         Returns
@@ -350,17 +343,17 @@ class PTMCoef(lsl.Var):
         """
 
         nparam = len(knots) - 4 - 1
-        penalty = Penalty.pspline(nparam=nparam, random_walk_order=1)
+        penalty = pspline_penalty(d=nparam, diff=1)
         if scale_penalty:
             scale_pen = jnp.linalg.norm(penalty, ord=jnp.inf)
             penalty = penalty / scale_pen
 
         if diagonalize_penalty:
             rank = jnp.linalg.matrix_rank(penalty)
-            Z = mixed_model(penalty, rank=rank)[:, :-1]
+            Z = penalty_to_unit_design(penalty, rank=rank)[:, :-1]
             penalty = jnp.eye(nparam - 1)
 
-        scale = ScaleWeibull(
+        scale = gam.scale_wb(
             value=1.0,
             scale=wb_scale,
             name=name + "_scale",
@@ -419,7 +412,7 @@ class PTMCoef(lsl.Var):
         """
 
         nparam = len(knots) - 11
-        penalty = Penalty.pspline(nparam=nparam + 1, random_walk_order=1)
+        penalty = pspline_penalty(d=nparam + 1, diff=1)
         penalty = penalty[1:, 1:]
 
         return cls(
@@ -444,7 +437,7 @@ class PTMCoef(lsl.Var):
         scale_penalty: bool = True,
         diagonalize_penalty: bool = True,
         role: str = "transformation_coef",
-        scale_bijector: tfb.Bijector | None = tfb.Exp(),
+        scale_bijector: tfb.Bijector = tfb.Exp(),
         noncentered: bool = False,
     ) -> Self:
         """Create RW1 sum-to-zero coefficients with a Weibull prior on the random
@@ -460,7 +453,7 @@ class PTMCoef(lsl.Var):
             Optional inference specification for the latent parameter.
         scale_inference
             Optional inference for the scale variable. Will be passed to the
-            inference argument of :class:`.ScaleWeibull`, thus acting on the
+            inference argument of :func:`liesel_gam.scale_wb`, thus acting on the
             level of the variance paramter (not the scale parameter).
         name
             Optional base name for created variables.
@@ -472,7 +465,7 @@ class PTMCoef(lsl.Var):
             Role assigned to the latent coefficient variable.
         scale_bijector
             Optional bijector applied to the scale variable. Will be passed to the
-            bijector argument of :class:`.ScaleWeibull`, thus acting on the
+            bijector argument of :func:`liesel_gam.scale_wb`, thus acting on the
             level of the variance paramter (not the scale parameter).
 
         Returns
@@ -482,10 +475,10 @@ class PTMCoef(lsl.Var):
         """
 
         nparam = len(knots) - 11
-        penalty = Penalty.pspline(nparam=nparam + 1, random_walk_order=1)
+        penalty = pspline_penalty(d=nparam + 1, diff=1)
         penalty = penalty[1:, 1:]
 
-        scale = ScaleWeibull(
+        scale = gam.scale_wb(
             value=1.0,
             scale=wb_scale,
             name=name + "_scale",
@@ -546,11 +539,16 @@ class PTMCoef(lsl.Var):
             Configured coefficient with inverse-gamma prior on the variance parameter.
         """
 
+        if noncentered:
+            raise ValueError(
+                "Inverse-gamma Gibbs updates require centered coefficients."
+            )
+
         nparam = len(knots) - 11
-        penalty = Penalty.pspline(nparam=nparam + 1, random_walk_order=1)
+        penalty = pspline_penalty(d=nparam + 1, diff=1)
         penalty = penalty[1:, 1:]
 
-        scale = ScaleInverseGamma(
+        scale = gam.ScaleIG(
             value=1.0,
             concentration=ig_concentration,
             scale=ig_scale,
@@ -568,211 +566,6 @@ class PTMCoef(lsl.Var):
             noncentered=noncentered,
         )
 
-        scale.variance_param.inference = gs.MCMCSpec(
-            init_star_ig_gibbs2,
-            kernel_kwargs={"coef": coef, "scale": scale, "penalty": penalty},
-        )
+        scale.setup_gibbs_inference(coef.latent_coef, penalty=coef.penalty)
 
         return coef
-
-
-class ScaleWeibull(lsl.Var):
-    """
-    A variable with a Weibull prior on its square.
-
-    Parameters
-    ----------
-    value
-        Initial value of the variable.
-    concentration
-        Concentration parameter.
-    scale
-        Scale parameter.
-    name
-        Name of the variable.
-    inference
-        Inference type.
-    bijector
-        A tensorflow bijector instance.\
-        If a bijector is supplied, the variable will be transformed using the bijector.\
-        This renders the variable itself weak, meaning that it is a deterministic\
-        function of the newly created transformed variable. The prior is transferred\
-        to this transformed variable and transformed according to the \
-        change-of-variables theorem.
-    clip_min
-        Values very close to zero will be soft-clipped to this value to avoid numerical
-        instability. For 32-bit floats, we use a default of ``jnp.sqrt(jnp.exp(-9.0))``;
-        for 64-bit floats we use ``jnp.sqrt(jnp.exp(-11.0))``.
-
-    Attributes
-    ----------
-    variance_param
-        The internal variance parameter (square of the reported scale). This is
-        an ``lsl.Var`` created as the latent variance parameter.
-    bijector
-        The bijector passed to the constructor (or ``None``). When present,
-        the bijector was applied to the variance parameter and the public
-        variable becomes a deterministic transform of that parameter.
-    """
-
-    def __init__(
-        self,
-        value: Array,
-        scale: float | lsl.Var | lsl.Node,
-        concentration: float | lsl.Var | lsl.Node = 0.5,
-        name: str = "",
-        inference: InferenceTypes = None,
-        bijector: tfb.Bijector | None = None,
-        role: str = "hyperparam",
-        clip_min: Literal["default"] | float | Array = "default",
-    ):
-        value = jnp.asarray(value)
-        if isinstance(scale, float):
-            scale = jnp.asarray(scale, dtype=value.dtype)  # type: ignore
-        if not isinstance(scale, lsl.Node | lsl.Var):
-            scale = lsl.Value(scale, _name=f"{name}_scale")
-
-        if isinstance(concentration, float):
-            concentration = jnp.asarray(concentration, dtype=value.dtype)  # type: ignore
-        if not isinstance(concentration, lsl.Node | lsl.Var):
-            concentration = lsl.Value(concentration, _name=f"{name}_concentration")
-
-        prior = lsl.Dist(tfd.Weibull, concentration=concentration, scale=scale)
-        self.variance_param = lsl.Var.new_param(
-            jnp.square(value), prior, inference=inference, name=f"{name}_square"
-        )
-        self.variance_param.role = role
-
-        if clip_min == "default":
-            if value.dtype == jnp.dtype("float32"):
-                clip_min_real = jnp.array(-9.0, dtype=value.dtype)
-                clip_min_pos = jnp.exp(clip_min_real)
-            elif value.dtype == jnp.dtype("float64"):
-                clip_min_real = jnp.array(-11.0, dtype=value.dtype)
-                clip_min_pos = jnp.exp(clip_min_real)
-            else:
-                raise TypeError(f"{value.dtype} not recognized.")
-        else:
-            clip_min_pos = jnp.square(jnp.asarray(clip_min))
-            clip_min_real = (
-                bijector.inverse(clip_min_pos) if bijector is not None else clip_min_pos
-            )
-
-        super().__init__(
-            lsl.Calc(lambda x: jnp.sqrt(x) + clip_min_pos, self.variance_param),
-            name=name,
-        )
-
-        self.variance_param.update()
-        self.update()
-        val = self.variance_param.value
-        log_prob = self.variance_param.log_prob
-        self.bijector = None
-
-        if bijector is not None:
-            bijectors = tfb.Chain(
-                (bijector, tfb.SoftClip(low=clip_min_real, hinge_softness=0.3))
-            )
-            transformed = self.variance_param.transform(bijectors, inference="drop")
-            transformed.inference = inference
-            transformed.role = self.variance_param.role
-            self.variance_param.role = ""
-            transformed.update()
-            self.variance_param.update()
-            self.update()
-            self.bijector = bijector
-            self.value_node.function = jnp.sqrt  # type: ignore
-
-            val = transformed.value
-            log_prob = transformed.log_prob
-
-        assert jnp.isfinite(val)
-        assert jnp.isfinite(log_prob)
-
-
-class ScaleInverseGamma(lsl.Var):
-    """
-    A variable with an Inverse Gamma prior on its square.
-
-    Parameters
-    ----------
-    value
-        Initial value of the variable.
-    concentration
-        Concentration parameter of the inverse gamma distribution.\
-        In some parameterizations, this parameter is called ``a``.
-    scale
-        Scale parameter of the inverse gamma distribution.\
-        In some parameterizations, this parameter is called ``b``.
-    name
-        Name of the variable.
-    inference
-        Inference type.
-    bijector
-        A tensorflow bijector instance.\
-        If a bijector is supplied, the variable will be transformed using the bijector.\
-        This renders the variable itself weak, meaning that it is a deterministic\
-        function of the newly created transformed variable. The prior is transferred\
-        to this transformed variable and transformed according to the \
-        change-of-variables theorem.
-
-    Attributes
-    ----------
-    variance_param
-        The internal variance parameter (square of the reported scale). This is
-        an ``lsl.Var`` created as the latent variance parameter.
-    bijector
-        The bijector passed to the constructor (or ``None``). When present,
-        the bijector was applied to the variance parameter and the public
-        variable becomes a deterministic transform of that parameter.
-    """
-
-    def __init__(
-        self,
-        value: Array,
-        concentration: float | lsl.Var | lsl.Node,
-        scale: float | lsl.Var | lsl.Node,
-        name: str = "",
-        inference: InferenceTypes = None,
-        bijector: tfb.Bijector | None = None,
-        role: str = "hyperparam",
-    ):
-        value = jnp.asarray(value)
-
-        if isinstance(scale, float):
-            scale = jnp.asarray(scale)  # type: ignore
-            scale = lsl.Data(scale, _name=f"{name}_scale")
-
-        if isinstance(concentration, float):
-            concentration = jnp.asarray(concentration)  # type: ignore
-            concentration = lsl.Data(concentration, _name=f"{name}_concentration")
-
-        prior = lsl.Dist(tfd.InverseGamma, concentration=concentration, scale=scale)
-        self.variance_param = lsl.Var.new_param(
-            value, prior, inference=inference, name=f"{name}_square"
-        )
-        self.variance_param.role = role
-        super().__init__(lsl.Calc(jnp.sqrt, self.variance_param), name=name)
-
-        self.variance_param.update()
-        self.update()
-        val = self.variance_param.value
-        log_prob = self.variance_param.log_prob
-        self.bijector = None
-
-        if bijector is not None:
-            transformed = self.variance_param.transform(bijector, inference="drop")
-            transformed.inference = inference
-            transformed.role = self.variance_param.role
-
-            self.variance_param.role = ""
-            transformed.update()
-            self.variance_param.update()
-            self.update()
-            self.bijector = bijector
-
-            val = transformed.value
-            log_prob = transformed.log_prob
-
-        assert jnp.isfinite(val)
-        assert jnp.isfinite(log_prob)

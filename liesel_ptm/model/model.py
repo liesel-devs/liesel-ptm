@@ -11,21 +11,19 @@ import jax.flatten_util
 import jax.numpy as jnp
 import liesel.goose as gs
 import liesel.model as lsl
+import liesel_gam as gam
 import numpy as np
 import pandas as pd
 import plotnine as p9
 import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.distributions as tfd
-
-from liesel_ptm.gam.roles import Roles as GamRoles
+from liesel_gam.iwls_proposals import GaussianLocIWLSProposal, GaussianScaleIWLSProposal
 
 from ..bspline import LogIncKnots, OnionSpline, PTMSpline
 from ..cckernel import freeze_parental_submodel
 from ..dist import GaussianPseudoTransformationDist, LocScaleTransformationDist
 from ..iwls_proposals import (
     CholInfo,
-    GaussianLocCholInfo,
-    GaussianScaleCholInfo,
     PTMCholInfoFixed,
 )
 from ..predictor import (
@@ -36,7 +34,7 @@ from ..predictor import (
 )
 from ..swap_dists import SwapSpec, TemporarilySwapDists, spec_bounded
 from ..util.summary import summarise_by_samples
-from ..var import PTMCoef, ScaleWeibull
+from ..var import PTMCoef
 
 Array = Any
 KeyArray = Any
@@ -46,8 +44,6 @@ logger = logging.getLogger(__name__)
 
 HYPERPARAMETER_ROLES = [
     "hyperparam",
-    GamRoles.variance_smooth,
-    GamRoles.scale_smooth,
 ]
 
 
@@ -232,7 +228,7 @@ class LocScalePTM:
 
         import jax
         import liesel_ptm as ptm
-        from liesel_ptm import lin, term
+        import liesel_gam as gam
 
         y = jax.random.normal(jax.random.key(0), (50,))
         x = jax.random.uniform(jax.random.key(1), (50,))
@@ -240,12 +236,12 @@ class LocScalePTM:
         model = ptm.LocScalePTM.new_ptm(y, a=-4.0, b=4.0, nparam=20)
 
         # location and scale predictors can be filled by adding terms.
-        xlin = lin(x, xname="x")
-        model.loc += term.f(xlin, fname="s")
+        registry = gam.DictRegistry({"x": x})
+        model.loc += gam.TermBuilder(registry, prefix_names_by="m.").slin("x")
 
         # when adding terms to the scale model part, they are applied additively
         # to the log-level automatically
-        model.scale += term.f(xlin, fname="g")
+        model.scale += gam.TermBuilder(registry, prefix_names_by="s.").slin("x")
 
         results = model.run_mcmc(seed=1, warmup=300, posterior=500)
         samples = results.get_posterior_samples()
@@ -256,15 +252,15 @@ class LocScalePTM:
 
         import jax
         import liesel_ptm as ptm
-        from liesel_ptm import term, ps
+        import liesel_gam as gam
 
         y = jax.random.normal(jax.random.key(0), (50,))
         x = jax.random.uniform(jax.random.key(1), (50,))
 
         model = ptm.LocScalePTM.new_ptm(y, a=-4.0, b=4.0, nparam=20)
 
-        xps = ps(x, nbases=20, xname="x")
-        model.loc += term.f_ig(xps, fname="s")
+        registry = gam.DictRegistry({"x": x})
+        model.loc += gam.TermBuilder(registry).ps("x", k=20)
 
         results = model.run_mcmc(seed=1, warmup=300, posterior=500)
         samples = results.get_posterior_samples()
@@ -368,14 +364,17 @@ class LocScalePTM:
             to_float32=to_float32,
         )
 
-        trafo_scale = ScaleWeibull(
+        trafo_scale = gam.scale_wb(
             value=1.0,
             scale=tau2_scale,
             name="$\\tau_\\delta$",
             bijector=tfb.Exp(),
         )
-        trafo_scale.variance_param.name = "$\\tau^2_\\delta$"
-        trafo_scale.variance_param.value_node[0].name = "$\\log(\\tau^2_\\delta)$"
+        variance = trafo_scale.value_node[0]
+        assert isinstance(variance, lsl.Var)
+        variance.name = "$\\tau^2_\\delta$"
+        variance.bijected_var.name = "$\\log(\\tau^2_\\delta)$"
+        variance.bijected_var.role = "hyperparam"
 
         trafo0 = PTMCoef.new_rw1_sumzero(
             knots=knots.knots, scale=trafo_scale, name="$\\delta$", noncentered=False
@@ -1038,13 +1037,15 @@ class LocScalePTM:
                 raise ValueError(f"{self.interface=} must not be None.")
             if self.is_gaussian or strategy in ["iwls-nuts", "iwls-iwls_fixed"]:
                 # Terms without a structured Gaussian prior use observed information.
-                try:
-                    cinfo_class = GaussianLocCholInfo
-                    cinfo = cinfo_class.from_smooth(
-                        term, model=self.interface, n=int(self.response.value.size)
+                cinfo = (
+                    None
+                    if isinstance(term, gam.LinTerm)
+                    else (
+                        GaussianLocIWLSProposal.from_term(
+                            term, scale_name=self.scale.name
+                        )
                     )
-                except (AttributeError, KeyError):
-                    cinfo = None
+                )
 
                 term.coef.inference = gs.MCMCSpec(
                     gs.IWLSKernel,
@@ -1071,8 +1072,8 @@ class LocScalePTM:
                             "efficient sampling. Consider running "
                             ".initialize() for longer."
                         )
-                        cinfo = GaussianLocCholInfo.from_smooth(
-                            term, model=self.interface, n=int(self.response.value.size)
+                        cinfo = GaussianLocIWLSProposal.from_term(
+                            term, scale_name=self.scale.name
                         )
                     except Exception:
                         logger.exception("Failed to use Gaussian fallback. Continuing.")
@@ -1125,12 +1126,11 @@ class LocScalePTM:
                 raise ValueError(f"{self.interface=} must not be None.")
             if self.is_gaussian or strategy == "iwls-nuts":
                 # Terms without a structured Gaussian prior use observed information.
-                try:
-                    cinfo = GaussianScaleCholInfo.from_smooth(
-                        term, model=self.interface, n=int(self.response.value.size)
-                    )
-                except (AttributeError, KeyError):
-                    cinfo = None
+                cinfo = (
+                    None
+                    if isinstance(term, gam.LinTerm)
+                    else (GaussianScaleIWLSProposal.from_term(term))
+                )
 
                 term.coef.inference = gs.MCMCSpec(
                     gs.IWLSKernel,
@@ -1157,9 +1157,7 @@ class LocScalePTM:
                             "efficient sampling. Consider running "
                             ".initialize() for longer."
                         )
-                        cinfo = GaussianScaleCholInfo.from_smooth(
-                            term, model=self.interface, n=int(self.response.value.size)
-                        )
+                        cinfo = GaussianScaleIWLSProposal.from_term(term)
                     except Exception:
                         logger.exception("Failed to use Gaussian fallback. Continuing.")
 
@@ -1186,7 +1184,7 @@ class LocScalePTM:
 
         trafo_coef = trafo_terms[0]
         trafo_scale = trafo_coef.scale
-        trafo_var = trafo_scale.variance_param
+        trafo_var = trafo_scale.value_node[0]
 
         if trafo_kernel_kwargs_nuts:
             nuts_kernel_kwargs = trafo_kernel_kwargs_nuts

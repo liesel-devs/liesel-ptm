@@ -3,6 +3,7 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 import liesel.goose as gs
+import liesel_gam as gam
 import tensorflow_probability.substrates.jax.bijectors as tfb
 
 import liesel_ptm as ptm
@@ -19,7 +20,7 @@ y = jax.random.normal(jax.random.key(1), (nobs,))
 model = ptm.LocScalePTM(y, knots.knots)
 model.trafo += ptm.PTMCoef.new_rw1_sumzero(
     knots=knots.knots,
-    scale=ptm.ScaleWeibull(
+    scale=gam.scale_wb(
         1.0,
         scale=0.02,
         name="tau",

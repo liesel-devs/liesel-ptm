@@ -28,57 +28,53 @@ $ pip install git+https://github.com/liesel-devs/liesel-ptm.git
 ## Getting Started
 
 
-This is a simple example for first steps:
+Construct predictors and terms with [liesel-gam](https://github.com/liesel-devs/liesel-gam).
+This minimal model has a smooth location effect, a constant scale, and a shared
+transformation shape. The data are synthetic.
 
 ```python
-from jax.random import key, normal, uniform, split
+import jax
+import jax.numpy as jnp
+import liesel.model as lsl
+import liesel_gam as gam
+
 import liesel_ptm as ptm
-from liesel_ptm import ps, term, plot_term
+from liesel_ptm.model.model import PTMDist
 
-fx = ptm.util.SimFunctions.f3_oscillating
+x = jnp.linspace(-2.0, 2.0, 100)
+y = jnp.sin(x) + jax.random.normal(jax.random.key(42), x.shape)
+builder = gam.TermBuilder(gam.DictRegistry({"x": x}))
 
-k = key(0)
-k, sk = split(k)
-x = uniform(k, (100,), minval=-2.0, maxval=2.0)
+loc = gam.AdditivePredictor("loc")
+loc += builder.ps("x", k=10)
+scale = gam.AdditivePredictor("scale", inv_link=jnp.exp)
 
-# create a bimodal density
-r = normal(sk, (100,))
-r = r.at[:50].set(r[:50] + 2.0)
-r = r.at[50:].set(0.5 * r[50:] - 2.0)
+knots = ptm.PTMKnots(-4.0, 4.0, nparam=6)
+shape = gam.MVAdditivePredictor.from_random_walk(
+    "delta",
+    ndim=knots.nparam,
+    intercept=False,
+).constrain("sumzero_coef")
+shape_builder = gam.MVTermBuilder.from_predictor(shape, term_builder=builder)
+shape.intercept = shape_builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
 
-y = fx(x) + r
-
-model = ptm.LocScalePTM.new_ptm(y)
-
-# add a P-spline for x
-model.loc += term.f_ig(ps(x, nbases=20, xname="x"))
-
-model.build()
+response = lsl.Var.new_obs(
+    y,
+    dist=PTMDist(
+        knots.knots,
+        loc=loc,
+        scale=scale,
+        shape=shape,
+        bspline="ptm",
+        centered=True,
+        scaled=True,
+    ),
+    name="y",
+)
+model = lsl.Model(response)
 ```
 
-```python
-# draw samples
-results = model.run_mcmc(seed=1, warmup=300, posterior=500)
-samples = results.get_posterior_samples()
-```
+For fitting, prediction, and more model components, see the reference examples:
 
-```python
-# plot standardized conditional density estimate
-model.plot_r_density(samples)
-```
-
-![](img/density.png)
-
-```python
-# plot P-spline estimate
-plot_term(model.loc.terms["f(x)"], samples)
-```
-
-![](img/effect.png)
-
-```python
-# plot model graph
-model.graph.plot_vars()
-```
-
-![](img/graph.png)
+- [Modern GPTM](demo/reference_modern.py): location, scale, and shape predictors; optimization and VI.
+- [Original PTM](demo/reference_original.py): shared shape and computed intercepts.
