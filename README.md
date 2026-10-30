@@ -39,7 +39,6 @@ import liesel.model as lsl
 import liesel_gam as gam
 
 import liesel_ptm as ptm
-from liesel_ptm.model.model import PTMDist
 
 x = jnp.linspace(-2.0, 2.0, 100)
 y = jnp.sin(x) + jax.random.normal(jax.random.key(42), x.shape)
@@ -60,7 +59,7 @@ shape.intercept = shape_builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
 
 response = lsl.Var.new_obs(
     y,
-    dist=PTMDist(
+    dist=ptm.PTMDist(
         knots.knots,
         loc=loc,
         scale=scale,

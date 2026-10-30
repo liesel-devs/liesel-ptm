@@ -60,9 +60,6 @@ class PTMKnots:
         self.step = jnp.diff(self.knots).mean()
 
 
-LogIncKnots = PTMKnots  # Alias
-
-
 def log_sfn(shape):
     """
     Compute log normalization factor for PTM spline coefficients.

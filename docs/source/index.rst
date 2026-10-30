@@ -27,22 +27,49 @@ The library can be installed from GitHub:
 Getting Started
 ---------------
 
-This is a simple example for first steps:
+This model has a smooth location effect, constant scale, and shared transformation
+shape. Data are synthetic; construct predictors and terms with ``liesel_gam``.
 
 .. code-block:: python
 
-    import liesel_ptm as ptm
     import jax
+    import jax.numpy as jnp
+    import liesel.model as lsl
+    import liesel_gam as gam
 
-    y = jax.random.normal(jax.random.key(0), (50,))
+    import liesel_ptm as ptm
 
-    model = ptm.LocScalePTM.new_ptm(y)
-    results = model.run_mcmc(seed=1, warmup=300, posterior=500)
-    samples = results.get_posterior_samples()
+    x = jnp.linspace(-2.0, 2.0, 100)
+    y = jnp.sin(x) + jax.random.normal(jax.random.key(42), x.shape)
+    builder = gam.TermBuilder(gam.DictRegistry({"x": x}))
 
-    model.plot(samples)
+    loc = gam.AdditivePredictor("loc")
+    loc += builder.ps("x", k=10)
+    scale = gam.AdditivePredictor("scale", inv_link=jnp.exp)
 
-    dist = model.init_dist(samples) # initialize a distribution object
+    knots = ptm.PTMKnots(-4.0, 4.0, nparam=6)
+    shape = gam.MVAdditivePredictor.from_random_walk(
+        "delta",
+        ndim=knots.nparam,
+        intercept=False,
+    ).constrain("sumzero_coef")
+    shape_builder = gam.MVTermBuilder.from_predictor(shape, term_builder=builder)
+    shape.intercept = shape_builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
+
+    response = lsl.Var.new_obs(
+        y,
+        dist=ptm.PTMDist(
+            knots.knots,
+            loc=loc,
+            scale=scale,
+            shape=shape,
+            bspline="ptm",
+            centered=True,
+            scaled=True,
+        ),
+        name="y",
+    )
+    model = lsl.Model(response)
 
 .. toctree::
     :maxdepth: 2
@@ -61,11 +88,10 @@ API Reference
     :recursive:
     :nosignatures:
 
-    ~liesel_ptm.LocScalePTM
+    ~liesel_ptm.PTMDist
     ~liesel_ptm.TransformationDist
     ~liesel_ptm.LocScaleTransformationDist
     ~liesel_ptm.PTMKnots
-    ~liesel_ptm.PTMCoef
     ~liesel_ptm.LocationIntercept
     ~liesel_ptm.LogScaleIntercept
     ~liesel_ptm.LegacyPTM

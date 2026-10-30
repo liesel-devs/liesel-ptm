@@ -11,7 +11,6 @@ import liesel_ptm as ptm
 from liesel_ptm.bspline.onion import OnionKnots, OnionSpline
 from liesel_ptm.bspline.ptm import PTMKnots, PTMSpline
 from liesel_ptm.dist import (
-    GaussianPseudoTransformationDist,
     _gauss_legendre_nodes_and_weights,
     integrate_piecewise_gauss_legendre,
 )
@@ -380,17 +379,6 @@ class TestSplineMomentQuadrature:
         assert diagnostic["variance_abs_error"].shape == (8,)
         assert bool(diagnostic["ok"])
 
-    def test_pseudo_diagnostic_is_exact_identity(self):
-        dist = GaussianPseudoTransformationDist(
-            coef=jnp.array([0.0]), loc=0.0, scale=1.0
-        )
-
-        diagnostic = dist.moment_quadrature_diagnostic()
-
-        assert diagnostic["mean"] == 0.0
-        assert diagnostic["variance"] == 1.0
-        assert bool(diagnostic["ok"])
-
     def test_autodiff_through_centered_scaled_moments(self):
         knots = PTMKnots(-4.0, 4.0, nparam=14)
         bs = PTMSpline(knots.knots)
@@ -474,9 +462,7 @@ class TestSplineMomentQuadrature:
 
 class TestDistOneCoef:
     def test_log_prob_sample_layout(self):
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
         normal = normal_with_batch(())
 
         values = (
@@ -489,9 +475,7 @@ class TestDistOneCoef:
             assert_same_shape_as_normal(dist, normal, "log_prob", value)
 
     def test_quantile_and_sample_layout(self):
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
 
         assert dist.quantile(0.5).shape == ()
         assert dist.quantile(jnp.full((30,), 0.5)).shape == (30,)
@@ -503,9 +487,7 @@ class TestDistOneCoef:
 class TestDistBatchedCoef:
     def test_log_prob_matches_normal_broadcasting(self):
         coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
         normal = normal_with_batch((2,))
 
         values = (
@@ -522,9 +504,7 @@ class TestDistBatchedCoef:
 
     def test_quantile_matches_normal_broadcasting(self):
         coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
         normal = normal_with_batch((2,))
 
         probs = (
@@ -541,9 +521,7 @@ class TestDistBatchedCoef:
 
     def test_cdf_quantile_roundtrip_broadcasting(self):
         coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
 
         probs = (
             jnp.array(0.5),
@@ -559,9 +537,7 @@ class TestDistBatchedCoef:
 
     def test_sample_and_moment_shapes(self):
         coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
 
         assert dist.sample(seed=jax.random.key(1)).shape == (2,)
         assert dist.sample(2, seed=jax.random.key(1)).shape == (2, 2)
@@ -622,9 +598,7 @@ class TestDistBatchedCoef:
 
     def test_two_dimensional_batch_shape(self):
         coef = jax.random.normal(jax.random.key(1), (3, 2, knots.nparam))
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=True
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
         normal = normal_with_batch((3, 2))
 
         assert dist.batch_shape == (3, 2)
@@ -636,67 +610,13 @@ class TestDistBatchedCoef:
         assert dist.stddev().shape == (3, 2)
 
 
-class TestGaussianPseudoDistribution:
-    def test_spline_only_identity_methods_match_tfp_batch_broadcasting(self):
-        batch_shape = (2, 3)
-        loc = jnp.zeros(batch_shape)
-        scale = jnp.ones(batch_shape)
-        dist = GaussianPseudoTransformationDist(
-            coef=jnp.array([0.0]), loc=loc, scale=scale
-        )
-        reference = tfd.Normal(loc=loc, scale=scale)
-        for value in (jnp.array(0.75), jnp.full((5, 1, 1), 0.75)):
-            expected_shape = reference.log_prob(value).shape
-            expected_value = jnp.broadcast_to(value, expected_shape)
-
-            transformed, logdet = dist.transformation_and_logdet_spline(value)
-            assert transformed.shape == expected_shape
-            assert logdet.shape == expected_shape
-            assert jnp.array_equal(transformed, expected_value)
-            assert jnp.array_equal(logdet, jnp.zeros(expected_shape))
-            assert jnp.array_equal(dist._transformation_spline(value), expected_value)
-            assert jnp.array_equal(
-                dist.inverse_transformation_spline(value), expected_value
-            )
-
-        bad_value = jnp.ones((5, 2))
-        with pytest.raises((TypeError, ValueError)):
-            reference.log_prob(bad_value)
-        with pytest.raises((TypeError, ValueError)):
-            dist.transformation_and_logdet_spline(bad_value)
-
-    def test_gaussian_pseudo_matches_normal(self):
-        loc = jnp.array([0.0, 1.0])
-        scale = jnp.array([1.0, 2.0])
-        dist = GaussianPseudoTransformationDist(
-            coef=jnp.array([0.0]),
-            loc=loc,
-            scale=scale,
-            gauss_legendre_order=8,
-        )
-        normal = tfd.Normal(loc=loc, scale=scale)
-
-        assert dist.gauss_legendre_order == 8
-        value = jnp.ones((5, 1))
-        probs = jnp.full((5, 1), 0.25)
-
-        assert jnp.allclose(dist.log_prob(value), normal.log_prob(value))
-        assert jnp.allclose(dist.cdf(value), normal.cdf(value))
-        assert jnp.allclose(dist.quantile(probs), normal.quantile(probs))
-        assert jnp.allclose(dist.mean(), normal.mean())
-        assert jnp.allclose(dist.stddev(), normal.stddev())
-        assert dist.sample(3, seed=jax.random.key(1)).shape == (3, 2)
-
-
 class TestDistGPTM:
     def test_shared_onion_batching_matches_tfp_layout(self):
         knots = OnionKnots(-4.0, 4.0, nparam=11)
         bs = OnionSpline(knots.knots)
         b = 3
         coef = jax.random.normal(jax.random.key(1), (b, knots.nparam))
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=False
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
 
         assert dist.batch_shape == (b,)
         assert dist.log_prob(1.0).shape == (b,)
@@ -711,9 +631,7 @@ class TestDistGPTM:
         k = jax.random.key(1)
 
         coef = jax.random.normal(k, (n, knots.nparam))
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=False
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
 
         x = jax.random.normal(k, (n,))
         assert dist.batch_shape == (n,)
@@ -723,9 +641,7 @@ class TestDistGPTM:
 
         b = 13
         coef = jax.random.normal(k, (b, n, knots.nparam))
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=False
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
 
         assert dist.batch_shape == (b, n)
         assert dist.log_prob(x).shape == (b, n)
@@ -743,9 +659,7 @@ class TestDistGPTM:
         n = 7
         b = 3
         coef = jax.random.normal(jax.random.key(1), (b, n, knots.nparam))
-        dist = ptm.LocScaleTransformationDist(
-            coef=coef, loc=0.0, scale=1.0, bspline=bs, batched=False
-        )
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
 
         prob = jnp.linspace(0.1, 0.9, b * n).reshape(b, n)
         q = dist.quantile(prob)
@@ -905,19 +819,3 @@ class TestResponseMoments:
         assert 32 not in orders and 64 not in orders
         assert np.isfinite(low.mean())
         assert 32 in orders
-
-    def test_exact_gaussian_pseudo_moments(self):
-        dist = GaussianPseudoTransformationDist(
-            coef=jnp.zeros(1), loc=3.0, scale=2.0, response_moment_order=16
-        )
-        expected = tfd.Normal(3.0, 2.0)
-        np.testing.assert_allclose(
-            dist.mean(), jnp.broadcast_to(expected.mean(), dist.batch_shape)
-        )
-        np.testing.assert_allclose(
-            dist.variance(), jnp.broadcast_to(expected.variance(), dist.batch_shape)
-        )
-        diagnostic = dist.moment_quadrature_diagnostic(target="response")
-        np.testing.assert_allclose(diagnostic["mean"], dist.mean())
-        assert bool(diagnostic["ok"])
-        assert dist.response_moment_order == 16
