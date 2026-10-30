@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = "==3.13.*"
 resolution-markers = [
     "sys_platform == 'emscripten'",
@@ -900,8 +900,8 @@ wheels = [
 
 [[package]]
 name = "liesel"
-version = "0.5.4"
-source = { registry = "https://pypi.org/simple" }
+version = "0.6.0.dev0+optim.1"
+source = { git = "https://github.com/liesel-devs/liesel.git?branch=vi-modernization#a13147ab3ee03b5066d7cc17c4c06354364d8ba1" }
 dependencies = [
     { name = "arviz" },
     { name = "blackjax" },
@@ -913,15 +913,12 @@ dependencies = [
     { name = "numpy" },
     { name = "optax" },
     { name = "pandas" },
+    { name = "plotnine" },
     { name = "pydot" },
     { name = "scipy" },
     { name = "seaborn" },
     { name = "tfp-nightly" },
     { name = "tqdm" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/36/5d/d2b142588904379b117bf65c4ffd861c32e020ba592167c1d498936602ce/liesel-0.5.4.tar.gz", hash = "sha256:2e4bee869730ef49b8881619555895fec2276d46e7cbb4b2547560df4e4db77c", size = 7866879, upload-time = "2026-09-13T16:54:33.224Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/4a/f10ca01e4e46e5c4bebdde7f6796eb790b7da9c9a70ed3291b995f0110ea/liesel-0.5.4-py3-none-any.whl", hash = "sha256:7b943bc9882a403d960895de27839c2477962bb8e41d7f6af0518187f4a66dc9", size = 170235, upload-time = "2026-09-13T16:54:31.463Z" },
 ]
 
 [[package]]
@@ -973,7 +970,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "interpax", specifier = ">=0.3.14" },
-    { name = "liesel", specifier = ">=0.5" },
+    { name = "liesel", git = "https://github.com/liesel-devs/liesel.git?branch=vi-modernization" },
     { name = "liesel-gam", specifier = ">=0.2.2" },
     { name = "plotnine", specifier = ">=0.14.5" },
     { name = "properscoring", specifier = ">=0.1" },
