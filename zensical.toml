@@ -20,8 +20,8 @@ adr/
 nav = [
   { "Getting started" = "index.md" },
   { "Guides" = [
-    { "Fit a modern GPTM" = "guides/modern.md" },
-    { "Fit the original PTM" = "guides/original.md" },
+    { "Fit a conditional-shape PTM" = "guides/conditional-shape.md" },
+    { "Fit a fixed-shape PTM" = "guides/fixed-shape.md" },
     { "Inspect distribution effects" = "guides/term-distributions.md" },
   ] },
   { "API reference" = [

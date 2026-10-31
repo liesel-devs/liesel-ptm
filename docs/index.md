@@ -8,6 +8,21 @@ estimate the model with optimization, variational inference, or MCMC.
 priors, and Gaussian IWLS proposals. Liesel-PTM provides transformations,
 distributions, computed intercepts, and distribution summaries and plots.
 
+## Model variants
+
+The documentation follows the terminology of the
+[conditional-shape PTM paper](https://arxiv.org/abs/2609.02662):
+
+- **Conditional-shape PTM:** the standardized distributional shape can vary with
+  covariates, alongside location and scale.
+- **Fixed-shape PTM:** one standardized shape is shared across covariate values,
+  while location and scale can vary. The shared shape is estimated from the data.
+
+Here, shape describes the distribution after location and scale have been
+separated. The fixed-shape model has the location-scale structure introduced in
+the [first PTM paper](https://doi.org/10.1080/10618600.2026.2703269). Its
+computed-intercept formulation is covered in the [fixed-shape guide](guides/fixed-shape.md).
+
 ## Install
 
 Requires Python 3.13. Until Liesel releases the required optimization and VI APIs,
@@ -73,9 +88,9 @@ spline. The [PTMDist reference][liesel_ptm.PTMDist] describes the available opti
 
 ## Fit, predict, and inspect results
 
-- [Fit a modern GPTM](guides/modern.md): define covariate effects on location, scale,
+- [Fit a conditional-shape PTM](guides/conditional-shape.md): define covariate effects on location, scale,
   and shape; fit with staged optimization and VI; predict at new inputs.
-- [Fit the original PTM](guides/original.md): use shared shape and computed
+- [Fit a fixed-shape PTM](guides/fixed-shape.md): use shared shape and computed
   intercepts with IWLS and NUTS sampling.
 - [Inspect distribution effects](guides/term-distributions.md): choose summaries
   and plots for individual terms or full conditional distributions.
@@ -85,13 +100,21 @@ The [plotting notebook](https://github.com/liesel-devs/liesel-ptm/blob/main/demo
 also illustrates smooth, categorical, tensor, and spatial effects with simulated
 coefficient draws.
 
-## Paper and application examples
+## Papers and application examples
+
+The conditional-shape extension is described in:
+
+Brachem, J., & Kneib, T. (2026).
+[Reconciling Interpretability with Covariate-Dependent Shape Flexibility in Penalized Transformation Models for Distributional Regression](https://arxiv.org/abs/2609.02662).
+*arXiv preprint*.
+
+The first PTM paper introduces the fixed-shape location-scale model:
 
 Brachem, J., Wiemann, P. F. V., & Kneib, T. (2026).
 [Bayesian Penalized Transformation Models: Structured Additive Location-Scale Regression for Arbitrary Conditional Distributions](https://doi.org/10.1080/10618600.2026.2703269).
 *Journal of Computational and Graphical Statistics*.
 
-Application examples are included in the
+Application examples for the first paper are included in its
 [supplementary materials](https://github.com/liesel-devs/ptm-supplement).
 
 ## Acknowledgements and funding

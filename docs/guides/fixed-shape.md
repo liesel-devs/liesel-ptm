@@ -1,10 +1,17 @@
----
-title: Fit the original PTM
----
+# Fit a fixed-shape PTM
 
-Fit the original PTM with a shared transformation shape and computed location and
-log-scale intercepts. This follows the original reference workflow using current
-Liesel and liesel-gam components.
+
+Fit a fixed-shape PTM: location and scale vary with covariates, while one estimated
+standardized distributional shape is shared across observations. This is the
+location-scale structure introduced in the
+[first PTM paper](https://doi.org/10.1080/10618600.2026.2703269).
+The example follows that paper’s computed-intercept formulation and MCMC workflow
+using Liesel and liesel-gam components.
+
+You can also fit a fixed-shape PTM using the affine standardization in the
+[conditional-shape guide](conditional-shape.md): retain the shape intercept and
+omit the covariate-dependent shape terms. The shared-shape restriction and the
+choice of intercept formulation are separate model choices.
 
 Run the cells in a fresh session with the [checkout environment](../contributing.md#build-the-documentation).
 Graphviz is needed for the graph. The 24 synthetic observations, 80 adaptation
@@ -13,7 +20,7 @@ chains and inspect diagnostics before drawing scientific conclusions.
 
 ## Set up the data
 
-As in the [modern GPTM](modern.md#set-up-the-data), transform a standardized response
+As in the [conditional-shape PTM](conditional-shape.md#set-up-the-data), transform a standardized response
 to a normal reference scale. Here the shape coefficients are shared by all
 observations. Compute the location and log-scale intercepts from the training data
 and the remaining predictors so the training residuals have empirical mean zero
@@ -21,7 +28,7 @@ and standard deviation one. Those intercepts change at each parameter draw; they
 are not independently sampled parameters. Do not also center or scale the spline
 distribution in this model.
 
-```{python}
+``` python
 import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_gam as gam
@@ -32,7 +39,7 @@ from IPython.display import Markdown
 import liesel_ptm as ptm
 ```
 
-```{python}
+``` python
 x = np.linspace(-1.0, 1.0, 24)
 y = 1.0 + 0.5 * x + np.exp(0.15 * x) * np.random.default_rng(42).normal(size=x.size)
 registry = gam.PandasRegistry(pd.DataFrame({"x": x}))
@@ -50,7 +57,7 @@ Construct the location and log-scale terms without intercepts, then supply
 The centered location smooth uses an inverse-gamma smoothing-variance prior, which
 allows a Gibbs update. The shared shape intercept uses an unclipped Weibull prior.
 
-```{python}
+``` python
 loc_terms = gam.AdditivePredictor("loc_terms", intercept=False)
 log_scale_terms = gam.AdditivePredictor("log_scale_terms", intercept=False)
 loc_builder = gam.TermBuilder(registry, prefix_names_by="m.")
@@ -82,7 +89,7 @@ The shape has six coefficients constrained to sum to zero. There are no
 covariate-dependent shape terms. Use the PTM spline and disable its centering and
 scaling corrections for this computed-intercept workflow.
 
-```{python}
+``` python
 response = lsl.Var.new_obs(
     y,
     dist=ptm.PTMDist(
@@ -99,10 +106,11 @@ response = lsl.Var.new_obs(
 model = lsl.Model(response)
 ```
 
-```{python}
-#| fig-alt: "Original PTM graph with computed intercepts and shared shape."
+``` python
 model.plot(width=24, height=12)
 ```
+
+![Fixed-shape PTM graph with computed intercepts and shared shape.](fixed-shape_files/figure-commonmark/cell-6-output-1.png)
 
 The response data feed both computed intercepts. This is why new-data prediction
 must keep their values from the fitted model.
@@ -114,7 +122,7 @@ Gaussian IWLS proposals for location and scale, the smoothing-variance Gibbs upd
 and a joint NUTS block for shape. It also records both computed intercepts at every
 draw. Liesel handles scheduling and sampling.
 
-```{python}
+``` python
 legacy = ptm.LegacyPTM(model)
 builder = legacy.setup_mcmc(
     loc_terms=model.vars["loc_terms"],
@@ -131,7 +139,7 @@ engine.sample_all_epochs()
 samples = engine.get_results().get_posterior_samples()
 ```
 
-```{python}
+``` python
 intercept_shapes = pd.DataFrame(
     {
         "intercept": ["beta0", "gamma0"],
@@ -140,6 +148,11 @@ intercept_shapes = pd.DataFrame(
 )
 Markdown(intercept_shapes.to_markdown(index=False))
 ```
+
+| intercept | shape   |
+|:----------|:--------|
+| beta0     | (2, 12) |
+| gamma0    | (2, 12) |
 
 Each intercept array has axes `(chain, draw)`. Retaining these arrays is necessary
 for prediction. With only 12 draws per chain, convergence diagnostics and posterior
@@ -151,7 +164,7 @@ summaries are too unstable for inference.
 prediction graph using the recorded training intercepts. It preserves the fitted
 graph and does not recompute intercepts from new data.
 
-```{python}
+``` python
 prediction = legacy.predict(
     samples,
     predict=["loc", "scale", "delta"],
@@ -159,7 +172,7 @@ prediction = legacy.predict(
 )
 ```
 
-```{python}
+``` python
 prediction_shapes = pd.DataFrame(
     {
         "predictor": list(prediction),
@@ -169,10 +182,16 @@ prediction_shapes = pd.DataFrame(
 Markdown(prediction_shapes.to_markdown(index=False))
 ```
 
+| predictor | shape      |
+|:----------|:-----------|
+| delta     | (2, 12, 6) |
+| loc       | (2, 12, 2) |
+| scale     | (2, 12, 2) |
+
 Location and scale have axes `(chain, draw, new observation)`. Shape retains its
 shared coefficient axis, with no new-observation axis. These values describe the
 conditional parameters rather than simulated future responses.
 
 Use the [distribution-effects guide](term-distributions.md) to inspect the shared
 shape or conditional response distributions. For a model with covariate-dependent
-shape and a variational fit, continue with the [modern GPTM guide](modern.md).
+shape and a variational fit, continue with the [conditional-shape PTM guide](conditional-shape.md).

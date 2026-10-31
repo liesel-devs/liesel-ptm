@@ -1,10 +1,14 @@
 ---
-title: Fit a modern GPTM
+title: Fit a conditional-shape PTM
 ---
 
-Build a generalized penalized transformation model (GPTM) with location, scale,
-and shape effects, fit it with variational inference (VI), and predict at new
-covariate values. This example uses 24 synthetic observations so it runs quickly.
+Fit a conditional-shape penalized transformation model (PTM), in which covariates
+can change the conditional mean, standard deviation, and standardized distributional
+shape. Use variational inference (VI) to fit the model, then predict at new covariate
+values. See [model variants](../index.md#model-variants) for the connection to the
+fixed-shape PTM from the first paper.
+
+This example uses 24 synthetic observations so it runs quickly.
 The two training epochs and three posterior draws demonstrate the workflow;
 they do not establish convergence or support substantive inference.
 
@@ -13,8 +17,9 @@ before running the cells from top to bottom. Graphviz is needed for the model gr
 
 ## Set up the data
 
-The observed response is $y_i$. Its conditional location $\mu_i$, positive scale
-$\sigma_i$, and shape coefficients $\delta_i$ depend on the covariates. The
+The observed response is $y_i$. Its conditional mean $\mu_i$ (location), standard
+deviation $\sigma_i$ (scale), and shape coefficients $\delta_i$ depend on the
+covariates. The
 transformation maps $r_i = (y_i - \mu_i) / \sigma_i$ to a standard normal scale:
 
 $$
@@ -105,7 +110,7 @@ model = lsl.Model(response)
 ```
 
 ```{python}
-#| fig-alt: "GPTM graph with location, scale, and covariate-dependent shape."
+#| fig-alt: "Conditional-shape PTM graph with mean, scale, and shape predictors."
 model.plot(width=24, height=12)
 ```
 

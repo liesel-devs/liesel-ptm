@@ -11,11 +11,18 @@ Liesel provides inference and model graphs; liesel-gam provides predictors, term
 priors, and Gaussian IWLS proposals. This library provides PTM transformations,
 distributions, computed intercepts, and distribution summaries and plots.
 
-Learn more in the paper:
+The library supports **conditional-shape PTMs**, whose standardized distributional
+shape varies with covariates, and **fixed-shape PTMs**, which estimate one shared
+shape alongside covariate-dependent location and scale. These terms follow the
+conditional-shape extension:
+
+Brachem, J., & Kneib, T. (2026). [Reconciling Interpretability with Covariate-Dependent Shape Flexibility in Penalized Transformation Models for Distributional Regression](https://arxiv.org/abs/2609.02662). *arXiv preprint*.
+
+The first PTM paper introduces the fixed-shape location-scale model:
 
 Brachem, J., Wiemann, P. F. V., & Kneib, T. (2026). [Bayesian Penalized Transformation Models: Structured Additive Location-Scale Regression for Arbitrary Conditional Distributions](https://doi.org/10.1080/10618600.2026.2703269). *Journal of Computational and Graphical Statistics*.
 
-Application examples are included in the supplementary materials for the paper, which
+Application examples are included in the supplementary materials for the first paper, which
 can be found here: https://github.com/liesel-devs/ptm-supplement
 
 ## Installation
@@ -76,8 +83,8 @@ model.pred.loc += builder.ps("x", k=10)
 
 For fitting, prediction, and more model components, see the executable guides:
 
-- [Modern GPTM](https://liesel-devs.github.io/liesel-ptm/guides/modern/): location, scale, and shape predictors; optimization and VI.
-- [Original PTM](https://liesel-devs.github.io/liesel-ptm/guides/original/): shared shape and computed intercepts.
+- [Conditional-shape PTM](https://liesel-devs.github.io/liesel-ptm/guides/conditional-shape/): location, scale, and shape predictors; optimization and VI.
+- [Fixed-shape PTM](https://liesel-devs.github.io/liesel-ptm/guides/fixed-shape/): shared shape and computed intercepts.
 
 `PTM` is a Liesel `Model`; add native liesel-gam terms through `.pred.loc`,
 `.pred.scale`, and `.pred.shape`, then use ordinary Liesel inference. `nshape`

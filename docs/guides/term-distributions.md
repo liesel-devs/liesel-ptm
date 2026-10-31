@@ -2,7 +2,7 @@
 
 Choose between an individual transformation term's effect and the conditional response
 distribution at specified covariate values. The examples below are snippets for a fitted
-model and its posterior `samples`; the [modern GPTM guide](modern.md) provides a
+model and its posterior `samples`; the [conditional-shape PTM guide](conditional-shape.md) provides a
 complete runnable workflow. The [plotting
 notebook](https://github.com/liesel-devs/liesel-ptm/blob/main/demo/term-distribution-plots.ipynb)
 contains runnable tensor and spatial examples with simulated coefficient draws. For

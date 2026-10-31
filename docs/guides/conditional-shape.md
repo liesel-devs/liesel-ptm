@@ -1,9 +1,13 @@
-# Fit a modern GPTM
+# Fit a conditional-shape PTM
 
 
-Build a generalized penalized transformation model (GPTM) with location, scale,
-and shape effects, fit it with variational inference (VI), and predict at new
-covariate values. This example uses 24 synthetic observations so it runs quickly.
+Fit a conditional-shape penalized transformation model (PTM), in which covariates
+can change the conditional mean, standard deviation, and standardized distributional
+shape. Use variational inference (VI) to fit the model, then predict at new covariate
+values. See [model variants](../index.md#model-variants) for the connection to the
+fixed-shape PTM from the first paper.
+
+This example uses 24 synthetic observations so it runs quickly.
 The two training epochs and three posterior draws demonstrate the workflow;
 they do not establish convergence or support substantive inference.
 
@@ -12,8 +16,9 @@ before running the cells from top to bottom. Graphviz is needed for the model gr
 
 ## Set up the data
 
-The observed response is $y_i$. Its conditional location $\mu_i$, positive scale
-$\sigma_i$, and shape coefficients $\delta_i$ depend on the covariates. The
+The observed response is $y_i$. Its conditional mean $\mu_i$ (location), standard
+deviation $\sigma_i$ (scale), and shape coefficients $\delta_i$ depend on the
+covariates. The
 transformation maps $r_i = (y_i - \mu_i) / \sigma_i$ to a standard normal scale:
 
 $$
@@ -107,7 +112,7 @@ model = lsl.Model(response)
 model.plot(width=24, height=12)
 ```
 
-![GPTM graph with location, scale, and covariate-dependent shape.](modern_files/figure-commonmark/cell-7-output-1.png)
+![Conditional-shape PTM graph with mean, scale, and shape predictors.](conditional-shape_files/figure-commonmark/cell-7-output-1.png)
 
 The graph shows separate location, scale, and shape predictors feeding the response.
 The smoothing variance belongs to the shape intercept’s prior.
@@ -248,7 +253,7 @@ effect = ptm.plot_1d_smooth_dist(
 effect
 ```
 
-<img src="modern_files/figure-commonmark/cell-14-output-1.png" width="336" height="240" alt="Density ridges for the smooth shape effect and shape intercept." />
+<img src="conditional-shape_files/figure-commonmark/cell-14-output-1.png" width="336" height="240" alt="Density ridges for the smooth shape effect and shape intercept." />
 
 Compare the density shapes across covariate values. This very short fit illustrates
 the display, so differences and uncertainty bands should not be interpreted as

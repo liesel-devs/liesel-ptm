@@ -73,7 +73,7 @@ render script, figure filters, environment files, and generated artifacts. It ca
 edited outputs too. If you add an external data file to a guide, include it in
 `snapshot()` in `scripts/docs.py` so data changes also require a refresh.
 
-For a quick iteration, `quarto render docs/guides/modern.qmd` always executes that
+For a quick iteration, `quarto render docs/guides/conditional-shape.qmd` always executes that
 document, even with freezing enabled. Use the fresh-render command above before
 committing so all stored results and the manifest agree. See Quarto's
 [execution and freeze documentation](https://quarto.org/docs/projects/code-execution.html)
@@ -90,10 +90,10 @@ For changed Python cells, convert the source to a scratch notebook and check the
 copy with Ruff and ty; edit the `.qmd`, not the converted notebook:
 
 ```bash
-quarto convert docs/guides/modern.qmd --output /tmp/ptm-modern.ipynb
-uv run --locked ruff check /tmp/ptm-modern.ipynb
-uv run --locked ruff format --diff /tmp/ptm-modern.ipynb
-uvx ty check /tmp/ptm-modern.ipynb
+quarto convert docs/guides/conditional-shape.qmd --output /tmp/ptm-conditional-shape.ipynb
+uv run --locked ruff check /tmp/ptm-conditional-shape.ipynb
+uv run --locked ruff format --diff /tmp/ptm-conditional-shape.ipynb
+uvx ty check /tmp/ptm-conditional-shape.ipynb
 ```
 
 Inspect the affected site pages, including graphs, alt text, equations, and links.
