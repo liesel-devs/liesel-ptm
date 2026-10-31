@@ -1,11 +1,15 @@
 # Models and transformations
 
-Connect Liesel predictors to a response distribution with `PTMDist`. Use
-`LegacyPTM` for the computed-intercept workflow. The transformation distributions
-also support direct evaluation outside a model graph.
+Connect Liesel predictors to a response distribution with
+[PTMDist][liesel_ptm.PTMDist]. The current conditional-shape and fixed-shape PTMs
+use the onion spline and affine standardization. Use
+[LegacyPTM][liesel_ptm.LegacyPTM] for the legacy computed-intercept workflow.
+The transformation distributions also support direct evaluation outside a model graph.
 
-See the [conditional-shape PTM guide](../guides/conditional-shape.md) for optimization and VI, or the
-[fixed-shape PTM guide](../guides/fixed-shape.md) for computed intercepts and MCMC.
+See the [conditional-shape](../guides/conditional-shape.md) and
+[fixed-shape](../guides/fixed-shape.md) guides for the current formulation, or the
+[legacy guide](../guides/legacy.md) for the earlier transformation, computed
+intercepts, and MCMC workflow.
 
 ::: liesel_ptm.PTMDist
 

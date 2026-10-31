@@ -10,8 +10,9 @@ distributions, computed intercepts, and distribution summaries and plots.
 
 ## Model variants
 
-The documentation follows the terminology of the
-[conditional-shape PTM paper](https://arxiv.org/abs/2609.02662):
+The current formulation, described in the
+[conditional-shape PTM paper](https://arxiv.org/abs/2609.02662), uses the onion
+spline and affine standardization of the transformation. It has two variants:
 
 - **Conditional-shape PTM:** the standardized distributional shape can vary with
   covariates, alongside location and scale.
@@ -19,9 +20,14 @@ The documentation follows the terminology of the
   while location and scale can vary. The shared shape is estimated from the data.
 
 Here, shape describes the distribution after location and scale have been
-separated. The fixed-shape model has the location-scale structure introduced in
-the [first PTM paper](https://doi.org/10.1080/10618600.2026.2703269). Its
-computed-intercept formulation is covered in the [fixed-shape guide](guides/fixed-shape.md).
+separated. Both variants use the same transformation construction and
+standardization, so location and scale represent the conditional mean and standard
+deviation.
+
+The **legacy PTM** retains the PTM spline transformation and computed-intercept
+handling from the [first PTM paper](https://doi.org/10.1080/10618600.2026.2703269).
+It also has a shared shape. See the [legacy guide](guides/legacy.md) for that
+formulation and its MCMC workflow.
 
 ## Install
 
@@ -37,9 +43,9 @@ For the tested checkout environment, follow the [contributor setup](contributing
 
 ## Build a model
 
-This small model has a smooth location effect, constant scale, and a shared
-transformation shape. The data are synthetic. Predictors and terms come from
-liesel-gam.
+This fixed-shape PTM has a smooth location effect, constant scale, and a shared
+transformation shape. It uses the current formulation. The data are synthetic;
+predictors and terms come from liesel-gam.
 
 ```python
 import jax
@@ -57,7 +63,7 @@ loc = gam.AdditivePredictor("loc")
 loc += builder.ps("x", k=10)
 scale = gam.AdditivePredictor("scale", inv_link=jnp.exp)
 
-knots = ptm.PTMKnots(-4.0, 4.0, nparam=6)
+knots = ptm.OnionKnots(-4.0, 4.0, nparam=6)
 shape = gam.MVAdditivePredictor.from_random_walk(
     "delta",
     ndim=knots.nparam,
@@ -73,7 +79,7 @@ response = lsl.Var.new_obs(
         loc=loc,
         scale=scale,
         shape=shape,
-        bspline="ptm",
+        bspline="onion",
         centered=True,
         scaled=True,
     ),
@@ -90,7 +96,9 @@ spline. The [PTMDist reference][liesel_ptm.PTMDist] describes the available opti
 
 - [Fit a conditional-shape PTM](guides/conditional-shape.md): define covariate effects on location, scale,
   and shape; fit with staged optimization and VI; predict at new inputs.
-- [Fit a fixed-shape PTM](guides/fixed-shape.md): use shared shape and computed
+- [Fit a fixed-shape PTM](guides/fixed-shape.md): keep a shared shape in the current
+  formulation, using the same standardization and fitting workflow.
+- [Fit a legacy PTM](guides/legacy.md): use the legacy transformation and computed
   intercepts with IWLS and NUTS sampling.
 - [Inspect distribution effects](guides/term-distributions.md): choose summaries
   and plots for individual terms or full conditional distributions.
@@ -108,7 +116,8 @@ Brachem, J., & Kneib, T. (2026).
 [Reconciling Interpretability with Covariate-Dependent Shape Flexibility in Penalized Transformation Models for Distributional Regression](https://arxiv.org/abs/2609.02662).
 *arXiv preprint*.
 
-The first PTM paper introduces the fixed-shape location-scale model:
+The legacy transformation and intercept construction are described in the first
+PTM paper:
 
 Brachem, J., Wiemann, P. F. V., & Kneib, T. (2026).
 [Bayesian Penalized Transformation Models: Structured Additive Location-Scale Regression for Arbitrary Conditional Distributions](https://doi.org/10.1080/10618600.2026.2703269).

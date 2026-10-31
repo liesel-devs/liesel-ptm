@@ -1,18 +1,17 @@
 ---
-title: Fit a fixed-shape PTM
+title: Fit a legacy PTM
 ---
 
-Fit a fixed-shape PTM: location and scale vary with covariates, while one estimated
-standardized distributional shape is shared across observations. This is the
-location-scale structure introduced in the
-[first PTM paper](https://doi.org/10.1080/10618600.2026.2703269).
-The example follows that paper's computed-intercept formulation and MCMC workflow
+Fit the legacy PTM from the
+[first PTM paper](https://doi.org/10.1080/10618600.2026.2703269), using its PTM spline
+transformation and computed location and log-scale intercepts. Its shape is shared
+across observations. The example follows that formulation and its MCMC workflow
 using Liesel and liesel-gam components.
 
-You can also fit a fixed-shape PTM using the affine standardization in the
-[conditional-shape guide](conditional-shape.md): retain the shape intercept and
-omit the covariate-dependent shape terms. The shared-shape restriction and the
-choice of intercept formulation are separate model choices.
+The current [conditional-shape](conditional-shape.md) and
+[fixed-shape](fixed-shape.md) PTMs both use the onion spline and affine
+standardization of the transformation. The legacy formulation uses a different
+transformation construction and computes the intercepts from training residuals.
 
 Run the cells in a fresh session with the [checkout environment](../contributing.md#build-the-documentation).
 Graphviz is needed for the graph. The 24 synthetic observations, 80 adaptation
@@ -108,7 +107,7 @@ model = lsl.Model(response)
 ```
 
 ```{python}
-#| fig-alt: "Fixed-shape PTM graph with computed intercepts and shared shape."
+#| fig-alt: "Legacy PTM graph with computed intercepts and shared shape."
 model.plot(width=24, height=12)
 ```
 

@@ -1,4 +1,4 @@
-"""Fixed-shape PTMs with computed intercepts on Liesel and liesel-gam components."""
+"""Legacy PTMs with the PTM spline transformation and computed intercepts."""
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -282,7 +282,7 @@ class LegacyPTM(lsl.Model):
         iwls_kwargs: Mapping[str, Any] | None = None,
         shape_spec: gs.MCMCSpec | None = None,
     ) -> gs.EngineBuilder:
-        """Configure Gaussian-proposal IWLS and shape NUTS/HMC for a fixed-shape PTM.
+        """Configure Gaussian-proposal IWLS and shape NUTS/HMC for a legacy PTM.
 
         Parameters
         ----------
@@ -425,7 +425,7 @@ class LegacyPTM(lsl.Model):
         newdata: gs.PositionInput | None = None,
         chunk_size: int | None = 64,
     ) -> dict[str, Any]:
-        """Predict from a fixed-shape PTM using its recorded intercept draws.
+        """Predict from a legacy PTM using its recorded intercept draws.
 
         Parameters
         ----------

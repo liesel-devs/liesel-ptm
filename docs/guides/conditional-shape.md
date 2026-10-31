@@ -4,8 +4,8 @@
 Fit a conditional-shape penalized transformation model (PTM), in which covariates
 can change the conditional mean, standard deviation, and standardized distributional
 shape. Use variational inference (VI) to fit the model, then predict at new covariate
-values. See [model variants](../index.md#model-variants) for the connection to the
-fixed-shape PTM from the first paper.
+values. See [model variants](../index.md#model-variants) for the fixed-shape variant
+of this formulation and the separate legacy PTM.
 
 This example uses 24 synthetic observations so it runs quickly.
 The two training epochs and three posterior draws demonstrate the workflow;

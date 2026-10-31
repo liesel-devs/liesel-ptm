@@ -22,6 +22,7 @@ nav = [
   { "Guides" = [
     { "Fit a conditional-shape PTM" = "guides/conditional-shape.md" },
     { "Fit a fixed-shape PTM" = "guides/fixed-shape.md" },
+    { "Fit a legacy PTM" = "guides/legacy.md" },
     { "Inspect distribution effects" = "guides/term-distributions.md" },
   ] },
   { "API reference" = [
