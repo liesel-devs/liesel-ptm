@@ -5,6 +5,7 @@ site_url = "https://liesel-devs.github.io/liesel-ptm/"
 repo_url = "https://github.com/liesel-devs/liesel-ptm"
 docs_dir = "docs"
 site_dir = "site"
+extra_css = ["stylesheets/plots.css"]
 exclude_docs = """
 *.qmd
 _quarto.yml

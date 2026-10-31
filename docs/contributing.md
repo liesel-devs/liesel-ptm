@@ -60,17 +60,18 @@ uv run --locked --group docs zensical build --clean --strict
 ```
 
 The fresh render removes the guides' previous frozen results and generated asset
-directories, runs both guides with the current environment, and records a manifest
-only after the render succeeds. The renderer allows ten minutes for both guides,
+directories, runs all executable guides in the current environment, and records a manifest
+only after the render succeeds. The renderer allows ten minutes for all guides,
 stops its Quarto and kernel processes on timeout or interruption, and fails on
 execution errors. Kernels shut down after rendering. CI also bounds the whole job.
 
 Commit the `.qmd` sources together with their rendered `.md` files, figure
 directories, `docs/_freeze/`, and `docs/guide-outputs.json`. Do not edit the manifest
 or frozen results by hand. The check compares hashes of the library, reference
-scripts, all Quarto sources (including shared fragments), Quarto configuration,
-render script, figure filters, environment files, and generated artifacts. It catches missing or
-edited outputs too. If you add an external data file to a guide, include it in
+scripts, all Quarto sources (including shared fragments), bundled example data,
+Quarto configuration, render script, figure filters, environment files, and
+generated artifacts. It catches missing or edited outputs too. If you add an
+external data file to a guide, include it in
 `snapshot()` in `scripts/docs.py` so data changes also require a refresh.
 
 For a quick iteration, `quarto render docs/guides/conditional-shape.qmd` always executes that

@@ -115,5 +115,5 @@ Use standard Liesel scheduling and sampling, then `legacy.predict()` for predict
 with the recorded intercepts. The linked legacy example contains the complete workflow,
 including a smoothing update. Its Weibull variance prior is unclipped.
 
-See the [plotting notebook](demo/term-distribution-plots.ipynb) for distribution effects.
-It illustrates plots with simulated coefficient draws.
+See the [plotting guide](https://liesel-devs.github.io/liesel-ptm/guides/term-distributions/)
+for rendered distribution-effect plots using simulated coefficient draws.

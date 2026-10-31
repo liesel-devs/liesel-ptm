@@ -19,6 +19,7 @@ from scripts.docs import MANIFEST, check, snapshot
         "docs/guides/example.qmd",
         "docs/_includes/_setup.qmd",
         "docs/filters/alt-text.lua",
+        "demo/data/columb.csv",
         "uv.lock",
         "docs/guides/example.md",
         "docs/guides/example_files/figure-gfm/plot.png",

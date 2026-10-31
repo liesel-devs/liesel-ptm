@@ -104,10 +104,6 @@ spline. The [PTMDist reference][liesel_ptm.PTMDist] describes the available opti
   and plots for individual terms or full conditional distributions.
 - [Look up the API](api/models.md): check arguments, defaults, and return values.
 
-The [plotting notebook](https://github.com/liesel-devs/liesel-ptm/blob/main/demo/term-distribution-plots.ipynb)
-also illustrates smooth, categorical, tensor, and spatial effects with simulated
-coefficient draws.
-
 ## Papers and application examples
 
 The conditional-shape extension is described in:

@@ -3,6 +3,7 @@ project:
   render:
     - guides/conditional-shape.qmd
     - guides/legacy.qmd
+    - guides/term-distributions.qmd
 format:
   gfm:
     variant: +tex_math_dollars
