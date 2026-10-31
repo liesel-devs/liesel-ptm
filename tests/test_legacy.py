@@ -179,16 +179,17 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
     samples = example_samples(model)
     before = [np.array(value) for value in jax.tree.leaves(model.state)]
     training_node = model.vars["beta0"].value_node[0].name
-    original_predict = lsl.Model.predict
+    original_submodel = lsl.Model.parental_submodel
 
     def inspect_graph(prediction_model, *args, **kwargs):
-        assert training_node not in prediction_model.nodes
-        assert "y" not in prediction_model.vars
-        assert prediction_model.vars["beta0"].strong
-        assert prediction_model.vars["gamma0"].strong
-        return original_predict(prediction_model, *args, **kwargs)
+        submodel = original_submodel(prediction_model, *args, **kwargs)
+        assert training_node not in submodel.nodes
+        assert "y" not in submodel.vars
+        assert submodel.vars["beta0"].strong
+        assert submodel.vars["gamma0"].strong
+        return submodel
 
-    monkeypatch.setattr(lsl.Model, "predict", inspect_graph)
+    monkeypatch.setattr(lsl.Model, "parental_submodel", inspect_graph)
     x = jnp.array([-0.8, 0.1, 0.6, 0.9])
     for chunk_size in (1, None):
         prediction = model.predict(
@@ -226,6 +227,20 @@ def test_prediction_defaults_and_model_log_likelihood_follow_liesel_interface():
         {name: value[0, 0] for name, value in samples.items()}
     )
     np.testing.assert_allclose(result[target][0, 0], manual.log_lik, atol=2e-5)
+
+
+def test_default_prediction_with_new_covariates_omits_unreplaced_observations():
+    model = reference_legacy.build_model()
+    samples = example_samples(model)
+    x = jnp.array([-0.5, 0.5])
+    result = model.predict(samples, newdata={"x": x})
+    assert "y" not in result
+    np.testing.assert_allclose(
+        result["loc"], samples["beta0"][..., None] + 0.4 * x, atol=2e-6
+    )
+    assert result["scale"].shape == (2, 3, 2)
+    result = model.predict(samples, newdata={"x": x, "y": jnp.zeros(2)})
+    assert result["y"].shape == (2, 3, 2)
 
 
 def test_prediction_accepts_known_unused_covariates_but_rejects_unknown_data():
@@ -303,7 +318,7 @@ def test_setup_rejects_overlap_and_unexplained_parameters():
     model = reference_legacy.build_model()
     extra = lsl.Var.new_param(0.0, dist=lsl.Dist(tfd.Normal, 0.0, 1.0), name="extra")
     model.add(extra)
-    with pytest.raises(ValueError, match="outside the supplied predictors"):
+    with pytest.raises(ValueError, match="outside .pred"):
         setup(model)
 
 
@@ -338,3 +353,7 @@ def test_setup_rejects_unconstrained_shape_and_invalid_shape_sampler():
     variables["delta"] = gam.MVAdditivePredictor.from_random_walk("delta", ndim=6)
     with pytest.raises(ValueError, match="sumzero_coef"):
         rebuild(variables)
+    # The native predictor remains mutable after construction; re-check its matrix.
+    model.vars["delta"].intercept.dimension_reparam.value = jnp.eye(6)[:, :5]
+    with pytest.raises(ValueError, match="sumzero_coef"):
+        setup(model)

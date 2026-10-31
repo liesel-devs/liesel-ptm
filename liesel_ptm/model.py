@@ -1,9 +1,10 @@
 """PTM models and their Liesel likelihood node."""
 
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
-from numbers import Integral
+from numbers import Integral, Real
 from typing import Literal
 
 import jax.numpy as jnp
@@ -47,6 +48,53 @@ def _validate_geometry(
         raise ValueError("bounds must contain two finite, strictly increasing values.")
 
 
+def _make_response(y: ArrayLike | Sequence[float] | lsl.Var) -> lsl.Var:
+    response = y if isinstance(y, lsl.Var) else lsl.Var.new_obs(y, name="y")
+    if (
+        response.model is not None
+        or response.dist_node is not None
+        or not response.observed
+    ):
+        raise ValueError(
+            "y must be an unowned observed variable without a distribution."
+        )
+    return response
+
+
+@contextmanager
+def _response_distribution(
+    model: lsl.Model, response: lsl.Var, distribution: lsl.Dist
+) -> Generator[None]:
+    try:
+        response.dist_node = distribution
+        yield
+    except Exception:
+        # Liesel may assign node ownership before failing to finish the graph.
+        for node in getattr(model, "nodes", {}).values():
+            if node.model is model:
+                node._unset_model()
+        response.dist_node = None
+        raise
+
+
+def _check_intercept_free(predictor: gam.AdditivePredictor) -> None:
+    if isinstance(predictor.intercept, lsl.Var) or jnp.any(predictor.intercept.value):
+        raise ValueError(f"{predictor.name!r} must be intercept-free.")
+
+
+def _check_scale(scale: gam.AdditivePredictor, *, legacy: bool) -> None:
+    # Liesel's deep copies do not preserve JAX callable identity. Nonzero probes
+    # also distinguish exp(2*x) from exp(x) when the predictor starts at zero.
+    probe = jnp.array([-1.0, 0.0, 1.0])
+    if legacy and (
+        not isinstance(scale.value_node, lsl.Calc)
+        or not jnp.allclose(scale.value_node.function(probe), jnp.exp(probe))
+    ):
+        raise ValueError("LegacyPTM scale must use inv_link=jnp.exp.")
+    if not jnp.all(jnp.isfinite(scale.value) & (scale.value > 0)):
+        raise ValueError("scale must have finite, positive values.")
+
+
 def _make_predictors(
     nshape: int,
     loc: gam.AdditivePredictor | None,
@@ -64,6 +112,13 @@ def _make_predictors(
         scale = gam.AdditivePredictor(
             "scale_terms" if legacy else "scale", inv_link=jnp.exp, intercept=not legacy
         )
+    _check_scale(scale, legacy=legacy)
+    if isinstance(shape_scale, bool):
+        raise TypeError("shape_scale must be a positive real number or a native scale.")
+    if isinstance(shape_scale, Real):
+        shape_scale = float(shape_scale)
+        if not np.isfinite(shape_scale) or shape_scale <= 0:
+            raise ValueError("shape_scale must be finite and positive.")
     if shape is None:
         shape = gam.MVAdditivePredictor.from_random_walk(
             "delta",
@@ -103,9 +158,11 @@ class PTM(lsl.Model):
         Location and log scale have flat-prior intercepts initialized at zero. Shape
         has a zero-initialized structured intercept and ``nshape - 1`` latent
         dimensions. A supplied shape must have the same dimension and constraint.
+        Supplied scale values must initially be finite and positive; other positive
+        links, such as softplus, are supported for modern PTMs.
     shape_scale
         Scale of the automatic shape intercept: a native scale variable,
-        :class:`liesel_gam.VarIGPrior`, or a fixed float. ``None`` creates
+        :class:`liesel_gam.VarIGPrior`, or a fixed positive real. ``None`` creates
         ``gam.scale_wb(0.1, scale=0.05)``: initial standard deviation 0.1 and an
         unclipped Weibull(1/2, 0.05) prior on its square. Configure this on the
         predictor itself when supplying ``shape``.
@@ -154,20 +211,12 @@ class PTM(lsl.Model):
         shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
     ) -> None:
         _validate_geometry(nshape, bounds, minimum=2)
+        response = _make_response(y)
         self.pred = _make_predictors(
             nshape, loc, scale, shape, shape_scale, legacy=False
         )
-        response = y if isinstance(y, lsl.Var) else lsl.Var.new_obs(y, name="y")
-        if (
-            response.model is not None
-            or response.dist_node is not None
-            or not response.observed
-        ):
-            raise ValueError(
-                "y must be an unowned observed variable without a distribution."
-            )
         knots = OnionKnots(*bounds, nparam=nshape)
-        response.dist_node = PTMDist(
+        distribution = PTMDist(
             knots.knots,
             loc=self.pred.loc,
             scale=self.pred.scale,
@@ -176,7 +225,8 @@ class PTM(lsl.Model):
             centered=True,
             scaled=True,
         )
-        super().__init__(response)
+        with _response_distribution(self, response, distribution):
+            super().__init__(response)
 
 
 class PTMDist(lsl.Dist):

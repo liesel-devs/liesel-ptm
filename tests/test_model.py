@@ -1,5 +1,6 @@
 """Public PTM construction must match the underlying transformation likelihood."""
 
+import jax
 import jax.numpy as jnp
 import liesel.model as lsl
 import liesel_gam as gam
@@ -274,3 +275,70 @@ def test_invalid_supplied_predictors():
         ptm.PTM([0.0, 1.0], nshape=4, shape=shape)
     with pytest.raises(ValueError, match="intercept-free"):
         ptm.LegacyPTM([0.0, 1.0], nshape=4, loc=gam.AdditivePredictor("m"))
+
+
+def test_supplied_modern_scale_must_be_positive_but_need_not_use_exp():
+    with pytest.raises(ValueError, match="positive"):
+        ptm.PTM([0.0, 1.0], nshape=4, scale=gam.AdditivePredictor("sigma"))
+    scale = gam.AdditivePredictor("sigma", inv_link=jax.nn.softplus)
+    model = ptm.PTM([0.0, 1.0], nshape=4, scale=scale)
+    assert model.pred.scale is scale
+    assert np.isfinite(model.log_prob)
+
+
+@pytest.mark.parametrize("link", [None, jax.nn.softplus, lambda x: jnp.exp(2 * x)])
+def test_supplied_legacy_scale_requires_exponential_link(link):
+    scale = gam.AdditivePredictor("scale_terms", inv_link=link, intercept=False)
+    with pytest.raises(ValueError, match="inv_link=jnp.exp"):
+        ptm.LegacyPTM([0.0, 1.0], nshape=4, scale=scale)
+
+
+@pytest.mark.parametrize("cls", [ptm.PTM, ptm.LegacyPTM])
+def test_failed_constructor_leaves_response_reusable(cls):
+    response = lsl.Var.new_obs(jnp.array([-0.5, 0.1, 0.8]), name="loc")
+    with pytest.raises(RuntimeError, match="Duplicate"):
+        cls(response, nshape=4)
+    assert response.dist_node is None
+    assert response.model is None
+    response.name = "y"
+    model = cls(response, nshape=4)
+    assert model.vars["y"] is response
+
+
+def test_failed_constructor_releases_nodes_after_late_failure(monkeypatch):
+    response = lsl.Var.new_obs(jnp.array([-0.5, 0.1, 0.8]), name="y")
+    initialize = lsl.Model.__init__
+
+    def fail_after_initialization(*args, **kwargs):
+        initialize(*args, **kwargs)
+        raise RuntimeError("late failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(lsl.Model, "__init__", fail_after_initialization)
+        with pytest.raises(RuntimeError, match="late failure"):
+            ptm.PTM(response, nshape=4)
+    assert response.dist_node is None and response.model is None
+    assert np.isfinite(ptm.PTM(response, nshape=4).log_prob)
+
+
+@pytest.mark.parametrize("argument", ["loc", "scale"])
+def test_legacy_constructor_rejects_reserved_predictor_names(argument):
+    predictor = gam.AdditivePredictor(argument, inv_link=jnp.exp, intercept=False)
+    with pytest.raises(ValueError, match="reserved"):
+        ptm.LegacyPTM(
+            [0.0, 1.0],
+            nshape=4,
+            loc=predictor if argument == "loc" else None,
+            scale=predictor if argument == "scale" else None,
+        )
+
+
+def test_fixed_shape_scale_accepts_integer_and_rejects_bool():
+    model = ptm.PTM([0.0, 1.0], nshape=4, shape_scale=1)
+    intercept = model.pred.shape.intercept
+    assert isinstance(intercept, gam.MultivariateIntercept)
+    assert intercept.scale is not None
+    np.testing.assert_allclose(intercept.scale.value, 1.0)
+    assert len(model.parameters) == 3
+    with pytest.raises(TypeError, match="shape_scale"):
+        ptm.PTM([0.0, 1.0], nshape=4, shape_scale=True)

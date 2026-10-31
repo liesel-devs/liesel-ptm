@@ -14,7 +14,16 @@ from jax.typing import ArrayLike
 from liesel_gam.iwls_proposals import gaussian_iwls_spec_loc, gaussian_iwls_spec_scale
 
 from .bspline import PTMKnots
-from .model import PTMDist, PTMPredictors, _make_predictors, _validate_geometry
+from .model import (
+    PTMDist,
+    PTMPredictors,
+    _check_intercept_free,
+    _check_scale,
+    _make_predictors,
+    _make_response,
+    _response_distribution,
+    _validate_geometry,
+)
 
 
 class LocationIntercept(lsl.Var):
@@ -125,15 +134,15 @@ class LegacyPTM(lsl.Model):
         :class:`~liesel_ptm.PTMKnots` are constructed internally.
     loc, scale, shape
         Optional native liesel-gam predictors, retained by identity. Location and
-        log scale must be intercept-free. Scale uses an exponential inverse link;
+        log scale must be intercept-free. Scale must use ``inv_link=jnp.exp``;
         its ``linear_predictor`` supplies the log-scale effects. Shape must be a
         shared, ``sumzero_coef``-constrained predictor with ``nshape`` dimensions.
         Defaults use empty location/scale effects and the same shape construction
         as :class:`~liesel_ptm.PTM`. Names ``loc`` and ``scale`` are reserved for
         the complete predictors; name supplied effects separately.
     shape_scale
-        Native scale variable, :class:`liesel_gam.VarIGPrior`, or fixed float for
-        the automatic shape intercept. ``None`` uses the unclipped Weibull variance
+        Native scale variable, :class:`liesel_gam.VarIGPrior`, or fixed positive real
+        for the automatic shape intercept. ``None`` uses the unclipped Weibull variance
         prior described in :class:`~liesel_ptm.PTM`. Configure this on the predictor
         itself when supplying ``shape``.
 
@@ -150,6 +159,10 @@ class LegacyPTM(lsl.Model):
     intercepts are separate from these predictors and enter the likelihood as
     ``loc`` and ``scale``. :meth:`setup_mcmc` records both intercepts at every draw;
     :meth:`predict` uses those records on a copied prediction graph.
+
+    Computed intercepts retain the training response captured at construction.
+    Changing ``y`` through variable/state updates changes only the likelihood's
+    evaluation response. Construct a new model to refit a different training response.
 
     See Also
     --------
@@ -172,25 +185,19 @@ class LegacyPTM(lsl.Model):
         shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
     ) -> None:
         _validate_geometry(nshape, bounds, minimum=3)
+        response = _make_response(y)
         self.pred = _make_predictors(
             nshape, loc, scale, shape, shape_scale, legacy=True
         )
+        for predictor in (self.pred.loc, self.pred.scale, self.pred.shape):
+            if predictor.name in ("loc", "scale"):
+                raise ValueError(
+                    f"Predictor name {predictor.name!r} is reserved for the likelihood."
+                )
         for predictor in (self.pred.loc, self.pred.scale):
-            if isinstance(predictor.intercept, lsl.Var) or jnp.any(
-                predictor.intercept.value
-            ):
-                raise ValueError(f"{predictor.name!r} must be intercept-free.")
+            _check_intercept_free(predictor)
         if self.pred.shape.terms:
             raise ValueError("Legacy shape must be shared, without covariate terms.")
-        response = y if isinstance(y, lsl.Var) else lsl.Var.new_obs(y, name="y")
-        if (
-            response.model is not None
-            or response.dist_node is not None
-            or not response.observed
-        ):
-            raise ValueError(
-                "y must be an unowned observed variable without a distribution."
-            )
         # A separate data node avoids a cycle through the observation variable in
         # Liesel's variable graph. Training responses stay fixed during prediction.
         training_y = lsl.Data(response.value)
@@ -208,11 +215,12 @@ class LegacyPTM(lsl.Model):
             name="scale",
         )
         knots = PTMKnots(*bounds, nparam=nshape)
-        response.dist_node = PTMDist(
+        distribution = PTMDist(
             knots.knots, loc_full, scale_full, self.pred.shape, bspline="ptm"
         )
         self._scale = scale_full
-        super().__init__(response)
+        with _response_distribution(self, response, distribution):
+            super().__init__(response)
 
     def setup_mcmc(
         self,
@@ -270,9 +278,10 @@ class LegacyPTM(lsl.Model):
         intercepts = _computed_intercepts(model)
         for var in (loc_terms, log_scale_terms, shape):
             if var.model is not model:
-                raise ValueError(f"{var.name!r} must belong to the supplied model.")
-        if scale_name not in model.vars:
-            raise ValueError(f"Observation scale {scale_name!r} is not in the model.")
+                raise ValueError(
+                    f"Predictor {var.name!r} in .pred must belong to this model."
+                )
+        _check_scale(log_scale_terms, legacy=True)
         if shape.terms or not isinstance(shape.intercept, gam.MultivariateIntercept):
             raise ValueError(
                 "Shape must have a shared intercept and no covariate terms."
@@ -290,9 +299,7 @@ class LegacyPTM(lsl.Model):
             raise ValueError("Location, log-scale and shape parameter blocks overlap.")
         unexplained = set(model.parameters) - set.union(*blocks)
         if unexplained:
-            raise ValueError(
-                f"Parameters outside the supplied predictors: {sorted(unexplained)}"
-            )
+            raise ValueError(f"Parameters outside .pred: {sorted(unexplained)}")
 
         kwargs: dict[str, Any] = {"initial_step_size": 1.0, "da_target_accept": 0.5}
         kwargs.update(iwls_kwargs or {})
@@ -303,10 +310,7 @@ class LegacyPTM(lsl.Model):
             (loc_terms, gaussian_iwls_spec_loc),
             (log_scale_terms, gaussian_iwls_spec_scale),
         ):
-            if isinstance(predictor.intercept, lsl.Var) or jnp.any(
-                predictor.intercept.value
-            ):
-                raise ValueError(f"{predictor.name!r} must be intercept-free.")
+            _check_intercept_free(predictor)
             for term in predictor.terms.values():
                 if not isinstance(term, gam.StrctTerm):
                     raise ValueError(
@@ -376,8 +380,9 @@ class LegacyPTM(lsl.Model):
             Posterior samples, including both intercepts recorded by
             :meth:`setup_mcmc`, with the same leading sample axes.
         predict
-            Variable or node names to predict; ``None`` returns all variables,
-            following :meth:`liesel.model.Model.predict`.
+            Variable or node names to predict. ``None`` returns all variables at
+            fitted data. With ``newdata``, observed variables are omitted unless
+            replacement values are supplied for them.
         newdata, chunk_size
             Passed to :meth:`liesel.model.Model.predict` on a detached prediction graph.
 
@@ -391,17 +396,23 @@ class LegacyPTM(lsl.Model):
         ValueError
             If recorded intercepts are missing, their sample axes differ, or ``predict``
             is empty.
+        KeyError
+            If a prediction target or new-data key is not part of the model.
 
         Notes
         -----
         The fitted model and samples are unchanged. Only copied intercept calculations
         become strong value nodes, so Liesel uses the recorded draws. For predictor-only
-        targets, training responses are absent from the prediction graph. Include new
+        targets, Liesel evaluates a submodel without training responses. Include new
         responses in ``newdata`` when predicting response-dependent quantities.
         """
         model = self
         if predict is None:
-            predict = list(self.vars)
+            predict = [
+                name
+                for name, var in self.vars.items()
+                if not var.observed or newdata is None or name in newdata
+            ]
         intercepts = _computed_intercepts(model)
         missing = {var.name for var in intercepts} - samples.keys()
         if missing:
@@ -412,27 +423,11 @@ class LegacyPTM(lsl.Model):
             raise ValueError("Recorded intercept draws must have matching sample axes.")
         if isinstance(predict, str) or not predict:
             raise ValueError("predict must be a nonempty sequence of names.")
-        nodes, variables = model.copy_nodes_and_vars()
+        variables = model.copy_vars()
         for var in intercepts:
             copied = variables[var.name]
             value = lsl.Value(jnp.asarray(samples[var.name]).reshape(-1)[0])
             value.name = copied.value_node.name
             copied.value_node = value
-            nodes[value.name] = value
-        objects = nodes | variables
-        targets = (
-            list(variables.values())
-            if any(name in model.model_nodes for name in predict)
-            else [objects[name] for name in predict]
-        )
-        prediction_model = lsl.Model(targets)
-        if newdata is not None:
-            unknown = newdata.keys() - model.vars.keys()
-            if unknown:
-                raise KeyError(f"New data are not part of the model: {sorted(unknown)}")
-            newdata = {
-                name: value
-                for name, value in newdata.items()
-                if name in prediction_model.vars
-            }
+        prediction_model = lsl.Model(list(variables.values()))
         return prediction_model.predict(samples, predict, newdata, chunk_size)
