@@ -9,6 +9,8 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 
 import liesel_ptm as ptm
 
+_DIST = ptm.onion_dist(nparam=4)
+
 
 def _basis(x):
     x = jnp.squeeze(x, axis=-1)
@@ -102,7 +104,7 @@ def _conditional_response():
     coef = lsl.Var.new_param(jnp.zeros(4), name="conditional_shape")
     response = lsl.Var.new_obs(
         jnp.zeros(2),
-        lsl.Dist(ptm.onion_dist(nparam=4), coef=coef, loc=loc, scale=scale),
+        lsl.Dist(_DIST, coef=coef, loc=loc, scale=scale),
         name="conditional_response",
     )
     model = lsl.Model([response])
@@ -208,7 +210,7 @@ def test_summarise_conditional_dist_transforms_response_distribution() -> None:
         response_bijector=bijector,
     )
 
-    constructor = ptm.onion_dist(nparam=4)
+    constructor = _DIST
     fitted = constructor(coef=jnp.zeros(4), loc=0.0, scale=1.0)
     raw = constructor(
         coef=jnp.zeros(4), loc=0.0, scale=1.0, centered=False, scaled=False
@@ -332,9 +334,7 @@ def test_summarise_conditional_dist_location_scale_switches(
 
     loc = jnp.array([0.0, 1.0]) if include_loc else 0.0
     scale = jnp.array([1.0, 2.0]) if include_scale else 1.0
-    expected = ptm.onion_dist(nparam=4)(coef=jnp.zeros(4), loc=loc, scale=scale).prob(
-        jnp.zeros(2)
-    )
+    expected = _DIST(coef=jnp.zeros(4), loc=loc, scale=scale).prob(jnp.zeros(2))
     density = summary.loc[summary["quantity"] == "density", "mean"]
     np.testing.assert_allclose(density, expected, rtol=1e-5)
 
@@ -390,7 +390,7 @@ def test_summarise_conditional_dist_requires_built_response_distribution() -> No
     response = lsl.Var.new_obs(
         jnp.zeros(1),
         lsl.Dist(
-            ptm.onion_dist(nparam=4),
+            _DIST,
             coef=jnp.zeros(4),
             loc=0.0,
             scale=1.0,
@@ -405,7 +405,7 @@ def test_summarise_conditional_dist_requires_built_response_distribution() -> No
 def test_summarise_intercept_dist_accepts_liesel_dist_or_response(
     as_response,
 ) -> None:
-    constructor = ptm.onion_dist(nparam=4)
+    constructor = _DIST
     coef = lsl.Var.new_param(jnp.zeros(4), name="shape")
     dist = lsl.Dist(constructor, coef=coef, loc=0.0, scale=1.0)
     supplied_dist = (
@@ -432,9 +432,7 @@ def test_summarise_1d_smooth_dist_uses_small_default_grid() -> None:
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    summary = ptm.summarise_1d_smooth_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=2
-    )
+    summary = ptm.summarise_1d_smooth_dist(_DIST, term, samples, rgrid=2)
 
     assert summary.shape[0] == 4 * 5 * 2
     assert summary["x"].unique() == pytest.approx(jnp.linspace(0.0, 1.0, 5))
@@ -447,7 +445,7 @@ def test_summarise_nd_smooth_dist_treats_newdata_as_rows() -> None:
     newdata = {"x": jnp.array([0.1, 0.2]), "z": jnp.array([1.8, 1.9])}
 
     summary = ptm.summarise_nd_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=jnp.array([0.0]),
@@ -466,9 +464,7 @@ def test_summarise_cluster_dist_includes_unobserved_categories() -> None:
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    summary = ptm.summarise_cluster_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=jnp.array([0.0])
-    )
+    summary = ptm.summarise_cluster_dist(_DIST, term, samples, rgrid=jnp.array([0.0]))
 
     assert summary.shape[0] == 4 * 3
     assert list(summary["group"].cat.categories) == ["a", "b", "c"]
@@ -483,7 +479,7 @@ def test_summarise_cluster_dist_accepts_explicit_labels(newdata) -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     summary = ptm.summarise_cluster_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=jnp.array([0.0]),
@@ -505,9 +501,7 @@ def test_summarise_cluster_dist_supports_categorical_linear_term() -> None:
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    summary = ptm.summarise_cluster_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=jnp.array([0.0])
-    )
+    summary = ptm.summarise_cluster_dist(_DIST, term, samples, rgrid=jnp.array([0.0]))
 
     assert summary.shape[0] == 4 * 3
     assert list(summary["myvar"].cat.categories) == ["a", "b", "c"]
@@ -521,7 +515,7 @@ def test_summarise_nd_smooth_dist_uses_all_mapped_categories() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     summary = ptm.summarise_nd_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=jnp.array([0.0]),
@@ -539,7 +533,7 @@ def test_summaries_reject_boolean_intercept_shorthand() -> None:
 
     with pytest.raises(TypeError, match="intercept"):
         ptm.summarise_1d_smooth_dist(  # ty: ignore[no-matching-overload]
-            ptm.onion_dist(nparam=4),
+            _DIST,
             term,
             samples,
             rgrid=2,
@@ -558,14 +552,14 @@ def test_summarise_nd_smooth_dist_adds_only_explicit_marginals() -> None:
     newdata = {"x": jnp.array([0.5]), "z": jnp.array([1.5])}
 
     isolated = ptm.summarise_nd_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=jnp.array([0.0]),
         newdata=newdata,
     )
     composed = ptm.summarise_nd_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         generic_terms["term"],
         samples,
         rgrid=jnp.array([0.0]),
@@ -587,9 +581,7 @@ def test_summarise_intercept_dist_normalises_sample_layouts(
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(sample_shape + term.coef.value.shape)}
 
-    summary = ptm.summarise_intercept_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=jnp.array([0.0])
-    )
+    summary = ptm.summarise_intercept_dist(_DIST, term, samples, rgrid=jnp.array([0.0]))
 
     assert summary["sample_size"].eq(sample_size).all()
 
@@ -601,7 +593,7 @@ def test_summarise_cluster_dist_accepts_explicit_category_mapping() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     summary = ptm.summarise_cluster_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=jnp.array([0.0]),
@@ -621,7 +613,7 @@ def test_summaries_reject_non_vector_rgrid() -> None:
 
     with pytest.raises(ValueError, match="one-dimensional"):
         ptm.summarise_intercept_dist(
-            ptm.onion_dist(nparam=4),
+            _DIST,
             term,
             samples,
             rgrid=jnp.zeros((2, 2)),
@@ -637,7 +629,7 @@ def test_summarise_nd_smooth_dist_preserves_mapped_newdata_order(
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
     summary = ptm.summarise_nd_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=jnp.array([0.0]),

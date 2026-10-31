@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import Literal, cast
 
 import jax
@@ -47,7 +48,8 @@ class TransformationSpline:
         Attributes
         ----------
         n_chunks
-            Compatibility attribute; no longer controls evaluation chunking.
+            Maximum coefficient-batch rows per inverse block, capped at 256 and
+            the batch size. Set before first evaluation.
         knots
             Spline knot sequence.
         min_knot
@@ -56,6 +58,13 @@ class TransformationSpline:
             Maximum knot value.
         bspline
             :class:`.BSplineApprox` instance for basis operations.
+
+        Notes
+        -----
+        Treat geometry and numerical settings as immutable after first evaluation:
+        JIT kernels capture them. Create a new spline to change these settings.
+        Reuse one spline across parameter draws; JAX's compilation cache retains
+        static spline instances and compiles separately for each new instance.
         """
         self.n_chunks = 1024
         self.supports_rowwise_coef = False
@@ -348,6 +357,7 @@ class TransformationSpline:
         dot = self._evaluate_spline_value(value, coef)
         return self._squeeze_scalar_result(dot, was_scalar)
 
+    @partial(jax.jit, static_argnums=0)
     def _dot_inverse_broadcast(self, value: Array, coef: Array) -> Array:
         value, coef, was_scalar = self._broadcast_value_and_coef(value, coef)
 
@@ -454,6 +464,7 @@ class TransformationSpline:
             )
         )(value_rows, ygrid)
 
+    @partial(jax.jit, static_argnums=0)
     def _inverse_rows_chunked(self, value_rows: Array, coef_rows: Array) -> Array:
         B, n = value_rows.shape
         n_coef, p = coef_rows.shape[-2:]

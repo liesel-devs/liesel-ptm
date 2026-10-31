@@ -13,6 +13,8 @@ from matplotlib.text import Text
 
 import liesel_ptm as ptm
 
+_DIST = ptm.onion_dist(nparam=4)
+
 _OKABE_ITO = [
     "#E69F00",
     "#56B4E9",
@@ -184,7 +186,7 @@ def _conditional_response():
     coef = lsl.Var.new_param(jnp.zeros(4), name="conditional_shape")
     response = lsl.Var.new_obs(
         jnp.zeros(2),
-        lsl.Dist(ptm.onion_dist(nparam=4), coef=coef, loc=loc, scale=scale),
+        lsl.Dist(_DIST, coef=coef, loc=loc, scale=scale),
         name="conditional_response",
     )
     model = lsl.Model([response])
@@ -248,7 +250,7 @@ def test_plot_intercept_dist_renders_mean_band_and_reference() -> None:
     assert term.model is model
     samples = {term.coef.name: jnp.zeros((2, 4))}
 
-    plot = ptm.plot_intercept_dist(ptm.onion_dist(nparam=4), term, samples, rgrid=11)
+    plot = ptm.plot_intercept_dist(_DIST, term, samples, rgrid=11)
     figure = plot.draw()
 
     assert isinstance(plot, p9.ggplot)
@@ -383,7 +385,7 @@ def test_plot_conditional_dist_transforms_response_distribution(
         ci_quantiles=None,
     )
 
-    constructor = ptm.onion_dist(nparam=4)
+    constructor = _DIST
     fitted = constructor(coef=jnp.zeros(4), loc=0.0, scale=1.0)
     reported = tfd.TransformedDistribution(distribution=fitted, bijector=bijector)
     expected = reported.prob(rgrid) if quantity == "density" else reported.cdf(rgrid)
@@ -472,11 +474,9 @@ def test_plot_intercept_dist_adds_sampled_trajectories_only_on_request() -> None
         )
     }
 
-    default_plot = ptm.plot_intercept_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=11
-    )
+    default_plot = ptm.plot_intercept_dist(_DIST, term, samples, rgrid=11)
     sampled_plot = ptm.plot_intercept_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=11,
@@ -498,7 +498,7 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     plot = ptm.plot_1d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=11,
@@ -506,7 +506,7 @@ def test_plot_1d_smooth_dist_uses_covariate_ridge_baselines() -> None:
     )
     figure = plot.draw()
     hidden_axis_plot = ptm.plot_1d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=11,
@@ -552,10 +552,8 @@ def test_plot_1d_smooth_dist_uses_density_axis_with_zero_spacing() -> None:
         "ci_quantiles": None,
     }
 
-    shown = ptm.plot_1d_smooth_dist(ptm.onion_dist(nparam=4), term, samples, **kwargs)
-    hidden = ptm.plot_1d_smooth_dist(
-        ptm.onion_dist(nparam=4), term, samples, show_y_axis=False, **kwargs
-    )
+    shown = ptm.plot_1d_smooth_dist(_DIST, term, samples, **kwargs)
+    hidden = ptm.plot_1d_smooth_dist(_DIST, term, samples, show_y_axis=False, **kwargs)
     hidden_axis = hidden.draw().axes[0]
     shown_figure = shown.draw()
     shown_axis = shown_figure.axes[0]
@@ -575,7 +573,7 @@ def test_plot_labels_round_numeric_values_to_two_decimals() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     plot = ptm.plot_3d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         x="longitude",
@@ -610,7 +608,7 @@ def test_plot_1d_smooth_dist_supports_opt_in_trajectories() -> None:
     }
 
     default_plot = ptm.plot_1d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         quantity="cdf",
@@ -618,7 +616,7 @@ def test_plot_1d_smooth_dist_supports_opt_in_trajectories() -> None:
         ngrid=2,
     )
     sampled_plot = ptm.plot_1d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         quantity="cdf",
@@ -640,11 +638,9 @@ def test_density_ridges_add_opt_in_hdi() -> None:
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    default = ptm.plot_1d_smooth_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=9, ngrid=2
-    )
+    default = ptm.plot_1d_smooth_dist(_DIST, term, samples, rgrid=9, ngrid=2)
     hdi = ptm.plot_1d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=9,
@@ -663,7 +659,7 @@ def test_plot_2d_smooth_dist_labels_continuous_ridges() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     plot = ptm.plot_2d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=7,
@@ -695,7 +691,7 @@ def test_plot_2d_smooth_dist_labels_continuous_ridges() -> None:
     assert np.all(np.diff(baselines) > 0)
 
     overlaid = ptm.plot_2d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=7,
@@ -728,7 +724,7 @@ def test_plot_2d_smooth_dist_labels_non_density_quantities(
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     plot = ptm.plot_2d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         quantity=quantity,
@@ -749,11 +745,9 @@ def test_plot_2d_smooth_dist_supports_opt_in_trajectories() -> None:
         / 100.0
     }
 
-    default_plot = ptm.plot_2d_smooth_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=7, ngrid=2
-    )
+    default_plot = ptm.plot_2d_smooth_dist(_DIST, term, samples, rgrid=7, ngrid=2)
     sampled_plot = ptm.plot_2d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=7,
@@ -780,7 +774,7 @@ def test_plot_3d_smooth_dist_stacked_orders_ridges_and_marks_points() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     plot = ptm.plot_3d_smooth_dist_stacked(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         x="longitude",
@@ -825,7 +819,7 @@ def test_plot_3d_smooth_dist_uses_automatic_facet_grid() -> None:
     generic_marginals: list[lsl.Var] = []
 
     plot = ptm.plot_3d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         generic_term,
         samples,
         x="longitude",
@@ -849,7 +843,7 @@ def test_plot_3d_smooth_dist_supports_rowwise_newdata() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     plot = ptm.plot_3d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         x="longitude",
@@ -874,7 +868,7 @@ def test_plot_3d_smooth_dist_meshgrid_draws_ordered_density_ridges() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     plot = ptm.plot_3d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         x="longitude",
@@ -912,7 +906,7 @@ def test_plot_3d_smooth_dist_meshgrid_draws_ordered_density_ridges() -> None:
     assert np.all(np.diff(baselines) > 0)
 
     overlaid = ptm.plot_3d_smooth_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         x="longitude",
@@ -952,13 +946,9 @@ def test_plot_3d_smooth_dist_adds_opt_in_hdi_and_trajectories() -> None:
         "ci_quantiles": None,
     }
 
-    default = ptm.plot_3d_smooth_dist(ptm.onion_dist(nparam=4), term, samples, **kwargs)
-    hdi = ptm.plot_3d_smooth_dist(
-        ptm.onion_dist(nparam=4), term, samples, hdi_prob=0.8, **kwargs
-    )
-    sampled = ptm.plot_3d_smooth_dist(
-        ptm.onion_dist(nparam=4), term, samples, show_n_samples=2, **kwargs
-    )
+    default = ptm.plot_3d_smooth_dist(_DIST, term, samples, **kwargs)
+    hdi = ptm.plot_3d_smooth_dist(_DIST, term, samples, hdi_prob=0.8, **kwargs)
+    sampled = ptm.plot_3d_smooth_dist(_DIST, term, samples, show_n_samples=2, **kwargs)
 
     assert len(hdi.layers) == len(default.layers) + 1
     assert len(sampled.layers) == len(default.layers) + 1
@@ -981,11 +971,9 @@ def test_plot_3d_smooth_dist_stacked_adds_opt_in_hdi() -> None:
         "rgrid": 9,
     }
 
-    default = ptm.plot_3d_smooth_dist_stacked(
-        ptm.onion_dist(nparam=4), term, samples, **kwargs
-    )
+    default = ptm.plot_3d_smooth_dist_stacked(_DIST, term, samples, **kwargs)
     hdi = ptm.plot_3d_smooth_dist_stacked(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         ci_quantiles=(0.05, 0.95),
@@ -1003,10 +991,10 @@ def test_plot_cluster_dist_can_show_and_hide_unobserved_levels() -> None:
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    shown_plot = ptm.plot_cluster_dist(ptm.onion_dist(nparam=4), term, samples, rgrid=9)
+    shown_plot = ptm.plot_cluster_dist(_DIST, term, samples, rgrid=9)
     shown = shown_plot.draw()
     hidden_plot = ptm.plot_cluster_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=9,
@@ -1042,7 +1030,7 @@ def test_plot_cluster_dist_uses_density_axis_with_zero_spacing() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
     plot = ptm.plot_cluster_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=7,
@@ -1068,9 +1056,7 @@ def test_plot_cluster_dist_uses_cluster_linetypes_for_non_density_curves() -> No
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    plot = ptm.plot_cluster_dist(
-        ptm.onion_dist(nparam=4), term, samples, quantity="cdf", rgrid=9
-    )
+    plot = ptm.plot_cluster_dist(_DIST, term, samples, quantity="cdf", rgrid=9)
 
     assert len(plot.draw().axes) == 1
     _assert_cluster_linetypes(plot)
@@ -1085,11 +1071,9 @@ def test_plot_cluster_dist_supports_opt_in_trajectories() -> None:
         / 100.0
     }
 
-    default = ptm.plot_cluster_dist(
-        ptm.onion_dist(nparam=4), term, samples, rgrid=9
-    ).draw()
+    default = ptm.plot_cluster_dist(_DIST, term, samples, rgrid=9).draw()
     sampled = ptm.plot_cluster_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         rgrid=9,
@@ -1104,10 +1088,10 @@ def test_plot_cluster_dist_supports_categorical_linear_term() -> None:
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    plot = ptm.plot_cluster_dist(ptm.onion_dist(nparam=4), term, samples, rgrid=9)
+    plot = ptm.plot_cluster_dist(_DIST, term, samples, rgrid=9)
     figure = plot.draw()
     cdf = ptm.plot_cluster_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         quantity="cdf",
@@ -1128,7 +1112,7 @@ def test_categorical_linear_trajectories_use_the_selected_category() -> None:
     }
 
     figure = ptm.plot_cluster_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         quantity="cdf",
@@ -1156,9 +1140,7 @@ def test_plot_regions_dist_uses_polygon_centroids_for_density_glyphs() -> None:
         "c": square + np.array([4, 0]),
     }
 
-    plot = ptm.plot_regions_dist(
-        ptm.onion_dist(nparam=4), term, samples, polys=polys, rgrid=9
-    )
+    plot = ptm.plot_regions_dist(_DIST, term, samples, polys=polys, rgrid=9)
     figure = plot.draw()
 
     assert isinstance(plot, p9.ggplot)
@@ -1178,11 +1160,9 @@ def test_plot_regions_dist_adds_opt_in_hdi() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
     locations = {"a": (0.0, 0.0), "b": (1.0, 0.0), "c": (2.0, 0.0)}
 
-    default = ptm.plot_regions_dist(
-        ptm.onion_dist(nparam=4), term, samples, locations=locations, rgrid=9
-    )
+    default = ptm.plot_regions_dist(_DIST, term, samples, locations=locations, rgrid=9)
     hdi = ptm.plot_regions_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         locations=locations,
@@ -1200,11 +1180,9 @@ def test_plot_regions_dist_can_hide_density_fill() -> None:
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
     locations = {"a": (0.0, 0.0), "b": (1.0, 0.0), "c": (2.0, 0.0)}
 
-    filled = ptm.plot_regions_dist(
-        ptm.onion_dist(nparam=4), term, samples, locations=locations, rgrid=9
-    )
+    filled = ptm.plot_regions_dist(_DIST, term, samples, locations=locations, rgrid=9)
     unfilled = ptm.plot_regions_dist(
-        ptm.onion_dist(nparam=4),
+        _DIST,
         term,
         samples,
         locations=locations,
@@ -1228,7 +1206,7 @@ def test_plot_regions_dist_uses_native_liesel_gam_polygons() -> None:
     assert term.model is model
     samples = {term.coef.name: jnp.zeros(term.coef.value.shape)}
 
-    plot = ptm.plot_regions_dist(ptm.onion_dist(nparam=4), term, samples, rgrid=9)
+    plot = ptm.plot_regions_dist(_DIST, term, samples, rgrid=9)
 
     assert isinstance(plot.data, pd.DataFrame)
     assert set(plot.data["group"]) == {"a", "b", "c"}

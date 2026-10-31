@@ -20,6 +20,22 @@ coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
 bs = PTMSpline(knots.knots)
 
 
+class _NormalWithKwargs(tfd.Normal):
+    def __init__(self, loc, scale, **kwargs):
+        super().__init__(loc=loc, scale=scale, **kwargs)
+
+
+class _NormalWithRenamedParameters(tfd.Normal):
+    def __init__(self, mu, sigma):
+        super().__init__(loc=mu, scale=sigma)
+
+
+def _compiled(caplog: pytest.LogCaptureFixture) -> bool:
+    return any(
+        "Finished XLA compilation" in record.getMessage() for record in caplog.records
+    )
+
+
 def normal_with_batch(batch_shape):
     return tfd.Normal(loc=jnp.zeros(batch_shape), scale=jnp.ones(batch_shape))
 
@@ -461,6 +477,58 @@ class TestSplineMomentQuadrature:
 
 
 class TestDistOneCoef:
+    @pytest.mark.parametrize("method", ["quantile", "log_prob"])
+    def test_quantile_and_log_prob_reject_parameter_overrides(self, method):
+        dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
+        with pytest.raises(TypeError, match="loc"):
+            getattr(dist, method)(0.5, loc=2.0)
+
+    @pytest.mark.parametrize("method", ["quantile", "log_prob"])
+    def test_distribution_reuses_compilation_across_parameter_draws(
+        self, caplog, method
+    ):
+        spline = PTMSpline(PTMKnots(-4.0, 4.0, nparam=6).knots)
+        first = ptm.LocScaleTransformationDist(
+            coef=jnp.linspace(-0.2, 0.2, 6),
+            loc=0.0,
+            scale=1.0,
+            bspline=spline,
+            centered=True,
+            scaled=True,
+        )
+        second = ptm.LocScaleTransformationDist(
+            coef=jnp.linspace(0.3, -0.1, 6),
+            loc=0.5,
+            scale=1.5,
+            bspline=spline,
+            centered=True,
+            scaled=True,
+        )
+        probabilities = jnp.array([0.1, 0.5, 0.9])
+        changed_probabilities = jnp.array([0.2, 0.6, 0.8])
+
+        with jax.log_compiles(True):
+            first_values = getattr(first, method)(probabilities).block_until_ready()
+            assert _compiled(caplog)
+            caplog.clear()
+            second_values = getattr(second, method)(
+                changed_probabilities
+            ).block_until_ready()
+
+        assert not _compiled(caplog)
+        assert not jnp.allclose(first_values, second_values)
+        if method == "quantile":
+            np.testing.assert_allclose(
+                second.cdf(second_values), changed_probabilities, atol=1e-4
+            )
+        else:
+            np.testing.assert_allclose(
+                jnp.exp(second_values),
+                jax.vmap(jax.grad(second.cdf))(changed_probabilities),
+                rtol=1e-5,
+                atol=1e-5,
+            )
+
     def test_log_prob_sample_layout(self):
         dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
         normal = normal_with_batch(())
@@ -671,6 +739,101 @@ class TestDistGPTM:
 
 
 class TestResponseMoments:
+    _Dist = ptm.onion_dist(
+        a=-6.0,
+        b=6.0,
+        nparam=10,
+        loc_scale=False,
+        parametric_distribution=tfd.TwoPieceStudentT,
+    )
+
+    @pytest.mark.parametrize(
+        "distribution,parameters",
+        [
+            (_NormalWithKwargs, {"loc": 1.0, "scale": 2.0}),
+            (_NormalWithRenamedParameters, {"mu": 1.0, "sigma": 2.0}),
+        ],
+    )
+    def test_custom_parametric_subclasses_support_quantiles_samples_and_moments(
+        self, distribution, parameters
+    ):
+        dist = ptm.TransformationDist(
+            coef=jnp.zeros(knots.nparam),
+            bspline=bs,
+            parametric_distribution=distribution,
+            **parameters,
+        )
+        expected = tfd.Normal(1.0, 2.0)
+        probabilities = jnp.array([0.1, 0.5, 0.9])
+        quantiles = expected.quantile(probabilities)
+        np.testing.assert_allclose(dist.quantile(probabilities), quantiles, atol=1e-5)
+        np.testing.assert_allclose(
+            jax.jit(dist.quantile)(probabilities), quantiles, atol=1e-5
+        )
+        samples = dist.sample(4, seed=jax.random.key(1))
+        assert samples.shape == (4,)
+        assert np.isfinite(samples).all()
+        np.testing.assert_allclose(dist.mean(), expected.mean(), atol=1e-4)
+        np.testing.assert_allclose(dist.variance(), expected.variance(), atol=1e-4)
+        np.testing.assert_allclose(dist.stddev(), expected.stddev(), atol=1e-4)
+
+    def test_parametric_quantile_supports_non_composite_distributions(self):
+        class PlainNormal(tfd.Distribution):
+            def __init__(self):
+                super().__init__(
+                    dtype=jnp.float32,
+                    reparameterization_type=tfd.FULLY_REPARAMETERIZED,
+                    validate_args=False,
+                    allow_nan_stats=True,
+                )
+
+            def _quantile(self, value, **kwargs):
+                return tfd.Normal(0.0, 1.0).quantile(value)
+
+        dist = ptm.TransformationDist(
+            coef=coef, bspline=bs, parametric_distribution=PlainNormal
+        )
+        values = jnp.array([-1.0, 0.0, 1.0])
+        np.testing.assert_allclose(
+            dist.inverse_transformation_parametric(values), values, atol=1e-6
+        )
+
+    def test_parametric_quantiles_reuse_compilation_across_draws(self, caplog):
+        Dist = ptm.onion_dist(
+            a=-6.0,
+            b=6.0,
+            nparam=6,
+            loc_scale=False,
+            parametric_distribution=tfd.TwoPieceStudentT,
+        )
+        first_parameters = {"loc": 1.0, "scale": 2.0, "skewness": 0.7, "df": 20.0}
+        first = Dist(coef=jnp.zeros(6), **first_parameters)
+        second = Dist(
+            coef=jnp.linspace(-0.2, 0.2, 6),
+            loc=-0.5,
+            scale=1.5,
+            skewness=0.9,
+            df=12.0,
+        )
+        probabilities = jnp.array([0.1, 0.5, 0.9])
+        changed_probabilities = jnp.array([0.2, 0.6, 0.8])
+        with jax.log_compiles(True):
+            values = first.quantile(probabilities).block_until_ready()
+            assert _compiled(caplog)
+            caplog.clear()
+            changed_values = second.quantile(changed_probabilities).block_until_ready()
+        assert not _compiled(caplog)
+        np.testing.assert_allclose(
+            values,
+            tfd.TwoPieceStudentT(**first_parameters).quantile(probabilities),
+            atol=1e-5,
+            rtol=1e-5,
+        )
+        assert not jnp.allclose(values, changed_values)
+        np.testing.assert_allclose(
+            second.cdf(changed_values), changed_probabilities, atol=1e-5
+        )
+
     @staticmethod
     def skewt(**kwargs):
         options = {
@@ -681,13 +844,7 @@ class TestResponseMoments:
             "df": 20.0,
         }
         options.update(kwargs)
-        return ptm.onion_dist(
-            a=-6.0,
-            b=6.0,
-            nparam=10,
-            loc_scale=False,
-            parametric_distribution=tfd.TwoPieceStudentT,
-        )(**options)
+        return TestResponseMoments._Dist(**options)
 
     @staticmethod
     def reference_moments(dist):
@@ -711,10 +868,13 @@ class TestResponseMoments:
             centered=centered, scaled=scaled, integration_bounds=(-3.0, 3.0)
         )
         mean, variance = self.reference_moments(dist)
-        np.testing.assert_allclose(dist.mean(), mean, rtol=5e-4, atol=1e-4)
-        np.testing.assert_allclose(dist.variance(), variance, rtol=5e-4, atol=1e-4)
-        np.testing.assert_allclose(dist.stddev(), np.sqrt(variance), rtol=5e-4)
-        np.testing.assert_allclose(dist.stddev() ** 2, dist.variance(), rtol=1e-6)
+        actual_mean = dist.mean()
+        actual_variance = dist.variance()
+        actual_stddev = dist.stddev()
+        np.testing.assert_allclose(actual_mean, mean, rtol=5e-4, atol=1e-4)
+        np.testing.assert_allclose(actual_variance, variance, rtol=5e-4, atol=1e-4)
+        np.testing.assert_allclose(actual_stddev, np.sqrt(variance), rtol=5e-4)
+        np.testing.assert_allclose(actual_stddev**2, actual_variance, rtol=1e-6)
 
     def test_affine_mean_includes_scale_and_full_tails(self):
         Dist = ptm.onion_dist(a=-6.0, b=6.0, nparam=10)
@@ -747,13 +907,7 @@ class TestResponseMoments:
         coef = jnp.broadcast_to(jnp.linspace(-0.2, 0.2, 10), (2, 1, 10))
         loc = jnp.array([[0.0, 1.0, 2.0]])
 
-        Dist = ptm.onion_dist(
-            a=-6.0,
-            b=6.0,
-            nparam=10,
-            loc_scale=False,
-            parametric_distribution=tfd.TwoPieceStudentT,
-        )
+        Dist = TestResponseMoments._Dist
 
         @jax.jit
         def objective(coef, loc, scale, skewness, df):
@@ -767,12 +921,11 @@ class TestResponseMoments:
             assert jnp.all(jnp.isfinite(gradient))
             assert jnp.linalg.norm(gradient) > 0
         dist = self.skewt(coef=coef, loc=loc)
-        assert (
-            dist.mean().shape == dist.variance().shape == dist.stddev().shape == (2, 3)
-        )
+        mean, variance, stddev = dist.mean(), dist.variance(), dist.stddev()
+        assert mean.shape == variance.shape == stddev.shape == (2, 3)
         expected_mean, expected_variance = self.reference_moments(dist)
-        np.testing.assert_allclose(dist.mean(), expected_mean, atol=1e-4)
-        np.testing.assert_allclose(dist.variance(), expected_variance, rtol=5e-4)
+        np.testing.assert_allclose(mean, expected_mean, atol=1e-4)
+        np.testing.assert_allclose(variance, expected_variance, rtol=5e-4)
 
     def test_response_diagnostic_detects_heavy_tail_error(self):
         dist = self.skewt(coef=jnp.zeros(10), df=3.0, response_moment_order=128)

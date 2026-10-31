@@ -133,6 +133,12 @@ def integrate_piecewise_gauss_legendre(
     return jnp.sum(y * integration_weights, axis=(0, 1))
 
 
+@jax.jit
+def _composite_quantile(distribution: tfd.Distribution, value: Array) -> Array:
+    # TFP's iterative quantiles otherwise compile fresh scans on every call.
+    return distribution.quantile(value)
+
+
 def onion_dist(
     a: float = -4.0,
     b: float = 4.0,
@@ -406,8 +412,10 @@ class TransformationDist(tfd.Distribution):
             tiny = jnp.finfo(jnp.asarray(prob).dtype).tiny
             return jnp.log(jnp.clip(prob, tiny, 1.0))
 
-    @partial(jax.jit, static_argnums=0)
-    def _log_prob(self, value: Array) -> Array | float:
+    # **kwargs matches TFP's typed override; reject overrides as before.
+    def _log_prob(self, value: Array, **kwargs) -> Array | float:
+        if kwargs:
+            raise TypeError(f"Unexpected keyword argument: {next(iter(kwargs))!r}")
         z, logdet = self.transformation_and_logdet(value)
         return self.reference_distribution.log_prob(z) + logdet
 
@@ -426,8 +434,10 @@ class TransformationDist(tfd.Distribution):
 
         return self._quantile(u)
 
-    @partial(jax.jit, static_argnums=0)
-    def _quantile(self, value: Array) -> Array:
+    # **kwargs matches TFP's typed override; reject overrides as before.
+    def _quantile(self, value: Array, **kwargs) -> Array:
+        if kwargs:
+            raise TypeError(f"Unexpected keyword argument: {next(iter(kwargs))!r}")
         z = self.reference_distribution.quantile(value)
         return self.inverse_transformation(z)
 
@@ -645,7 +655,6 @@ class TransformationDist(tfd.Distribution):
         transf_param = self.transformation_parametric(value)
         return self._transformation_spline(transf_param)
 
-    @partial(jax.jit, static_argnums=0)
     def transformation_and_logdet(self, value: Array) -> tuple[Array, Array]:
         """Apply parametric then spline transforms; return value and logdet."""
         transf_param, logdet_param = self.transformation_and_logdet_parametric(value)
@@ -845,11 +854,18 @@ class TransformationDist(tfd.Distribution):
         u = self.reference_distribution.cdf(value)
         u = jnp.where(u >= 1.0, max_float, u)  # safeguard against numerical issues
         u = jnp.where(u <= 0.0, tiny, u)  # safeguard against numerical issues
-        y = self.parametric_distribution.quantile(u)
+        if isinstance(
+            self.parametric_distribution, tfd.AutoCompositeTensorDistribution
+        ):
+            try:
+                # Custom TFP subclasses may be registered but not flattenable.
+                jax.tree_util.tree_flatten(self.parametric_distribution)
+            except (TypeError, ValueError):
+                pass
+            else:
+                return _composite_quantile(self.parametric_distribution, u)
+        return self.parametric_distribution.quantile(u)
 
-        return y
-
-    @partial(jax.jit, static_argnums=0)
     def inverse_transformation(self, value: Array) -> Array:
         """
         Inverse transformation combining parametric and spline parts.

@@ -9,6 +9,40 @@ coef = jax.random.normal(jax.random.key(1), (1, knots.nparam))
 bs = PTMSpline(knots.knots)
 
 
+@pytest.mark.parametrize("layout", ["tfp", "legacy"])
+def test_inverse_reuses_compilation_without_freezing_inputs(monkeypatch, layout):
+    spline = PTMSpline(PTMKnots(-4.0, 4.0, nparam=6).knots)
+    original = spline._evaluate_spline
+    traces = 0
+
+    def count_traces(value, coef):
+        nonlocal traces
+        traces += 1
+        return original(value, coef)
+
+    monkeypatch.setattr(spline, "_evaluate_spline", count_traces)
+
+    def inverse(value, coef):
+        if layout == "legacy":
+            return spline.dot_inverse(value, coef[None, :])
+        return spline.dot_inverse_tfp(value, coef)
+
+    value = jnp.linspace(-1.0, 1.0, 5)
+    coef = jnp.zeros(6)
+    first = inverse(value, coef)
+    first_traces = traces
+    second = inverse(value + 0.1, coef)
+    changed_coef = jnp.linspace(-0.2, 0.2, 6)
+    third = inverse(value, changed_coef)
+
+    assert first_traces > 0
+    assert traces == first_traces
+    assert jnp.allclose(first, value, atol=1e-4)
+    assert jnp.allclose(second, value + 0.1, atol=1e-4)
+    assert not jnp.allclose(third, first)
+    assert jnp.allclose(spline.dot_tfp(third, changed_coef), value, atol=1e-4)
+
+
 def test_algebraic_grid_lookup_matches_binary_search():
     approx = bs.bspline
     nodes = approx.grid[1:-1]
@@ -327,70 +361,6 @@ class TestDotAndDerivInverse:
         for i in range(x2.shape[0]):
             for j in range(x2.shape[1]):
                 assert jnp.allclose(x2[i, j, ...], x[i, j, ...], atol=1e-4)
-
-
-class TestDotAndDerivNFullBatch:
-    def test_scalar_x(self):
-        fx, fxd = bs.dot_and_deriv_n_fullbatch(1.0, coef)
-
-        # shape fits
-        assert fx.shape == ()
-        assert fxd.shape == ()
-
-        # no nans
-        assert not jnp.any(jnp.isnan(fx))
-        assert not jnp.any(jnp.isnan(fxd))
-
-        # increasing
-        assert jnp.all(fxd > 0.0)
-
-    def test_vector_x(self):
-        x = jnp.linspace(-8.0, 8.0, 300)
-        fx, fxd = bs.dot_and_deriv_n_fullbatch(x, coef)
-
-        # shape fits
-        assert fx.shape == x.shape
-        assert fxd.shape == x.shape
-
-        # no nans
-        assert not jnp.any(jnp.isnan(fx))
-        assert not jnp.any(jnp.isnan(fxd))
-
-        # increasing
-        assert jnp.all(fxd > 0.0)
-        assert jnp.all(jnp.diff(fx) > 0.0)
-
-    def test_batched_x_single_coef(self):
-        x = jax.random.normal(jax.random.key(1), (4, 200))
-        fx, fxd = bs.dot_and_deriv_n_fullbatch(x, coef)
-
-        assert fx.shape == (4, 200)
-        assert fxd.shape == (4, 200)
-        assert not jnp.any(jnp.isnan(fx))
-        assert not jnp.any(jnp.isnan(fxd))
-        assert jnp.all(fxd > 0.0)
-
-    def test_scalar_x_batched_coef(self):
-        x = 1.0
-        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
-        fx, fxd = bs.dot_and_deriv_n_fullbatch(x, coef)
-
-        assert fx.shape == (3,)
-        assert fxd.shape == (3,)
-        assert not jnp.any(jnp.isnan(fx))
-        assert not jnp.any(jnp.isnan(fxd))
-        assert jnp.all(fxd > 0.0)
-
-    def test_vector_x_batched_coef(self):
-        x = jax.random.normal(jax.random.key(1), (200,))
-        coef = jax.random.normal(jax.random.key(1), (3, 1, knots.nparam))
-        fx, fxd = bs.dot_and_deriv_n_fullbatch(x, coef)
-
-        assert fx.shape == (3, 200)
-        assert fxd.shape == (3, 200)
-        assert not jnp.any(jnp.isnan(fx))
-        assert not jnp.any(jnp.isnan(fxd))
-        assert jnp.all(fxd > 0.0)
 
 
 class TestPublicMethodEquivalence:
