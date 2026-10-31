@@ -10,7 +10,11 @@ import jax.numpy as jnp
 import liesel.goose as gs
 import liesel.model as lsl
 import liesel_gam as gam
+from jax.typing import ArrayLike
 from liesel_gam.iwls_proposals import gaussian_iwls_spec_loc, gaussian_iwls_spec_scale
+
+from .bspline import PTMKnots
+from .model import PTMDist, PTMPredictors, _make_predictors, _validate_geometry
 
 
 class LocationIntercept(lsl.Var):
@@ -106,14 +110,46 @@ def _computed_intercepts(
     return result[0], result[1]
 
 
-class LegacyPTM:
-    """Sampling and prediction for a legacy shared-shape PTM.
+class LegacyPTM(lsl.Model):
+    """Shared-shape PTM with computed location and log-scale intercepts.
 
     Parameters
     ----------
-    model
-        Built Liesel model with one computed location/log-scale intercept pair.
-        The model graph and parameters stay in Liesel; this class holds a reference.
+    y
+        Response values, or an unowned observed :class:`liesel.model.Var` without
+        a distribution. An array becomes a response variable named ``y``.
+    nshape
+        Number of shape coefficients before constraints; an integer of at least three.
+    bounds
+        Flexible interval on the standardized residual scale. Cubic, equidistant
+        :class:`~liesel_ptm.PTMKnots` are constructed internally.
+    loc, scale, shape
+        Optional native liesel-gam predictors, retained by identity. Location and
+        log scale must be intercept-free. Scale uses an exponential inverse link;
+        its ``linear_predictor`` supplies the log-scale effects. Shape must be a
+        shared, ``sumzero_coef``-constrained predictor with ``nshape`` dimensions.
+        Defaults use empty location/scale effects and the same shape construction
+        as :class:`~liesel_ptm.PTM`. Names ``loc`` and ``scale`` are reserved for
+        the complete predictors; name supplied effects separately.
+    shape_scale
+        Native scale variable, :class:`liesel_gam.VarIGPrior`, or fixed float for
+        the automatic shape intercept. ``None`` uses the unclipped Weibull variance
+        prior described in :class:`~liesel_ptm.PTM`. Configure this on the predictor
+        itself when supplying ``shape``.
+
+    Raises
+    ------
+    ValueError
+        If the shape dimension or interval is invalid, location/scale contain
+        intercepts, shape is not shared and constrained, or the response variable
+        already belongs to a model or has a distribution.
+
+    Notes
+    -----
+    Add terms through :attr:`pred` before creating inference objects. Computed
+    intercepts are separate from these predictors and enter the likelihood as
+    ``loc`` and ``scale``. :meth:`setup_mcmc` records both intercepts at every draw;
+    :meth:`predict` uses those records on a copied prediction graph.
 
     See Also
     --------
@@ -121,21 +157,68 @@ class LegacyPTM:
     LogScaleIntercept : Compute the corresponding log-scale intercept.
     """
 
-    model: lsl.Model
-    """Liesel model used for sampling and copied for prediction."""
+    pred: PTMPredictors
+    """Location/scale effects and shared shape, excluding computed intercepts."""
 
-    def __init__(self, model: lsl.Model) -> None:
-        self.model = model
+    def __init__(
+        self,
+        y: ArrayLike | Sequence[float] | lsl.Var,
+        *,
+        nshape: int,
+        bounds: tuple[float, float] = (-4.0, 4.0),
+        loc: gam.AdditivePredictor | None = None,
+        scale: gam.AdditivePredictor | None = None,
+        shape: gam.MVAdditivePredictor | None = None,
+        shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
+    ) -> None:
+        _validate_geometry(nshape, bounds, minimum=3)
+        self.pred = _make_predictors(
+            nshape, loc, scale, shape, shape_scale, legacy=True
+        )
+        for predictor in (self.pred.loc, self.pred.scale):
+            if isinstance(predictor.intercept, lsl.Var) or jnp.any(
+                predictor.intercept.value
+            ):
+                raise ValueError(f"{predictor.name!r} must be intercept-free.")
+        if self.pred.shape.terms:
+            raise ValueError("Legacy shape must be shared, without covariate terms.")
+        response = y if isinstance(y, lsl.Var) else lsl.Var.new_obs(y, name="y")
+        if (
+            response.model is not None
+            or response.dist_node is not None
+            or not response.observed
+        ):
+            raise ValueError(
+                "y must be an unowned observed variable without a distribution."
+            )
+        # A separate data node avoids a cycle through the observation variable in
+        # Liesel's variable graph. Training responses stay fixed during prediction.
+        training_y = lsl.Data(response.value)
+        beta = LocationIntercept(
+            training_y, self.pred.loc, self.pred.scale.linear_predictor, name="beta0"
+        )
+        loc_full = lsl.Var.new_calc(lambda b, m: b + m, beta, self.pred.loc, name="loc")
+        gamma = LogScaleIntercept(
+            training_y, loc_full, self.pred.scale.linear_predictor, name="gamma0"
+        )
+        scale_full = lsl.Var.new_calc(
+            lambda g, relative: jnp.exp(g) * relative,
+            gamma,
+            self.pred.scale,
+            name="scale",
+        )
+        knots = PTMKnots(*bounds, nparam=nshape)
+        response.dist_node = PTMDist(
+            knots.knots, loc_full, scale_full, self.pred.shape, bspline="ptm"
+        )
+        self._scale = scale_full
+        super().__init__(response)
 
     def setup_mcmc(
         self,
         *,
-        loc_terms: gam.AdditivePredictor,
-        log_scale_terms: gam.AdditivePredictor,
-        shape: gam.MVAdditivePredictor,
         seed: int,
         num_chains: int = 4,
-        scale_name: str = "scale",
         iwls_kwargs: Mapping[str, Any] | None = None,
         shape_spec: gs.MCMCSpec | None = None,
     ) -> gs.EngineBuilder:
@@ -143,17 +226,8 @@ class LegacyPTM:
 
         Parameters
         ----------
-        loc_terms, log_scale_terms
-            Intercept-free predictors containing isotropic structured liesel-gam terms.
-            Use ``TermBuilder.slin`` for linear terms. Plain linear, anisotropic and
-            scale-factored terms require manual Liesel setup instead.
-        shape
-            Shared multivariate shape predictor with an intercept and no covariate
-            terms.
         seed, num_chains
             Random seed and chain count for :class:`liesel.goose.EngineBuilder`.
-        scale_name
-            Name of the observation-scale variable used for location proposal weights.
         iwls_kwargs
             Arguments for :class:`liesel.goose.IWLSKernel`. Defaults to step size 1 and
             target acceptance 0.5. Proposal geometry comes from liesel-gam.
@@ -178,12 +252,21 @@ class LegacyPTM:
         Updates parameter inference specifications. Existing scale inference, including
         conjugate Gibbs, is retained; missing scalar scale updates use NUTS. The fitted
         model remains the posterior target, including its computed-intercept updates.
+        Predictors are taken from :attr:`pred`. Location/scale require isotropic
+        structured terms, such as ``TermBuilder.slin``; plain linear, anisotropic and
+        scale-factored terms require manual Liesel configuration.
 
         See Also
         --------
         predict : Predict using the recorded intercept draws.
         """
-        model = self.model
+        model = self
+        loc_terms, log_scale_terms, shape = (
+            self.pred.loc,
+            self.pred.scale,
+            self.pred.shape,
+        )
+        scale_name = self._scale.name
         intercepts = _computed_intercepts(model)
         for var in (loc_terms, log_scale_terms, shape):
             if var.model is not model:
@@ -281,8 +364,7 @@ class LegacyPTM:
     def predict(
         self,
         samples: gs.PositionInput,
-        *,
-        predict: Sequence[str],
+        predict: Sequence[str] | None = None,
         newdata: gs.PositionInput | None = None,
         chunk_size: int | None = 64,
     ) -> dict[str, Any]:
@@ -294,7 +376,8 @@ class LegacyPTM:
             Posterior samples, including both intercepts recorded by
             :meth:`setup_mcmc`, with the same leading sample axes.
         predict
-            Nonempty sequence of variable or node names to predict.
+            Variable or node names to predict; ``None`` returns all variables,
+            following :meth:`liesel.model.Model.predict`.
         newdata, chunk_size
             Passed to :meth:`liesel.model.Model.predict` on a detached prediction graph.
 
@@ -316,7 +399,9 @@ class LegacyPTM:
         targets, training responses are absent from the prediction graph. Include new
         responses in ``newdata`` when predicting response-dependent quantities.
         """
-        model = self.model
+        model = self
+        if predict is None:
+            predict = list(self.vars)
         intercepts = _computed_intercepts(model)
         missing = {var.name for var in intercepts} - samples.keys()
         if missing:
@@ -335,5 +420,19 @@ class LegacyPTM:
             copied.value_node = value
             nodes[value.name] = value
         objects = nodes | variables
-        prediction_model = lsl.Model([objects[name] for name in predict])
+        targets = (
+            list(variables.values())
+            if any(name in model.model_nodes for name in predict)
+            else [objects[name] for name in predict]
+        )
+        prediction_model = lsl.Model(targets)
+        if newdata is not None:
+            unknown = newdata.keys() - model.vars.keys()
+            if unknown:
+                raise KeyError(f"New data are not part of the model: {sorted(unknown)}")
+            newdata = {
+                name: value
+                for name, value in newdata.items()
+                if name in prediction_model.vars
+            }
         return prediction_model.predict(samples, predict, newdata, chunk_size)

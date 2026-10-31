@@ -41,7 +41,6 @@ shape. Data are synthetic; construct predictors and terms with ``liesel_gam``.
 
     import jax
     import jax.numpy as jnp
-    import liesel.model as lsl
     import liesel_gam as gam
 
     import liesel_ptm as ptm
@@ -50,60 +49,41 @@ shape. Data are synthetic; construct predictors and terms with ``liesel_gam``.
     y = jnp.sin(x) + jax.random.normal(jax.random.key(42), x.shape)
     builder = gam.TermBuilder(gam.DictRegistry({"x": x}))
 
-    loc = gam.AdditivePredictor("loc")
-    loc += builder.ps("x", k=10)
-    scale = gam.AdditivePredictor("scale", inv_link=jnp.exp)
+    model = ptm.PTM(y, nshape=6, bounds=(-4.0, 4.0))
+    model.pred.loc += builder.ps("x", k=10)
 
-    knots = ptm.PTMKnots(-4.0, 4.0, nparam=6)
-    shape = gam.MVAdditivePredictor.from_random_walk(
-        "delta",
-        ndim=knots.nparam,
-        intercept=False,
-    ).constrain("sumzero_coef")
-    shape_builder = gam.MVTermBuilder.from_predictor(shape, term_builder=builder)
-    shape.intercept = shape_builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
+:class:`~liesel_ptm.PTM` is a Liesel model with native liesel-gam predictors in
+:attr:`~liesel_ptm.PTM.pred`. Add terms through ``.pred.loc``, ``.pred.scale`` and
+``.pred.shape`` before creating inference objects. Location and scale represent the
+conditional mean and standard deviation. ``nshape`` counts shape coefficients before
+the sum-to-zero constraint; ``bounds`` defaults to ``(-4, 4)`` on the standardized
+residual scale. The shape predictor includes a zero-initialized random-walk intercept.
+Pass ``shape_scale`` a native liesel-gam scale variable or a fixed float to configure
+its prior. Supplied ``loc``, ``scale`` and ``shape`` predictors are also accepted.
 
-    response = lsl.Var.new_obs(
-        y,
-        dist=ptm.PTMDist(
-            knots.knots,
-            loc=loc,
-            scale=scale,
-            shape=shape,
-            bspline="ptm",
-            centered=True,
-            scaled=True,
-        ),
-        name="y",
-    )
-    model = lsl.Model(response)
-
-``centered=True, scaled=True`` gives location and scale their mean/standard-deviation
-interpretation. Shape effects depending on covariates require ``bspline="onion"``.
-For staged optimization, VI, and prediction, see the
+For staged optimization, VI, covariate-dependent shape and prediction, see the
 `modern reference example <https://github.com/liesel-devs/liesel-ptm/blob/codex/cleanup/demo/reference_modern.py>`_.
+For manual construction, :class:`~liesel_ptm.PTMDist` remains available.
+
 
 Legacy PTM
 ----------
 
-The original PTM uses a shared shape predictor and computed location/scale
-intercepts. Construct it with :class:`~liesel_ptm.LocationIntercept`,
-:class:`~liesel_ptm.LogScaleIntercept`, and ``centered=False, scaled=False``.
-Use the same liesel-gam random-walk construction for shape as above. The
+The original PTM uses shared shape and computed location/scale intercepts.
+:class:`~liesel_ptm.LegacyPTM` applies those intercepts separately from ``.pred.loc``
+and ``.pred.scale``. The latter returns relative positive scale; use its
+``linear_predictor`` for log-scale effects. The
 `complete legacy example <https://github.com/liesel-devs/liesel-ptm/blob/codex/cleanup/demo/reference_legacy.py>`_
 includes a smoothing-variance Gibbs update. Its Weibull variance prior is unclipped.
 
-For that model, configure Gaussian IWLS proposals for location/scale and a joint
-NUTS block for shape with :meth:`~liesel_ptm.LegacyPTM.setup_mcmc`::
+Configure Gaussian IWLS proposals for location/scale and joint shape NUTS with
+:meth:`~liesel_ptm.LegacyPTM.setup_mcmc`::
 
-    legacy = ptm.LegacyPTM(model)
-    engine_builder = legacy.setup_mcmc(
-        loc_terms=model.vars["loc_terms"],
-        log_scale_terms=model.vars["log_scale_terms"],
-        shape=model.vars["delta"],
-        seed=43,
-        num_chains=2,
-    )
+    legacy = ptm.LegacyPTM(y, nshape=6)
+    legacy_terms = gam.TermBuilder.from_dict({"x": x})
+    legacy.pred.loc += legacy_terms.slin("x", scale=1.0, name="m.x")
+    legacy.pred.scale += legacy_terms.slin("x", scale=0.5, name="s.x")
+    engine_builder = legacy.setup_mcmc(seed=43, num_chains=2)
     engine_builder.add_adaptation(500)
     engine_builder.add_posterior(1000)
     engine = engine_builder.build()
@@ -118,6 +98,10 @@ NUTS block for shape with :meth:`~liesel_ptm.LegacyPTM.setup_mcmc`::
 Both computed intercepts are recorded for every posterior draw.
 :meth:`~liesel_ptm.LegacyPTM.predict` uses those records for new covariates without
 changing the fitted graph. Use longer chains and inspect diagnostics for inference.
+
+Migrating the legacy constructor: ``LegacyPTM(y, nshape=...)`` replaces the earlier
+``LegacyPTM(model)`` wrapper. Add terms through ``.pred``; ``setup_mcmc`` now obtains
+the predictors directly from the model.
 
 Distribution effects
 --------------------
@@ -143,6 +127,8 @@ API Reference
     :recursive:
     :nosignatures:
 
+    ~liesel_ptm.PTM
+    ~liesel_ptm.PTMPredictors
     ~liesel_ptm.PTMDist
     ~liesel_ptm.TransformationDist
     ~liesel_ptm.LocScaleTransformationDist

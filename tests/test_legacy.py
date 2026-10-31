@@ -14,13 +14,16 @@ from demo import reference_legacy
 
 
 def setup(model, **kwargs):
-    return ptm.LegacyPTM(model).setup_mcmc(
-        loc_terms=model.vars["loc_terms"],
-        log_scale_terms=model.vars["log_scale_terms"],
-        shape=model.vars["delta"],
-        seed=42,
-        num_chains=2,
-        **kwargs,
+    return model.setup_mcmc(seed=42, num_chains=2, **kwargs)
+
+
+def rebuild(variables):
+    return ptm.LegacyPTM(
+        variables["y"].value,
+        nshape=6,
+        loc=variables["loc_terms"],
+        scale=variables["scale_terms"],
+        shape=variables["delta"],
     )
 
 
@@ -51,10 +54,10 @@ def test_kernel_coverage_gaussian_information_and_shape_block(kernel_class):
     assert shape_spec.kernel_group is None  # The caller's specification is unchanged.
     assert any(isinstance(ker, gs.GibbsKernel) for ker in builder.kernels)
     state = model.update_state(
-        {model.vars["log_scale_terms"].terms["s.x"].coef.name: jnp.array([0.3])}
+        {model.vars["scale_terms"].terms["s.x"].coef.name: jnp.array([0.3])}
     )
     sigma = model.extract_position(["scale"], state)["scale"]
-    for predictor_name in ("loc_terms", "log_scale_terms"):
+    for predictor_name in ("loc_terms", "scale_terms"):
         for term in model.vars[predictor_name].terms.values():
             ker = next(
                 ker for ker in builder.kernels if term.coef.name in ker.position_keys
@@ -146,7 +149,7 @@ def test_short_sampler_records_end_of_draw_intercepts_and_updates_all_blocks(sam
         assert np.any(np.diff(samples[name], axis=1) != 0), name
     for values in results.get_posterior_acceptance_probabilities().values():
         assert np.isfinite(values).all()
-    prediction = ptm.LegacyPTM(model).predict(
+    prediction = model.predict(
         samples,
         predict=["loc", "scale", "delta"],
         newdata={"x": jnp.array([-0.5, 0.5])},
@@ -163,7 +166,7 @@ def example_samples(model):
     samples["beta0"] = jnp.arange(6, dtype=float).reshape(2, 3) + 10
     samples["gamma0"] = jnp.log(jnp.arange(6, dtype=float).reshape(2, 3) + 2)
     m = model.vars["loc_terms"].terms["m.x"].coef.name
-    s = model.vars["log_scale_terms"].terms["s.x"].coef.name
+    s = model.vars["scale_terms"].terms["s.x"].coef.name
     samples[m] = jnp.full((2, 3, 1), 0.4)
     samples[s] = jnp.full((2, 3, 1), 0.2)
     return samples
@@ -173,8 +176,6 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
     monkeypatch,
 ):
     model = reference_legacy.build_model()
-    legacy = ptm.LegacyPTM(model)
-    assert legacy.model is model
     samples = example_samples(model)
     before = [np.array(value) for value in jax.tree.leaves(model.state)]
     training_node = model.vars["beta0"].value_node[0].name
@@ -190,9 +191,9 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
     monkeypatch.setattr(lsl.Model, "predict", inspect_graph)
     x = jnp.array([-0.8, 0.1, 0.6, 0.9])
     for chunk_size in (1, None):
-        prediction = legacy.predict(
+        prediction = model.predict(
             samples,
-            predict=["loc", "scale"],
+            ["loc", "scale"],
             newdata={"x": x},
             chunk_size=chunk_size,
         )
@@ -209,13 +210,45 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
         np.testing.assert_array_equal(previous, current)
 
 
+def test_prediction_defaults_and_model_log_likelihood_follow_liesel_interface():
+    model = reference_legacy.build_model()
+    samples = example_samples(model)
+    prediction = model.predict(samples)
+    assert prediction.keys() == model.vars.keys()
+    np.testing.assert_array_equal(prediction["beta0"], samples["beta0"])
+    target = "_model_log_lik"
+    result = model.predict(samples, [target])
+    nodes, variables = model.copy_nodes_and_vars()
+    for name in ("beta0", "gamma0"):
+        variables[name].value_node = lsl.Value(samples[name][0, 0])
+    manual = lsl.Model(variables["y"])
+    manual.state = manual.update_state(
+        {name: value[0, 0] for name, value in samples.items()}
+    )
+    np.testing.assert_allclose(result[target][0, 0], manual.log_lik, atol=2e-5)
+
+
+def test_prediction_accepts_known_unused_covariates_but_rejects_unknown_data():
+    model = reference_legacy.build_model()
+    builder = gam.TermBuilder.from_dict({"z": jnp.linspace(-1.0, 1.0, 24)})
+    model.pred.scale += builder.slin("z", scale=1.0, name="s.z")
+    samples = example_samples(model)
+    x = jnp.array([-0.5, 0.5])
+    result = model.predict(samples, ["loc"], {"x": x, "z": jnp.ones(2)})
+    np.testing.assert_allclose(
+        result["loc"], samples["beta0"][..., None] + 0.4 * x, atol=2e-6
+    )
+    with pytest.raises(KeyError, match="not part of the model"):
+        model.predict(samples, ["loc"], {"unknown": x})
+
+
 @pytest.mark.parametrize("missing", ["beta0", "gamma0"])
 def test_prediction_requires_recorded_intercepts(missing):
     model = reference_legacy.build_model()
     samples = example_samples(model)
     samples.pop(missing)
     with pytest.raises(ValueError, match="Missing recorded intercept"):
-        ptm.LegacyPTM(model).predict(samples, predict=["loc"])
+        model.predict(samples, predict=["loc"])
 
 
 def test_prediction_checks_intercept_axes_and_supports_custom_names():
@@ -223,18 +256,18 @@ def test_prediction_checks_intercept_axes_and_supports_custom_names():
     samples = example_samples(model)
     samples["gamma0"] = samples["gamma0"][:1]
     with pytest.raises(ValueError, match="matching sample axes"):
-        ptm.LegacyPTM(model).predict(samples, predict=["loc"])
+        model.predict(samples, predict=["loc"])
     samples = example_samples(model)
     for old, new in (("beta0", "offset"), ("gamma0", "log_spread")):
         model.vars[old].name = new
         samples[new] = samples.pop(old)
     builder = setup(model)
     assert builder.positions_included == ["offset", "log_spread"]
-    result = ptm.LegacyPTM(model).predict(samples, predict=["offset", "log_spread"])
+    result = model.predict(samples, predict=["offset", "log_spread"])
     np.testing.assert_array_equal(result["offset"], samples["offset"])
     np.testing.assert_array_equal(result["log_spread"], samples["log_spread"])
     node_name = model.vars["offset"].value_node.name
-    result = ptm.LegacyPTM(model).predict(samples, predict=[node_name])
+    result = model.predict(samples, predict=[node_name])
     np.testing.assert_array_equal(result[node_name], samples["offset"])
 
 
@@ -257,20 +290,17 @@ def test_setup_rejects_unsupported_location_terms(kind):
             name="interaction",
         )
     predictor += term
-    changed = lsl.Model(variables["y"])
+    changed = rebuild(variables)
     with pytest.raises(ValueError, match="structured term|scale-factored"):
         setup(changed)
 
 
 def test_setup_rejects_overlap_and_unexplained_parameters():
     model = reference_legacy.build_model()
+    model.pred.scale += model.pred.loc.terms["m.x"]
     with pytest.raises(ValueError, match="overlap"):
-        ptm.LegacyPTM(model).setup_mcmc(
-            loc_terms=model.vars["loc_terms"],
-            log_scale_terms=model.vars["loc_terms"],
-            shape=model.vars["delta"],
-            seed=42,
-        )
+        setup(model)
+    model = reference_legacy.build_model()
     extra = lsl.Var.new_param(0.0, dist=lsl.Dist(tfd.Normal, 0.0, 1.0), name="extra")
     model.add(extra)
     with pytest.raises(ValueError, match="outside the supplied predictors"):
@@ -285,7 +315,7 @@ def test_shape_gibbs_and_missing_scale_inference_are_covered():
     )
     shape_scale = gam.ScaleIG(0.1, 1.0, 0.001)
     shape.intercept = builder.intercept(scale=shape_scale)
-    model = lsl.Model(variables["y"])
+    model = rebuild(variables)
     missing = model.vars["loc_terms"].terms["m.ps(x)"].scale.value_node[0]
     missing.inference = None
     engine_builder = setup(model)
@@ -305,8 +335,6 @@ def test_setup_rejects_unconstrained_shape_and_invalid_shape_sampler():
     with pytest.raises(ValueError, match="NUTSKernel or HMCKernel"):
         setup(model, shape_spec=gs.MCMCSpec(gs.IWLSKernel))
     variables = model.copy_vars()
-    shape = gam.MVAdditivePredictor.from_random_walk("delta", ndim=6)
-    variables["y"].dist_node["coef"] = shape
-    model = lsl.Model(variables["y"])
+    variables["delta"] = gam.MVAdditivePredictor.from_random_walk("delta", ndim=6)
     with pytest.raises(ValueError, match="sumzero_coef"):
-        setup(model)
+        rebuild(variables)

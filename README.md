@@ -43,7 +43,6 @@ transformation shape. The data are synthetic.
 ```python
 import jax
 import jax.numpy as jnp
-import liesel.model as lsl
 import liesel_gam as gam
 
 import liesel_ptm as ptm
@@ -52,33 +51,9 @@ x = jnp.linspace(-2.0, 2.0, 100)
 y = jnp.sin(x) + jax.random.normal(jax.random.key(42), x.shape)
 builder = gam.TermBuilder(gam.DictRegistry({"x": x}))
 
-loc = gam.AdditivePredictor("loc")
-loc += builder.ps("x", k=10)
-scale = gam.AdditivePredictor("scale", inv_link=jnp.exp)
-
-knots = ptm.PTMKnots(-4.0, 4.0, nparam=6)
-shape = gam.MVAdditivePredictor.from_random_walk(
-    "delta",
-    ndim=knots.nparam,
-    intercept=False,
-).constrain("sumzero_coef")
-shape_builder = gam.MVTermBuilder.from_predictor(shape, term_builder=builder)
-shape.intercept = shape_builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
-
-response = lsl.Var.new_obs(
-    y,
-    dist=ptm.PTMDist(
-        knots.knots,
-        loc=loc,
-        scale=scale,
-        shape=shape,
-        bspline="ptm",
-        centered=True,
-        scaled=True,
-    ),
-    name="y",
-)
-model = lsl.Model(response)
+model = ptm.PTM(y, nshape=6, bounds=(-4.0, 4.0))
+model.pred.loc += builder.ps("x", k=10)
+# model.pred.scale and model.pred.shape already have intercepts.
 ```
 
 For fitting, prediction, and more model components, see the reference examples:
@@ -86,24 +61,27 @@ For fitting, prediction, and more model components, see the reference examples:
 - [Modern GPTM](demo/reference_modern.py): location, scale, and shape predictors; optimization and VI.
 - [Legacy PTM](demo/reference_legacy.py): shared shape and computed intercepts.
 
-For a shared-shape model built with `LocationIntercept` and `LogScaleIntercept`,
-`LegacyPTM` sets up Gaussian IWLS proposals and joint shape NUTS, recording both
-intercepts at every posterior draw:
+`PTM` is a Liesel `Model`; add native liesel-gam terms through `.pred.loc`,
+`.pred.scale`, and `.pred.shape`, then use ordinary Liesel inference. `nshape`
+counts shape coefficients before their sum-to-zero constraint. `bounds` describes
+the flexible interval on the standardized residual scale and defaults to `(-4, 4)`.
+Manual `Model`/`PTMDist` construction remains available.
+
+For the legacy shared-shape model, location and scale terms exclude the computed
+intercepts. `LegacyPTM` sets up Gaussian IWLS proposals and joint shape NUTS,
+recording both intercepts at every posterior draw:
 
 ```python
-legacy = ptm.LegacyPTM(model)
-engine_builder = legacy.setup_mcmc(
-    loc_terms=model.vars["loc_terms"],
-    log_scale_terms=model.vars["log_scale_terms"],
-    shape=model.vars["delta"],
-    seed=43,
-    num_chains=2,
-)
+legacy = ptm.LegacyPTM(y, nshape=6)
+legacy_terms = gam.TermBuilder.from_dict({"x": x})
+legacy.pred.loc += legacy_terms.slin("x", scale=1.0, name="m.x")
+legacy.pred.scale += legacy_terms.slin("x", scale=0.5, name="s.x")
+engine_builder = legacy.setup_mcmc(seed=43, num_chains=2)
 ```
 
 Use standard Liesel scheduling and sampling, then `legacy.predict()` for prediction
-with the recorded intercepts. The linked legacy example contains the complete model.
-Its Weibull variance prior is unclipped.
+with the recorded intercepts. The linked legacy example contains the complete workflow,
+including a smoothing update. Its Weibull variance prior is unclipped.
 
 See the [plotting notebook](demo/term-distribution-plots.ipynb) for distribution effects.
 It illustrates plots with simulated coefficient draws.

@@ -7,7 +7,9 @@ from .dist import onion_dist as onion_dist
 from .legacy import LegacyPTM as LegacyPTM
 from .legacy import LocationIntercept as LocationIntercept
 from .legacy import LogScaleIntercept as LogScaleIntercept
+from .model import PTM as PTM
 from .model import PTMDist as PTMDist
+from .model import PTMPredictors as PTMPredictors
 from .plots import plot_1d_smooth_dist as plot_1d_smooth_dist
 from .plots import plot_2d_smooth_dist as plot_2d_smooth_dist
 from .plots import plot_3d_smooth_dist as plot_3d_smooth_dist

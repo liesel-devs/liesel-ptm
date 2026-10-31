@@ -1,14 +1,182 @@
-"""Liesel distribution node for PTM likelihoods."""
+"""PTM models and their Liesel likelihood node."""
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from functools import partial
+from numbers import Integral
 from typing import Literal
 
 import jax.numpy as jnp
 import liesel.model as lsl
+import liesel_gam as gam
+import numpy as np
 from jax.typing import ArrayLike
 
-from .bspline import OnionSpline, PTMSpline
+from .bspline import OnionKnots, OnionSpline, PTMSpline
 from .dist import LocScaleTransformationDist
+
+
+@dataclass
+class PTMPredictors:
+    """Native liesel-gam predictors exposed by :class:`~liesel_ptm.PTM`.
+
+    Add terms with ``+=``, ``append`` or ``extend``. In a
+    :class:`~liesel_ptm.LegacyPTM`, location and scale exclude computed intercepts;
+    scale still applies an exponential inverse link.
+    """
+
+    loc: gam.AdditivePredictor
+    """Location predictor; identity link by default."""
+    scale: gam.AdditivePredictor
+    """Positive scale predictor; access log scale through ``linear_predictor``."""
+    shape: gam.MVAdditivePredictor
+    """Shape coefficients, including their structured intercept."""
+
+
+def _validate_geometry(
+    nshape: int, bounds: tuple[float, float], *, minimum: int
+) -> None:
+    if isinstance(nshape, bool) or not isinstance(nshape, Integral) or nshape < minimum:
+        raise ValueError(f"nshape must be an integer of at least {minimum}.")
+    interval = np.asarray(bounds, dtype=float)
+    if (
+        interval.shape != (2,)
+        or not np.isfinite(interval).all()
+        or not interval[0] < interval[1]
+    ):
+        raise ValueError("bounds must contain two finite, strictly increasing values.")
+
+
+def _make_predictors(
+    nshape: int,
+    loc: gam.AdditivePredictor | None,
+    scale: gam.AdditivePredictor | None,
+    shape: gam.MVAdditivePredictor | None,
+    shape_scale: lsl.Var | gam.VarIGPrior | float | None,
+    *,
+    legacy: bool,
+) -> PTMPredictors:
+    if loc is None:
+        loc = gam.AdditivePredictor(
+            "loc_terms" if legacy else "loc", intercept=not legacy
+        )
+    if scale is None:
+        scale = gam.AdditivePredictor(
+            "scale_terms" if legacy else "scale", inv_link=jnp.exp, intercept=not legacy
+        )
+    if shape is None:
+        shape = gam.MVAdditivePredictor.from_random_walk(
+            "delta",
+            ndim=nshape,
+            intercept_scale=(
+                gam.scale_wb(0.1, scale=0.05, name="shape_scale")
+                if shape_scale is None
+                else shape_scale
+            ),
+        ).constrain("sumzero_coef")
+    elif shape_scale is not None:
+        raise ValueError("Set shape_scale on the supplied shape predictor instead.")
+    if shape.ndim != nshape or shape.constraint != "sumzero_coef":
+        raise ValueError(
+            "shape must have nshape dimensions and the sumzero_coef constraint."
+        )
+    return PTMPredictors(loc, scale, shape)
+
+
+class PTM(lsl.Model):
+    """Modern PTM with location, scale and covariate-dependent shape predictors.
+
+    Parameters
+    ----------
+    y
+        Response values, or an observed :class:`liesel.model.Var` without a
+        distribution. An array becomes a response variable named ``y``.
+    nshape
+        Number of shape coefficients before constraints; an integer of at least two.
+    bounds
+        Flexible interval on the standardized residual scale. Cubic, equidistant
+        :class:`~liesel_ptm.OnionKnots` are constructed internally.
+    loc, scale, shape
+        Optional native liesel-gam predictors, retained by identity. Defaults are an
+        identity-link location predictor, an exponential-link scale predictor, and a
+        first-order random-walk shape predictor constrained with ``sumzero_coef``.
+        Location and log scale have flat-prior intercepts initialized at zero. Shape
+        has a zero-initialized structured intercept and ``nshape - 1`` latent
+        dimensions. A supplied shape must have the same dimension and constraint.
+    shape_scale
+        Scale of the automatic shape intercept: a native scale variable,
+        :class:`liesel_gam.VarIGPrior`, or a fixed float. ``None`` creates
+        ``gam.scale_wb(0.1, scale=0.05)``: initial standard deviation 0.1 and an
+        unclipped Weibull(1/2, 0.05) prior on its square. Configure this on the
+        predictor itself when supplying ``shape``.
+
+    Raises
+    ------
+    ValueError
+        If the shape dimension or interval is invalid, a supplied shape has an
+        incompatible dimension/constraint, or ``y`` already belongs to a model or
+        has a distribution.
+
+    Notes
+    -----
+    Location and scale are the conditional mean and standard deviation. Add terms
+    after initialization, then create ordinary Liesel optimization, VI or MCMC
+    objects. Graph growth and locking follow :class:`liesel.model.Model` directly.
+
+    See Also
+    --------
+    liesel_ptm.LegacyPTM : Shared shape with computed location and scale intercepts.
+    PTMDist : Likelihood node for constructing a model manually.
+
+    Examples
+    --------
+    >>> import liesel_gam as gam
+    >>> import liesel_ptm as ptm
+    >>> model = ptm.PTM([0.1, -0.2, 0.4], nshape=4)
+    >>> terms = gam.TermBuilder.from_dict({"x": [-1.0, 0.0, 1.0]})
+    >>> model.pred.loc += terms.slin("x", scale=1.0)
+    >>> model.pred.shape.ndim, model.pred.shape.latent_ndim
+    (4, 3)
+    """
+
+    pred: PTMPredictors
+    """Location, scale and shape predictors; terms can be added after initialization."""
+
+    def __init__(
+        self,
+        y: ArrayLike | Sequence[float] | lsl.Var,
+        *,
+        nshape: int,
+        bounds: tuple[float, float] = (-4.0, 4.0),
+        loc: gam.AdditivePredictor | None = None,
+        scale: gam.AdditivePredictor | None = None,
+        shape: gam.MVAdditivePredictor | None = None,
+        shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
+    ) -> None:
+        _validate_geometry(nshape, bounds, minimum=2)
+        self.pred = _make_predictors(
+            nshape, loc, scale, shape, shape_scale, legacy=False
+        )
+        response = y if isinstance(y, lsl.Var) else lsl.Var.new_obs(y, name="y")
+        if (
+            response.model is not None
+            or response.dist_node is not None
+            or not response.observed
+        ):
+            raise ValueError(
+                "y must be an unowned observed variable without a distribution."
+            )
+        knots = OnionKnots(*bounds, nparam=nshape)
+        response.dist_node = PTMDist(
+            knots.knots,
+            loc=self.pred.loc,
+            scale=self.pred.scale,
+            shape=self.pred.shape,
+            bspline="onion",
+            centered=True,
+            scaled=True,
+        )
+        super().__init__(response)
 
 
 class PTMDist(lsl.Dist):
