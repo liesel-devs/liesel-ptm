@@ -113,6 +113,26 @@ def get_onion_fn(knots) -> Callable[[Array], Array]:
 
 
 class OnionSpline(TransformationSpline):
+    """
+    Onion spline transformation using given knots.
+
+    Parameters
+    ----------
+    knots
+        Increasing, equidistant spline knot sequence.
+
+    Attributes
+    ----------
+    knots
+        Array of spline knots.
+
+    Notes
+    -----
+    Set geometry and numerical settings before first evaluation; JIT kernels
+    capture them. Reuse the spline across parameter draws. Changing settings
+    requires a new spline, which creates a separate compilation-cache entry.
+    """
+
     def __init__(
         self,
         knots: Array,
@@ -120,19 +140,6 @@ class OnionSpline(TransformationSpline):
             "...nj,...j->...n", "...nj,...nj->...n"
         ] = "...nj,...j->...n",
     ) -> None:
-        """
-        Onion spline transformation using given knots.
-
-        Parameters
-        ----------
-        knots
-            Increasing, equidistant spline knot sequence.
-
-        Attributes
-        ----------
-        knots
-            Array of spline knots.
-        """
         super().__init__(knots, subscripts=subscripts)
         self.supports_rowwise_coef = True
         self._compute_coef = jax.jit(get_onion_fn(knots))

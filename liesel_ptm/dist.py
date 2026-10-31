@@ -412,6 +412,7 @@ class TransformationDist(tfd.Distribution):
             tiny = jnp.finfo(jnp.asarray(prob).dtype).tiny
             return jnp.log(jnp.clip(prob, tiny, 1.0))
 
+    # **kwargs matches TFP's typed override; reject overrides as before.
     def _log_prob(self, value: Array, **kwargs) -> Array | float:
         if kwargs:
             raise TypeError(f"Unexpected keyword argument: {next(iter(kwargs))!r}")
@@ -433,7 +434,7 @@ class TransformationDist(tfd.Distribution):
 
         return self._quantile(u)
 
-    # Spline kernels share compiled code across distribution/parameter draws.
+    # **kwargs matches TFP's typed override; reject overrides as before.
     def _quantile(self, value: Array, **kwargs) -> Array:
         if kwargs:
             raise TypeError(f"Unexpected keyword argument: {next(iter(kwargs))!r}")
@@ -856,11 +857,14 @@ class TransformationDist(tfd.Distribution):
         if isinstance(
             self.parametric_distribution, tfd.AutoCompositeTensorDistribution
         ):
-            y = _composite_quantile(self.parametric_distribution, u)
-        else:
-            y = self.parametric_distribution.quantile(u)
-
-        return y
+            try:
+                # Custom TFP subclasses may be registered but not flattenable.
+                jax.tree_util.tree_flatten(self.parametric_distribution)
+            except (TypeError, ValueError):
+                pass
+            else:
+                return _composite_quantile(self.parametric_distribution, u)
+        return self.parametric_distribution.quantile(u)
 
     def inverse_transformation(self, value: Array) -> Array:
         """

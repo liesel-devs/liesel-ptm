@@ -246,6 +246,12 @@ class PTMSpline(TransformationSpline):
         Left boundary for tail transition.
     max_eps
         Right boundary for tail transition.
+
+    Notes
+    -----
+    Set geometry and numerical settings before first evaluation; JIT kernels
+    capture them. Reuse the spline across parameter draws. Changing settings
+    requires a new spline, which creates a separate compilation-cache entry.
     """
 
     def __init__(

@@ -20,6 +20,22 @@ coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
 bs = PTMSpline(knots.knots)
 
 
+class _NormalWithKwargs(tfd.Normal):
+    def __init__(self, loc, scale, **kwargs):
+        super().__init__(loc=loc, scale=scale, **kwargs)
+
+
+class _NormalWithRenamedParameters(tfd.Normal):
+    def __init__(self, mu, sigma):
+        super().__init__(loc=mu, scale=sigma)
+
+
+def _compiled(caplog: pytest.LogCaptureFixture) -> bool:
+    return any(
+        "Finished XLA compilation" in record.getMessage() for record in caplog.records
+    )
+
+
 def normal_with_batch(batch_shape):
     return tfd.Normal(loc=jnp.zeros(batch_shape), scale=jnp.ones(batch_shape))
 
@@ -462,9 +478,9 @@ class TestSplineMomentQuadrature:
 
 class TestDistOneCoef:
     @pytest.mark.parametrize("method", ["quantile", "log_prob"])
-    def test_distribution_rejects_parameter_overrides(self, method):
+    def test_quantile_and_log_prob_reject_parameter_overrides(self, method):
         dist = ptm.LocScaleTransformationDist(coef=coef, loc=0.0, scale=1.0, bspline=bs)
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match="loc"):
             getattr(dist, method)(0.5, loc=2.0)
 
     @pytest.mark.parametrize("method", ["quantile", "log_prob"])
@@ -493,19 +509,13 @@ class TestDistOneCoef:
 
         with jax.log_compiles(True):
             first_values = getattr(first, method)(probabilities).block_until_ready()
-            assert any(
-                "Finished XLA compilation" in record.getMessage()
-                for record in caplog.records
-            )
+            assert _compiled(caplog)
             caplog.clear()
             second_values = getattr(second, method)(
                 changed_probabilities
             ).block_until_ready()
 
-        assert not any(
-            "Finished XLA compilation" in record.getMessage()
-            for record in caplog.records
-        )
+        assert not _compiled(caplog)
         assert not jnp.allclose(first_values, second_values)
         if method == "quantile":
             np.testing.assert_allclose(
@@ -737,6 +747,36 @@ class TestResponseMoments:
         parametric_distribution=tfd.TwoPieceStudentT,
     )
 
+    @pytest.mark.parametrize(
+        "distribution,parameters",
+        [
+            (_NormalWithKwargs, {"loc": 1.0, "scale": 2.0}),
+            (_NormalWithRenamedParameters, {"mu": 1.0, "sigma": 2.0}),
+        ],
+    )
+    def test_custom_parametric_subclasses_support_quantiles_samples_and_moments(
+        self, distribution, parameters
+    ):
+        dist = ptm.TransformationDist(
+            coef=jnp.zeros(knots.nparam),
+            bspline=bs,
+            parametric_distribution=distribution,
+            **parameters,
+        )
+        expected = tfd.Normal(1.0, 2.0)
+        probabilities = jnp.array([0.1, 0.5, 0.9])
+        quantiles = expected.quantile(probabilities)
+        np.testing.assert_allclose(dist.quantile(probabilities), quantiles, atol=1e-5)
+        np.testing.assert_allclose(
+            jax.jit(dist.quantile)(probabilities), quantiles, atol=1e-5
+        )
+        samples = dist.sample(4, seed=jax.random.key(1))
+        assert samples.shape == (4,)
+        assert np.isfinite(samples).all()
+        np.testing.assert_allclose(dist.mean(), expected.mean(), atol=1e-4)
+        np.testing.assert_allclose(dist.variance(), expected.variance(), atol=1e-4)
+        np.testing.assert_allclose(dist.stddev(), expected.stddev(), atol=1e-4)
+
     def test_parametric_quantile_supports_non_composite_distributions(self):
         class PlainNormal(tfd.Distribution):
             def __init__(self):
@@ -779,16 +819,10 @@ class TestResponseMoments:
         changed_probabilities = jnp.array([0.2, 0.6, 0.8])
         with jax.log_compiles(True):
             values = first.quantile(probabilities).block_until_ready()
-            assert any(
-                "Finished XLA compilation" in record.getMessage()
-                for record in caplog.records
-            )
+            assert _compiled(caplog)
             caplog.clear()
             changed_values = second.quantile(changed_probabilities).block_until_ready()
-        assert not any(
-            "Finished XLA compilation" in record.getMessage()
-            for record in caplog.records
-        )
+        assert not _compiled(caplog)
         np.testing.assert_allclose(
             values,
             tfd.TwoPieceStudentT(**first_parameters).quantile(probabilities),

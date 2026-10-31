@@ -48,7 +48,8 @@ class TransformationSpline:
         Attributes
         ----------
         n_chunks
-            Compatibility attribute; no longer controls evaluation chunking.
+            Maximum coefficient-batch rows per inverse block, capped at 256 and
+            the batch size. Set before first evaluation.
         knots
             Spline knot sequence.
         min_knot
@@ -57,6 +58,13 @@ class TransformationSpline:
             Maximum knot value.
         bspline
             :class:`.BSplineApprox` instance for basis operations.
+
+        Notes
+        -----
+        Treat geometry and numerical settings as immutable after first evaluation:
+        JIT kernels capture them. Create a new spline to change these settings.
+        Reuse one spline across parameter draws; JAX's compilation cache retains
+        static spline instances and compiles separately for each new instance.
         """
         self.n_chunks = 1024
         self.supports_rowwise_coef = False
