@@ -887,7 +887,8 @@ class TransformationDist(tfd.Distribution):
 
 class LocScaleTransformationDist(TransformationDist):
     """
-    Location–scale specialization of :class:`.TransformationDist`.
+    Location–scale specialization of
+    [TransformationDist][liesel_ptm.TransformationDist].
 
     Uses a Normal parametric layer with location ``loc`` and scale ``scale``,
     combined with a spline transformation and reference Normal(0, 1).
@@ -926,7 +927,7 @@ class LocScaleTransformationDist(TransformationDist):
 
     Notes
     -----
-    Inherits public attributes from :class:`TransformationDist`.
+    Inherits public attributes from [TransformationDist][liesel_ptm.TransformationDist].
     """
 
     def __init__(

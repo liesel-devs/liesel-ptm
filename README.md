@@ -25,12 +25,30 @@ Liesel's `vi-modernization` branch alongside this library:
 
 ```bash
 pip install "liesel @ git+https://github.com/liesel-devs/liesel.git@vi-modernization" \
-  "git+https://github.com/liesel-devs/liesel-ptm.git@codex/cleanup"
+  "git+https://github.com/liesel-devs/liesel-ptm.git@main"
 ```
 
 For a checkout, `uv sync --locked --group dev` installs the tested environment.
-Run `uv run --locked pytest`, `uv run --locked pre-commit run -a`, and
-`uv run --locked sphinx-build -W --keep-going -b html docs/source docs/build/html`.
+Run `uv run --locked pytest` and `uv run --locked pre-commit run -a`.
+
+## Documentation
+
+Read the [documentation](https://liesel-devs.github.io/liesel-ptm/) for executable
+guides and the API reference. To build it locally, install Quarto 1.8.27 and
+Graphviz, then run:
+
+```bash
+uv sync --locked --group dev --group docs
+uv run --locked --group docs python scripts/docs.py render
+uv run --locked --group docs zensical build --clean --strict
+```
+
+Preview with `uv run --locked --group docs zensical serve`. After changing a guide,
+library code, a shared guide fragment, or dependencies, force fresh execution with
+`uv run --locked --group docs python scripts/docs.py render --fresh`. Commit the
+Quarto sources, generated Markdown and figures, `_freeze` results, and output
+manifest together. See the [contributor instructions](docs/contributing.md) for
+setup, validation, and GitHub Pages deployment.
 
 
 ## Getting Started
@@ -56,10 +74,10 @@ model.pred.loc += builder.ps("x", k=10)
 # model.pred.scale and model.pred.shape already have intercepts.
 ```
 
-For fitting, prediction, and more model components, see the reference examples:
+For fitting, prediction, and more model components, see the executable guides:
 
-- [Modern GPTM](demo/reference_modern.py): location, scale, and shape predictors; optimization and VI.
-- [Legacy PTM](demo/reference_legacy.py): shared shape and computed intercepts.
+- [Modern GPTM](https://liesel-devs.github.io/liesel-ptm/guides/modern/): location, scale, and shape predictors; optimization and VI.
+- [Original PTM](https://liesel-devs.github.io/liesel-ptm/guides/original/): shared shape and computed intercepts.
 
 `PTM` is a Liesel `Model`; add native liesel-gam terms through `.pred.loc`,
 `.pred.scale`, and `.pred.shape`, then use ordinary Liesel inference. `nshape`

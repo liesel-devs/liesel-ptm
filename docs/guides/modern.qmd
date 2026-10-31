@@ -1,0 +1,238 @@
+---
+title: Fit a modern GPTM
+---
+
+Build a generalized penalized transformation model (GPTM) with location, scale,
+and shape effects, fit it with variational inference (VI), and predict at new
+covariate values. This example uses 24 synthetic observations so it runs quickly.
+The two training epochs and three posterior draws demonstrate the workflow;
+they do not establish convergence or support substantive inference.
+
+Install the [checkout environment](../contributing.md#build-the-documentation)
+before running the cells from top to bottom. Graphviz is needed for the model graph.
+
+## Set up the data
+
+The observed response is $y_i$. Its conditional location $\mu_i$, positive scale
+$\sigma_i$, and shape coefficients $\delta_i$ depend on the covariates. The
+transformation maps $r_i = (y_i - \mu_i) / \sigma_i$ to a standard normal scale:
+
+$$
+P(Y_i \le y) = \Phi\left(h_{\delta_i}((y - \mu_i) / \sigma_i)\right).
+$$
+
+Estimate the predictor coefficients and the shape intercept's smoothing variance.
+Keep the knot grid and the other prior scales fixed. With centering and scaling
+enabled, $\mu_i$ and $\sigma_i$ are the conditional mean and standard deviation.
+
+```{python}
+import jax
+import jax.numpy as jnp
+import liesel.model as lsl
+import liesel.optim as opt
+import liesel_gam as gam
+import numpy as np
+import optax
+import pandas as pd
+import tensorflow_probability.substrates.jax.distributions as tfd
+from IPython.display import Markdown
+
+import liesel_ptm as ptm
+```
+
+```{python}
+x = np.linspace(-1.0, 1.0, 24)
+y = 0.5 * x + np.exp(0.15 * x) * np.random.default_rng(42).normal(size=x.size)
+data = pd.DataFrame(
+    {"x": x, "group": pd.Categorical(np.tile(["a", "b", "c"], 8)), "y": y}
+)
+registry = gam.PandasRegistry(data)
+```
+
+The registry keeps the observed data and encodes the three categories in `group`.
+The fixed random seed makes the synthetic response reproducible.
+
+## Define location and scale
+
+Use a smooth location effect and a linear effect on log scale. The exponential
+inverse link keeps scale positive.
+
+```{python}
+loc = gam.AdditivePredictor("loc")
+scale = gam.AdditivePredictor("scale", inv_link=jnp.exp)
+loc += gam.TermBuilder(registry, prefix_names_by="m.").ps("x", k=5, scale=0.5)
+scale += gam.TermBuilder(registry, prefix_names_by="s.").lin(
+    "x", prior=lsl.Dist(tfd.Normal, loc=0.0, scale=0.5)
+)
+```
+
+## Define shape and the response
+
+Use [OnionKnots](../api/models.md#liesel_ptm.OnionKnots) and the onion spline when
+shape varies across observations. The sum-to-zero constraint identifies the shape
+coefficients. The shape intercept has a Weibull smoothing-variance prior; the smooth
+and categorical terms describe additional changes in distribution shape.
+
+```{python}
+knots = ptm.OnionKnots(-4.0, 4.0, nparam=4)
+shape = gam.MVAdditivePredictor.from_random_walk(
+    "delta", ndim=knots.nparam, intercept=False
+).constrain("sumzero_coef")
+builder = gam.MVTermBuilder.from_predictor(
+    shape,
+    term_builder=gam.TermBuilder(registry, prefix_names_by="h."),
+)
+shape.intercept = builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
+shape += builder.ps("x", k=5, scale=0.5, dimension_scale=0.3)
+shape += builder.lin("group", dimension_scale=0.3, name="h.group")
+```
+
+[PTMDist](../api/models.md#liesel_ptm.PTMDist) connects the predictors to the observed
+response. Enable both corrections for the mean/standard-deviation interpretation.
+
+```{python}
+response = registry.get_obs("y")
+response.dist_node = ptm.PTMDist(
+    knots.knots,
+    loc=loc,
+    scale=scale,
+    shape=shape,
+    bspline="onion",
+    centered=True,
+    scaled=True,
+)
+model = lsl.Model(response)
+```
+
+```{python}
+#| fig-alt: "GPTM graph with location, scale, and covariate-dependent shape."
+model.plot(width=24, height=12)
+```
+
+The graph shows separate location, scale, and shape predictors feeding the response.
+The smoothing variance belongs to the shape intercept's prior.
+
+## Find starting values
+
+First optimize location and scale while holding shape fixed. Then optimize shape
+while holding location and scale fixed. Each stage starts from the previous result.
+The parameter lists include the priors' parameters as well as term coefficients.
+
+```{python}
+loc_scale_parameters = list(model.parental_submodel(model.vars["loc"]).parameters)
+loc_scale_parameters += list(model.parental_submodel(model.vars["scale"]).parameters)
+shape_parameters = list(model.parental_submodel(model.vars["delta"]).parameters)
+
+for parameters in (loc_scale_parameters, shape_parameters):
+    result = opt.LieselOptim(
+        model,
+        optimizers=[opt.Optimizer(parameters, optax.adam(0.001))],
+        loss_monitor="train_full_data",
+        stopper=opt.Stopper(epochs=2, patience=2),
+        seed=43,
+        show_progress=False,
+    ).fit()
+    model.state = model.update_state(result.position_min_monitor)
+point = {name: var.value for name, var in model.parameters.items()}
+```
+
+`point` contains one fitted value per model parameter. These values initialize the
+variational family; they are not posterior draws.
+
+## Fit a variational family
+
+Use a full-covariance Gaussian block for location and scale and a diagonal Gaussian
+block for shape. Train the blocks separately, then jointly. The leading sample axes
+below are `(1, 3)`: one sample group containing three approximate posterior draws.
+Parameter dimensions follow those axes.
+
+```{python}
+loc_scale_block = opt.VDist(loc_scale_parameters, model).mvn_tril()
+shape_block = opt.VDist(shape_parameters, model).mvn_diag()
+family = opt.CompositeVDist(loc_scale_block, shape_block).build()
+loss = opt.NegElboLoss.from_vdist(family, nsamples=2)
+for parameters in (
+    loc_scale_block.parameters,
+    shape_block.parameters,
+    family.parameters,
+):
+    result = opt.LieselVI(
+        model,
+        loss=loss,
+        optimizers=[opt.Optimizer(parameters, optax.adam(0.001))],
+        loss_monitor="train_full_data",
+        stopper=opt.Stopper(epochs=2, patience=2),
+        seed=44,
+        show_progress=False,
+    ).fit()
+    family.q.state = family.q.update_state(result.position_final)
+posterior = loss.approximate_joint_posterior(result)
+samples = posterior.sample((1, 3), seed=jax.random.key(45))
+```
+
+```{python}
+sample_shapes = pd.DataFrame(
+    {"parameter": list(samples), "shape": [value.shape for value in samples.values()]}
+)
+Markdown(sample_shapes.to_markdown(index=False))
+```
+
+The sample dictionary has the same parameter names as `model.parameters`. For an
+analysis, increase the training budget, inspect the loss and approximation quality,
+and draw enough samples for the quantities you report.
+
+## Predict at new covariates
+
+Use `model.predict()` to evaluate the predictors for every draw. With this registry,
+new categorical inputs use their integer codes: `0` and `1` select `a` and `b`.
+
+```{python}
+prediction = model.predict(
+    samples,
+    predict=["loc", "scale", "delta"],
+    newdata={"x": jnp.array([-0.5, 0.5]), "group": jnp.array([0, 1])},
+)
+```
+
+```{python}
+prediction_shapes = pd.DataFrame(
+    {
+        "predictor": list(prediction),
+        "shape": [value.shape for value in prediction.values()],
+    }
+)
+Markdown(prediction_shapes.to_markdown(index=False))
+```
+
+Location and scale have axes `(sample group, draw, new observation)`. Shape adds
+one final axis for the four shape coefficients. These are conditional parameter
+draws; no new responses have been simulated.
+
+## Inspect a shape effect
+
+Plot the smooth term's [term-induced standardized distribution](term-distributions.md).
+Include the shape intercept explicitly. Location, scale, and the categorical shape
+term are excluded from this display.
+
+```{python}
+shape = model.vars["delta"]
+smooth = shape.terms["h.ps(x)"]
+effect = ptm.plot_1d_smooth_dist(
+    model.vars["y"],
+    smooth,
+    samples,
+    intercept=shape.intercept,
+    ngrid=3,
+    rgrid=60,
+)
+```
+
+```{python}
+#| fig-alt: "Density ridges for the smooth shape effect and shape intercept."
+effect
+```
+
+Compare the density shapes across covariate values. This very short fit illustrates
+the display, so differences and uncertainty bands should not be interpreted as
+reliable posterior evidence. See the [summary API](../api/summaries.md) for tidy
+numerical summaries and the [plot API](../api/plots.md) for display options.

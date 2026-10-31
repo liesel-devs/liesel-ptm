@@ -1,0 +1,82 @@
+[project]
+site_name = "Liesel-PTM"
+site_description = "Bayesian penalized transformation models in Liesel"
+site_url = "https://liesel-devs.github.io/liesel-ptm/"
+repo_url = "https://github.com/liesel-devs/liesel-ptm"
+docs_dir = "docs"
+site_dir = "site"
+exclude_docs = """
+*.qmd
+_quarto.yml
+_freeze/
+filters/
+.templates/
+.quarto/
+guide-outputs.json
+build/
+design/
+adr/
+"""
+nav = [
+  { "Getting started" = "index.md" },
+  { "Guides" = [
+    { "Fit a modern GPTM" = "guides/modern.md" },
+    { "Fit the original PTM" = "guides/original.md" },
+    { "Inspect distribution effects" = "guides/term-distributions.md" },
+  ] },
+  { "API reference" = [
+    { "Models and transformations" = "api/models.md" },
+    { "Distribution summaries" = "api/summaries.md" },
+    { "Distribution plots" = "api/plots.md" },
+    { "Censoring and survival" = "api/survival.md" },
+  ] },
+  { "Contributing" = "contributing.md" },
+]
+extra_javascript = [
+  "javascripts/mathjax.js",
+  "https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js",
+]
+
+[project.theme]
+logo = "assets/logo-light.png"
+features = ["content.code.copy", "navigation.sections", "navigation.footer"]
+
+[[project.theme.palette]]
+scheme = "default"
+toggle.icon = "material/brightness-7"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+scheme = "slate"
+toggle.icon = "material/brightness-4"
+toggle.name = "Switch to light mode"
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+tables = {}
+toc.permalink = true
+pymdownx.arithmatex.generic = true
+pymdownx.highlight = { anchor_linenums = true }
+pymdownx.superfences = {}
+pymdownx.details = {}
+
+[project.plugins.mkdocstrings]
+custom_templates = "docs/.templates"
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["."]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "numpy"
+show_source = false
+show_root_heading = true
+show_symbol_type_heading = true
+show_signature_annotations = true
+separate_signature = true
+signature_crossrefs = true
+members_order = "source"
+inherited_members = false
+show_if_no_docstring = false
+merge_init_into_class = true
+summary = true

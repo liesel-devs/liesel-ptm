@@ -200,8 +200,10 @@ class LegacyPTM(lsl.Model):
 
     See Also
     --------
-    LocationIntercept : Compute the location intercept from training residuals.
-    LogScaleIntercept : Compute the corresponding log-scale intercept.
+    [LocationIntercept][liesel_ptm.LocationIntercept]
+        Compute the location intercept from training residuals.
+    [LogScaleIntercept][liesel_ptm.LogScaleIntercept]
+        Compute the corresponding log-scale intercept.
     """
 
     pred: PTMPredictors
@@ -285,9 +287,9 @@ class LegacyPTM(lsl.Model):
         Parameters
         ----------
         seed, num_chains
-            Random seed and chain count for :class:`liesel.goose.EngineBuilder`.
+        Predictors are taken from [pred][liesel_ptm.LegacyPTM.pred].
         iwls_kwargs
-            Arguments for :class:`liesel.goose.IWLSKernel`. Defaults to step size 1 and
+            Arguments for `liesel.goose.IWLSKernel`. Defaults to step size 1 and
             target acceptance 0.5. Proposal geometry comes from liesel-gam.
         shape_spec
             NUTS or HMC specification shared by shape coefficients and nonconjugate
@@ -316,7 +318,8 @@ class LegacyPTM(lsl.Model):
 
         See Also
         --------
-        predict : Predict using the recorded intercept draws.
+        [predict][liesel_ptm.LegacyPTM.predict]
+            Predict using the recorded intercept draws.
         """
         model = self
         loc_terms, log_scale_terms, shape = (
@@ -428,13 +431,14 @@ class LegacyPTM(lsl.Model):
         ----------
         samples
             Posterior samples, including both intercepts recorded by
-            :meth:`setup_mcmc`, with the same leading sample axes.
+            [setup_mcmc][liesel_ptm.LegacyPTM.setup_mcmc], with the same leading
+            sample axes.
         predict
             Variable or node names to predict. ``None`` returns all variables at
             fitted data. With ``newdata``, observed variables are omitted unless
             they or all their observed value inputs have replacement values.
         newdata, chunk_size
-            Passed to :meth:`liesel.model.Model.predict` on a detached prediction graph.
+            Passed to `liesel.model.Model.predict` on a detached prediction graph.
 
         Returns
         -------

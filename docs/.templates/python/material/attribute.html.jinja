@@ -1,0 +1,8 @@
+{% if "property" in attribute.labels or root %}
+  {% include "_base/attribute.html.jinja" %}
+{% else %}
+  {# Attribute descriptions live in the class table; keep link targets available. #}
+  {% filter heading(heading_level, role="attribute", id=attribute.path,
+      hidden=True, skip_inventory=config.skip_local_inventory) %}
+  {% endfilter %}
+{% endif %}
