@@ -76,8 +76,8 @@ def fit(model: lsl.Model, epochs: int = 600, draws: int = 100):
         result = opt.LieselVI(
             model,
             loss=loss,
-            optimizers=[opt.Optimizer(parameters, optax.adam(0.01))],
-            loss_monitor="train_full_data",
+            optimizers=[opt.Optimizer(parameters, optax.adam(0.003))],
+            loss_monitor=opt.EmaTrainLossMonitor(effective_window=20),
             stopper=opt.Stopper(epochs=epochs, patience=epochs),
             seed=44,
             show_progress=False,

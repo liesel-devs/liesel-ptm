@@ -158,6 +158,10 @@ stage and eight Monte Carlo samples for each ELBO estimate. The leading sample a
 below are `(1, 100)`: one sample group containing 100 approximate posterior draws.
 Parameter dimensions follow those axes.
 
+Use an Adam learning rate of `0.003` and monitor an exponential moving average
+(EMA) of the training loss with an effective window of 20 updates. This smooths
+the noisy Monte Carlo estimates. Each update uses the complete dataset here.
+
 ``` python
 loc_scale_block = opt.VDist(loc_scale_parameters, model).mvn_tril()
 shape_block = opt.VDist(shape_parameters, model).mvn_diag()
@@ -171,8 +175,8 @@ for parameters in (
     result = opt.LieselVI(
         model,
         loss=loss,
-        optimizers=[opt.Optimizer(parameters, optax.adam(0.01))],
-        loss_monitor="train_full_data",
+        optimizers=[opt.Optimizer(parameters, optax.adam(0.003))],
+        loss_monitor=opt.EmaTrainLossMonitor(effective_window=20),
         stopper=opt.Stopper(epochs=600, patience=600),
         seed=44,
         show_progress=False,
@@ -207,11 +211,13 @@ the final joint training stage’s loss before interpreting its samples.
 result.plot_loss()
 ```
 
-<img src="conditional-shape_files/figure-commonmark/cell-11-output-1.png" width="420" height="300" alt="Training and monitoring ELBO losses for the final joint variational stage." />
+<img src="conditional-shape_files/figure-commonmark/cell-11-output-1.png" width="420" height="300" alt="Monte Carlo training loss and its EMA for the final joint VI stage." />
 
-The Monte Carlo loss fluctuates even near a good solution. A flat trace alone does
-not establish that the Gaussian variational family captures the posterior well;
-compare longer fits and check approximation quality for an analysis.
+The training loss fluctuates while the EMA shows its recent trend with some lag.
+The EMA smooths the same training estimates; it is not a validation loss. We keep
+the final variational parameters for sampling and use a fixed training budget.
+A flat EMA alone does not establish that the Gaussian family captures the
+posterior well; compare longer fits and check approximation quality for an analysis.
 
 ## Predict at new covariates
 
