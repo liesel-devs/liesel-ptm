@@ -303,14 +303,33 @@ def plot_conditional_dist(
 ) -> p9.ggplot:
     """Plot conditional PTM distributions at condition rows in newdata.
 
-    ``response_bijector`` maps modeled responses to the plotted scale and requires
-    an explicit ``rgrid`` in plotted-scale units.
+    Parameters
+    ----------
+    newdata
+        Equal-length covariate arrays or scalar-valued condition records, one
+        condition per row. See
+        [summarise_conditional_dist][liesel_ptm.summarise_conditional_dist]
+        for the input rules.
+    condition_labels
+        Unique labels in input-row order. By default, labels show covariate values.
+    include_loc, include_scale
+        Include the fitted location or scale. With both disabled, the horizontal
+        axis is the standardized response ``r``; otherwise it uses the response
+        name. Including either requires an explicit ``rgrid`` in plotted units.
+    response_bijector
+        Map to a reported response scale, requiring an explicit ``rgrid`` in those
+        units. The axis label gains the prefix ``Transformed``.
+
+    Returns
+    -------
+    plotnine.ggplot
+        Conditional curves with pointwise intervals. No reference curve is added.
     """
     if quantity not in _QUANTITIES:
         raise ValueError(f"Unknown quantity {quantity!r}.")
-    x_label = (
-        response.name if response_bijector is None else f"Transformed {response.name}"
-    )
+    x_label = response.name if include_loc or include_scale else "r"
+    if response_bijector is not None:
+        x_label = f"Transformed {x_label}"
     quantiles = (0.05, 0.5, 0.95) if ci_quantiles is None else ci_quantiles
     summary = summarise_conditional_dist(
         response,
@@ -660,7 +679,30 @@ def plot_1d_smooth_dist(
     show_n_samples: int | None = None,
     seed: int = 1,
 ) -> p9.ggplot:
-    """Plot standardized PTM distributions induced by a one-dimensional smooth."""
+    """Plot standardized PTM distributions induced by a one-dimensional smooth.
+
+    Parameters
+    ----------
+    intercept
+        Concrete Liesel intercept variable to include, or ``None`` to omit it.
+        The shorthand ``True`` is unsupported.
+    rgrid
+        Response grid, or its size. An integer spans ``[-5, 5]``.
+    ngrid
+        Number of covariate values when ``newdata`` is omitted; defaults to five.
+    ridge_spacing
+        Vertical separation of density ridges; zero overlays densities on a
+        shared density axis. ``None`` chooses the spacing automatically.
+    show_ridge_baselines
+        Draw dotted baseline guides for density ridges.
+    show_y_axis
+        Show the vertical axis, including covariate labels on density ridges.
+
+    Returns
+    -------
+    plotnine.ggplot
+        Term-induced curves, excluding sibling terms unless requested explicitly.
+    """
     term = cast(MarginalTerm, term)
     if quantity not in _QUANTITIES:
         raise ValueError(f"Unknown quantity {quantity!r}.")

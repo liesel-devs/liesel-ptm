@@ -326,8 +326,28 @@ def summarise_conditional_dist(
 ) -> pd.DataFrame:
     """Summarise conditional PTM distributions at condition rows in newdata.
 
-    ``response_bijector`` maps modeled responses to the reported scale and requires
-    an explicit ``rgrid`` in reported-scale units.
+    Parameters
+    ----------
+    newdata
+        Equal-length covariate arrays or scalar-valued condition records.
+        Rows are evaluated in their supplied order; no Cartesian grid is formed.
+        Supply every covariate needed by the predictors being evaluated.
+    include_loc, include_scale
+        Include the fitted location or scale; otherwise use zero or one,
+        respectively. Including either requires an explicit ``rgrid``.
+    response_bijector
+        Map modeled responses to the reported scale. Requires an explicit
+        ``rgrid`` in reported-scale units.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Pointwise summaries with condition columns and response grid ``r``.
+
+    Raises
+    ------
+    ValueError
+        If condition rows are duplicated or covariate arrays have unequal lengths.
     """
     if response_bijector is not None:
         if not isinstance(response_bijector, tfb.Bijector):

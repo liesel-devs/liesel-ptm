@@ -17,7 +17,6 @@ sample dictionary in the same form. The
 [conditional-shape PTM guide](conditional-shape.md) shows that fitting workflow.
 
 Run this guide from a [repository checkout](../contributing.md#build-the-documentation).
-The spatial example uses the bundled Columbus data and polygons.
 
 ## Prepare the examples
 
@@ -26,8 +25,6 @@ enabled. Term-induced distributions therefore have mean zero and standard
 deviation one; their differences describe standardized shape.
 
 ```{python}
-from pathlib import Path
-
 import jax
 import jax.numpy as jnp
 import liesel.model as lsl
@@ -42,7 +39,7 @@ import liesel_ptm as ptm
 
 dist = ptm.onion_dist(nparam=4, centered=True, scaled=True)
 dimension_scale = jnp.eye(4)
-keys = jax.random.split(jax.random.key(42), 10)
+keys = jax.random.split(jax.random.key(42), 3)
 ```
 
 This helper creates 40 coefficient draws around a seeded synthetic center.
@@ -92,14 +89,11 @@ ptm.plot_1d_smooth_dist(
 
 Compare the curves' skewness and concentration rather than their vertical position:
 the offsets separate the ridges and are not density values. Gray dotted curves
-show the reference distribution. Ribbons contain the pointwise 5th to 95th
-percentiles of the supplied draws. With fitted posterior samples, these ribbons
+show the reference distribution. Ribbons contain pointwise 90% intervals
+over the supplied draws. With fitted posterior samples, these ribbons
 would describe posterior variation.
 
-The helper evaluates five covariate values by default. An integer `rgrid` uses
-`[-5, 5]`; pass an explicit array to choose another response grid. Set
-`show_ridge_baselines=True` to draw baseline guides or `show_y_axis=False` to hide
-the covariate labels. With `ridge_spacing=0.0`, curves overlap on a density axis.
+See the [plot reference](../api/plots.md#liesel_ptm.plot_1d_smooth_dist) for grids and ridge layout options.
 
 ### Compare CDFs and transformations
 
@@ -202,8 +196,7 @@ Pass `hdi_prob` to add HDI lines, or `show_reference_dist=False` to omit the
 reference distribution.
 
 To combine a smooth term with an intercept, pass the concrete intercept variable
-as `intercept=...`. The shorthand `intercept=True` is unsupported because a term
-does not reliably identify its owning predictor.
+as `intercept=...`.
 
 ## Plot conditional response distributions
 
@@ -267,13 +260,8 @@ The curves move and widen because location and scale change; their standardized
 shape is the same. Conditional plots show no reference curve. This example has
 only one draw, so ribbons are disabled.
 
-New data can be equal-length arrays or scalar-valued records, as above. Rows are
-used directly: the conditional helpers do not form a Cartesian grid or infer
-missing covariates, and duplicate rows are rejected. Custom condition labels must
-be unique and follow the input-row order. Without them, legends show the covariate
-values. Use
-[summarise_conditional_dist](../api/summaries.md#liesel_ptm.summarise_conditional_dist)
-for a tidy numerical summary.
+Use [summarise_conditional_dist](../api/summaries.md#liesel_ptm.summarise_conditional_dist)
+for a numerical summary and the input-row rules.
 
 ### Show a transformed response scale
 
@@ -310,7 +298,7 @@ groups = pd.Categorical(["a", "b", "a", "c", "b"], categories=["a", "b", "c", "d
 tb_cluster = gam.MVTermBuilder.from_df(pd.DataFrame({"group": groups}), dimension_scale)
 cluster = tb_cluster.ri("group", scale=1.0, dimension_scale=1.0)
 cluster_model = lsl.Model(cluster)
-cluster_samples = simulated_samples(cluster, keys[6], scale=0.10)
+cluster_samples = simulated_samples(cluster, keys[2], scale=0.10)
 ```
 
 ```{python}
@@ -328,229 +316,6 @@ ptm.plot_cluster_dist(
 Group `d` is in the category mapping but absent from the observations. Its dashed
 line distinguishes it from observed groups. All coefficients here are simulated;
 this does not demonstrate what an unobserved group's posterior would look like.
-Categories use the Okabe-Ito palette up to eight levels, then discrete viridis.
-You can replace the plotnine color and fill scales.
 
-## Inspect a two-input interaction
-
-For the tensor examples, use a small basis with a constant and a linear component
-per input. This keeps the examples quick while producing a genuine multivariate
-tensor term. An analysis can use richer bases, such as P-splines.
-
-```{python}
-def linear_basis(x):
-    x = jnp.squeeze(x, axis=-1)
-    return jnp.column_stack((jnp.ones_like(x), x))
-```
-
-```{python}
-tensor2_data = pd.DataFrame(
-    {
-        "x": np.linspace(0.0, 1.0, 20),
-        "z": np.linspace(-1.0, 1.0, 20),
-    }
-)
-tb_scalar2 = gam.TermBuilder.from_df(tensor2_data)
-tb_mv2 = gam.MVTermBuilder.from_term_builder(tb_scalar2, dimension_scale)
-scalar_x = tb_scalar2.f(
-    "x", basis_fn=linear_basis, penalty=jnp.eye(2), scale=1.0, use_callback=False
-)
-scalar_z = tb_scalar2.f(
-    "z", basis_fn=linear_basis, penalty=jnp.eye(2), scale=1.0, use_callback=False
-)
-tensor2 = tb_mv2.tx(scalar_x, scalar_z, dimension_scale=1.0)
-main_x = tb_mv2.f(
-    "x",
-    basis_fn=linear_basis,
-    penalty=jnp.eye(2),
-    scale=1.0,
-    dimension_scale=1.0,
-    use_callback=False,
-)
-tensor2_intercept = tb_mv2.intercept(scale=1.0)
-tensor2_model = lsl.Model([tensor2, main_x, tensor2_intercept])
-tensor2_samples = {
-    **simulated_samples(tensor2, keys[2], scale=0.06),
-    **simulated_samples(main_x, keys[3], scale=0.08),
-    **simulated_samples(tensor2_intercept, keys[4], scale=0.05),
-}
-```
-
-Include the lower-order `main_x` term and the shape intercept explicitly. Other
-marginals and sibling terms stay excluded. The second input defines the facets;
-within each facet, color and ridge position identify the first input.
-
-```{python}
-#| fig-alt: "Density ridges over x in z facets, with marginal and intercept."
-ptm.plot_2d_smooth_dist(
-    dist,
-    tensor2,
-    tensor2_samples,
-    rgrid=80,
-    ngrid=3,
-    facet_by="z",
-    marginals=(main_x,),
-    intercept=tensor2_intercept,
-) + p9.theme(figure_size=(10, 4))
-```
-
-Compare ridges across `x` within a panel and across `z` between panels. This display
-combines exactly the selected interaction, marginal, and intercept. With supplied
-`newdata`, values are paired row by row unless `newdata_meshgrid=True` requests all
-combinations. This convention applies to both two- and three-input terms.
-
-## Inspect a three-input interaction
-
-Use synthetic longitude, latitude, and a third covariate `z`. These coordinates
-only illustrate the plotting layouts; they do not describe measured spatial data.
-
-```{python}
-tensor3_data = pd.DataFrame(
-    {
-        "longitude": np.linspace(10.0, 11.0, 20),
-        "latitude": np.linspace(50.0, 51.0, 20),
-        "z": np.linspace(0.0, 1.0, 20),
-    }
-)
-tb_scalar3 = gam.TermBuilder.from_df(tensor3_data)
-tb_mv3 = gam.MVTermBuilder.from_term_builder(tb_scalar3, dimension_scale)
-
-
-def scalar3(name, center, scale):
-    def basis(x):
-        return linear_basis((x - center) / scale)
-
-    return tb_scalar3.f(
-        name,
-        basis_fn=basis,
-        penalty=jnp.eye(2),
-        scale=1.0,
-        use_callback=False,
-    )
-
-
-tensor3 = tb_mv3.tx(
-    scalar3("longitude", 10.5, 0.5),
-    scalar3("latitude", 50.5, 0.5),
-    scalar3("z", 0.5, 0.5),
-    dimension_scale=1.0,
-)
-tensor3_model = lsl.Model(tensor3)
-tensor3_center = 0.35 * jax.random.normal(keys[8], tensor3.coef.value.shape)
-tensor3_samples = simulated_samples(tensor3, keys[5], scale=0.03, center=tensor3_center)
-anchor_points = {
-    "longitude": np.array([10.15, 10.50, 10.85]),
-    "latitude": np.array([50.20, 50.75, 50.35]),
-}
-```
-
-The faceted layout uses longitude and latitude for the panel grid, with one set of
-density ridges over `z` in each panel. The mesh-grid option combines all supplied
-longitude, latitude, and `z` values.
-
-```{python}
-#| fig-alt: "Longitude-latitude facets with three density ridges per panel."
-ptm.plot_3d_smooth_dist(
-    dist,
-    tensor3,
-    tensor3_samples,
-    x="longitude",
-    y="latitude",
-    ridge_by="z",
-    newdata={**anchor_points, "z": [0.2, 0.5, 0.8]},
-    newdata_meshgrid=True,
-    rgrid=jnp.linspace(-3.0, 3.0, 80),
-) + p9.theme(figure_size=(10, 8))
-```
-
-For paired spatial anchors, use the stacked layout. It draws one small density
-stack at each supplied longitude/latitude pair rather than a rectangular facet
-grid. Black crosses mark the anchors; higher `z` values have higher ridge offsets.
-
-```{python}
-#| fig-alt: "Three spatial anchors with density stacks over z."
-ptm.plot_3d_smooth_dist_stacked(
-    dist,
-    tensor3,
-    tensor3_samples,
-    x="longitude",
-    y="latitude",
-    ridge_by="z",
-    ridge_spacing=0.02,
-    points=anchor_points,
-    ridge_values=[0.2, 0.5, 0.8],
-    rgrid=jnp.linspace(-5.0, 5.0, 80),
-    glyph_width=0.15,
-    point_size=3.5,
-    point_shape="+",
-    point_color="#222222",
-)
-```
-
-The `point_*` arguments control the anchor marks. These spatial stacks omit
-uncertainty bands by default; request `ci_quantiles` or `hdi_prob` when the added
-marks remain readable. Their horizontal glyph width scales the miniature response
-axis and is not a geographical distance.
-
-## Put density glyphs on a region map
-
-The final example uses the Columbus district polygons bundled with the repository.
-They are exports from R's **mgcv** package; the data originate from Anselin (1988),
-*Spatial econometrics: methods and models*. See the
-[data provenance](https://github.com/liesel-devs/liesel-ptm/blob/main/demo/data/README.md).
-Only the geometry and district labels are used; the shape coefficients are simulated.
-
-The paths below are relative to this guide in `docs/guides/`. Convert the polygon
-rows to the mapping accepted by a native liesel-gam MRF term.
-
-```{python}
-columb_dir = Path("../../demo/data")
-columb = pd.read_csv(columb_dir / "columb.csv", index_col=0, dtype={"district": str})
-districts = [str(i) for i in range(columb["district"].nunique())]
-columb["district"] = pd.Categorical(columb["district"], categories=districts)
-polys_df = pd.read_csv(columb_dir / "columb_polys.csv", dtype={"label": str})
-columb_polys = {
-    str(label): group.sort_values("vertex")[["x", "y"]].to_numpy() - 1.0
-    for label, group in polys_df.groupby("label", sort=False)
-}
-
-tb_region = gam.MVTermBuilder.from_df(columb, dimension_scale)
-region = tb_region.mrf(
-    "district",
-    polys=columb_polys,
-    scale=1.0,
-    dimension_scale=1.0,
-)
-region_model = lsl.Model(region)
-region_center = jnp.linspace(-0.35, 0.35, region.coef.value.size).reshape(
-    region.coef.value.shape
-)
-region_samples = simulated_samples(region, keys[7], scale=0.04, center=region_center)
-```
-
-[plot_regions_dist](../api/plots.md#liesel_ptm.plot_regions_dist) discovers the
-polygons on the term and places a density glyph at each polygon's centroid.
-Here outlines keep the overlapping map and density marks readable.
-
-```{python}
-#| fig-alt: "Columbus polygons with simulated densities at their centroids."
-ptm.plot_regions_dist(
-    dist,
-    region,
-    region_samples,
-    rgrid=60,
-    show_density_fill=False,
-    glyph_width=0.5,
-    glyph_height=0.2,
-) + p9.theme(figure_size=(10, 7))
-```
-
-These are small distributions, not a scalar-filled map: compare their shapes at
-each district. The glyph offsets are a display device, not an additional response
-or spatial dimension. Override selected anchors with `locations={label: (x, y)}`.
-If a category has no polygon, supply its location explicitly. Setting
-`show_density_fill=False` removes the density fill; requested quantile or HDI
-bands are controlled separately.
-
-For argument details and other displays, see the
-[plot reference](../api/plots.md) and [summary reference](../api/summaries.md).
+For multidimensional and spatial displays, see the existing
+[plot reference](../api/plots.md) and [plotting notebook](https://github.com/liesel-devs/liesel-ptm/blob/main/demo/term-distribution-plots.ipynb).

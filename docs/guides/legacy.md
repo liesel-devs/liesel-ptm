@@ -2,31 +2,26 @@
 
 
 Fit the legacy PTM from the
-[first PTM paper](https://doi.org/10.1080/10618600.2026.2703269), using its PTM spline
-transformation and computed location and log-scale intercepts. Its shape is shared
-across observations. The example follows that formulation and its MCMC workflow
-using Liesel and liesel-gam components.
+[first PTM paper](https://doi.org/10.1080/10618600.2026.2703269) using MCMC.
+Its PTM spline and computed intercepts differ from the current formulation;
+shape is shared across observations.
 
-The current [conditional-shape](conditional-shape.md) and
-[fixed-shape](fixed-shape.md) PTMs both use the onion spline and affine
-standardization of the transformation. The legacy formulation uses a different
-transformation construction and computes the intercepts from training residuals.
+Run the cells in a fresh session with the
+[checkout environment](../contributing.md#build-the-documentation).
+Graphviz is needed for the graph. This example uses 500 observations, 500
+adaptation iterations, and 200 posterior draws per chain. Use longer chains and
+check mixing, effective sample sizes, and convergence before reporting results.
 
-Run the cells in a fresh session with the [checkout environment](../contributing.md#build-the-documentation).
-Graphviz is needed for the graph. The example uses 500 synthetic observations with
-a shared right-skewed shape, 500 adaptation iterations, and 200 posterior draws per
-chain. These settings keep the example small; use longer chains and inspect
-diagnostics before drawing scientific conclusions.
+## Define the task and data
 
-## Set up the data
+The computed intercepts standardize the training residuals to empirical mean zero
+and standard deviation one. Unlike the current `PTM`, legacy location and scale
+are therefore only roughly the conditional mean and standard deviation. See the
+[paper](https://doi.org/10.1080/10618600.2026.2703269) for their construction.
 
-As in the [conditional-shape PTM](conditional-shape.md#set-up-the-data), transform a standardized response
-to a normal reference scale. Here the shape coefficients are shared by all
-observations. Compute the location and log-scale intercepts from the training data
-and the remaining predictors so the training residuals have empirical mean zero
-and standard deviation one. Those intercepts change at each parameter draw; they
-are not independently sampled parameters. Do not also center or scale the spline
-distribution in this model.
+Use $Y = 1 + 0.5x + 0.7\sin(\pi x) + e^{0.3x}\varepsilon$, with
+$x \sim U(-1,1)$ and a shared, standardized right-skewed two-piece normal error
+with support on the whole real line.
 
 ``` python
 import jax
@@ -36,7 +31,6 @@ import numpy as np
 import pandas as pd
 import plotnine as p9
 import tensorflow_probability.substrates.jax.distributions as tfd
-from IPython.display import Markdown
 
 import liesel_ptm as ptm
 ```
@@ -51,20 +45,11 @@ y = 1.0 + 0.5 * x + 0.7 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
 registry = gam.PandasRegistry(pd.DataFrame({"x": x}))
 ```
 
-Draw the training `x` independently from `Uniform(-1, 1)`. The two-piece normal
-has a longer right tail and support on the whole real line. Centering and scaling
-by its theoretical mean and standard deviation gives residual mean zero and
-variance one. Its shape stays the same across `x`; the response mean combines a
-linear trend with a sine curve, and its standard deviation is `exp(0.3 * x)`.
-Fixed seeds make the data reproducible. Later grids evaluate curves and
-predictions rather than defining the training covariates.
-
 ## Initialize the model
 
-[LegacyPTM](../api/models.md#liesel_ptm.LegacyPTM) creates the PTM spline,
-shared shape intercept, and both computed intercepts. `nshape` counts the shape
-coefficients before their sum-to-zero constraint. The default shape intercept has
-an unclipped Weibull smoothing-variance prior.
+[LegacyPTM](../api/models.md#liesel_ptm.LegacyPTM) supplies the shared shape and
+computed intercepts. Leave shape with its intercept; legacy shape does not
+support covariate terms.
 
 ``` python
 model = ptm.LegacyPTM(y, nshape=8, bounds=(-4.0, 4.0))
@@ -77,23 +62,18 @@ and `model.vars["scale"]`.
 
 ## Add location and scale effects
 
-Add a linear effect and a centered smooth to location, then a linear effect to
-log scale. The smooth’s inverse-gamma smoothing-variance prior allows a Gibbs
-update. Add all terms before setting up inference.
+Use a smooth location effect, including its unpenalized linear trend, and a
+linear log-scale effect. An inverse-gamma prior on the smoothing variance allows
+a Gibbs update.
 
 ``` python
 tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
 tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
 smooth_scale = gam.VarIGPrior(1.0, 0.001)
 
-model.pred.loc += tb_loc.slin("x", scale=1.0, name="m.x")
 model.pred.loc += tb_loc.ps("x", k=5, scale=smooth_scale, name="m.ps(x)")
 model.pred.scale += tb_scale.slin("x", scale=1.0, name="s.x")
 ```
-
-Leave `model.pred.shape` with its shared intercept: legacy shape does not support
-covariate terms. `model.vars["y"]` is the writable response input;
-`model.response` carries the likelihood and is used for distribution plots.
 
 ``` python
 model.plot(width=24, height=12)
@@ -108,9 +88,8 @@ must keep their values from the fitted model.
 
 [LegacyPTM.setup_mcmc](../api/models.md#liesel_ptm.LegacyPTM.setup_mcmc) configures
 Gaussian IWLS proposals for location and scale, the smoothing-variance Gibbs update,
-and a joint NUTS block for shape. It also records both computed intercepts at every
-draw. The method reads the predictors from `model.pred`; no predictor arguments
-are needed. Liesel handles scheduling and sampling.
+and a joint NUTS block for shape. It records both computed training intercepts
+at every draw for later prediction.
 
 Fit with the complete dataset. Minibatches, training/validation splits, and
 updates with fewer rows are unsupported because the intercepts depend on all
@@ -126,25 +105,8 @@ engine.sample_all_epochs()
 samples = engine.get_results().get_posterior_samples()
 ```
 
-``` python
-intercept_shapes = pd.DataFrame(
-    {
-        "intercept": ["beta0", "gamma0"],
-        "shape": [samples[name].shape for name in ("beta0", "gamma0")],
-    }
-)
-Markdown(intercept_shapes.to_markdown(index=False))
-```
-
-| intercept | shape    |
-|:----------|:---------|
-| beta0     | (2, 200) |
-| gamma0    | (2, 200) |
-
-Each intercept array has axes `(chain, draw)`. Retaining these arrays is necessary
-for prediction. The short chains show the workflow and recover the main shape;
-check mixing, effective sample sizes, and convergence with longer chains before
-reporting posterior summaries.
+`samples["beta0"]` and `samples["gamma0"]` have axes `(chain, draw)`.
+Keep these recorded intercepts for prediction.
 
 ## Predict at new covariates
 
@@ -160,25 +122,8 @@ prediction = model.predict(
 )
 ```
 
-``` python
-prediction_shapes = pd.DataFrame(
-    {
-        "predictor": list(prediction),
-        "shape": [value.shape for value in prediction.values()],
-    }
-)
-Markdown(prediction_shapes.to_markdown(index=False))
-```
-
-| predictor | shape       |
-|:----------|:------------|
-| loc       | (2, 200, 2) |
-| scale     | (2, 200, 2) |
-| shape     | (2, 200, 8) |
-
-Location and scale have axes `(chain, draw, new observation)`. Shape retains its
-shared coefficient axis, with no new-observation axis. These values describe the
-conditional parameters rather than simulated future responses.
+Location and scale have axes `(chain, draw, new observation)`. Shared shape has
+axes `(chain, draw, shape coefficient)`.
 
 ## Inspect the shared shape
 
@@ -194,40 +139,23 @@ ptm.plot_intercept_dist(
 )
 ```
 
-<img src="legacy_files/figure-commonmark/cell-11-output-1.png" width="420" height="300" alt="Fitted legacy density with a long right tail and normal reference." />
+<img src="legacy_files/figure-commonmark/cell-9-output-1.png" width="420" height="300" alt="Fitted legacy density with a long right tail and normal reference." />
 
-The fitted density has a sharper peak and a longer right tail than the reference,
-reflecting the asymmetric residuals. Location and scale alone could not reproduce this
-asymmetry. The ribbon contains pointwise 5th to 95th posterior percentiles.
+The sharper peak and longer right tail reflect the asymmetric residuals.
+The ribbon is a pointwise 90% credible band.
 
 ## Plot location and scale effects
 
-Use liesel-gam’s `plot_1d_smooth()` to inspect the smooth location contribution.
-The curve excludes the additional linear term and computed intercept, so it is
-one component of the conditional mean.
+Use the [liesel-gam displays from the fixed-shape guide](fixed-shape.md#plot-location-and-scale-effects).
+The location smooth contains the whole trend except the computed intercept.
 
 ``` python
 gam.plot_1d_smooth(model.pred.loc.terms["m.ps(x)"], samples, show_n_samples=0)
 ```
 
-<img src="legacy_files/figure-commonmark/cell-12-output-1.png" width="420" height="300" alt="Posterior smooth location contribution in the legacy PTM." />
+<img src="legacy_files/figure-commonmark/cell-10-output-1.png" width="420" height="300" alt="Posterior smooth location trend in the legacy PTM." />
 
-Inspect the additional linear location coefficient with `plot_forest()`. The
-linear and smooth contributions must be added together when interpreting the
-location trend; their individual coefficients depend on this decomposition.
-
-``` python
-(
-    gam.plot_forest(model.pred.loc.terms["m.x"], samples, ymin="q_0.05", ymax="q_0.95")
-    + p9.theme(figure_size=(7, 2.5))
-)
-```
-
-<img src="legacy_files/figure-commonmark/cell-13-output-1.png" width="420" height="150" alt="Posterior interval for the additional linear location coefficient." />
-
-The log-scale effect is linear too. The dashed line marks the generating slope
-of `0.3`; a one-unit increase in `x` multiplies the standard deviation by
-`exp(slope)`.
+The dashed line below marks the generating log-scale slope of `0.3`.
 
 ``` python
 (
@@ -240,15 +168,13 @@ of `0.3`; a one-unit increase in `x` multiplies the standard deviation by
 )
 ```
 
-<img src="legacy_files/figure-commonmark/cell-14-output-1.png" width="420" height="150" alt="Legacy log-scale slope interval compared with its generating value." />
+<img src="legacy_files/figure-commonmark/cell-11-output-1.png" width="420" height="150" alt="Legacy log-scale slope interval compared with its generating value." />
 
 ## Compare fitted and true conditional distributions
 
-Compare complete fitted response densities with the standardized two-piece normal
-generator. Both location and scale are included. The summary helper uses the
-recorded training intercepts, as in the prediction above. Undo the generator’s
-standardization and include the change-of-scale factor. The density is defined
-on the whole real line; the response grid only selects the visible interval.
+Use the same [truth comparison](fixed-shape.md#compare-fitted-and-true-conditional-distributions)
+as in the fixed-shape guide. The summary helper includes location and scale,
+using the recorded training intercepts.
 
 ``` python
 def true_density(y, x):
@@ -284,14 +210,11 @@ density["truth"] = true_density(density["r"].to_numpy(), density["x"].to_numpy()
 )
 ```
 
-<img src="legacy_files/figure-commonmark/cell-16-output-1.png" width="480" height="210" alt="Fitted and generating response densities at three x values." />
+<img src="legacy_files/figure-commonmark/cell-13-output-1.png" width="480" height="210" alt="Fitted and generating response densities at three x values." />
 
-The solid blue curves average fitted densities over draws; the blue bands contain
-pointwise 5th to 95th percentiles. Dashed curves show the exact generating
-densities. Compare the peak, asymmetry, and tails in each panel. All panels share
-the same standardized shape, while their location and scale differ. Finite data,
-spline approximation, and MCMC error can all contribute to differences from the truth.
+Solid curves average fitted densities over draws, bands are pointwise 90%
+credible bands, and dashed curves show the generating densities. Compare the
+peaks and right tails; finite data, spline approximation, and MCMC error can
+contribute to the remaining differences.
 
-Use the [distribution-effects guide](term-distributions.md) to compare other
-distribution displays. For covariate-dependent shape and a variational fit,
-continue with the [conditional-shape PTM guide](conditional-shape.md).
+For covariate-dependent shape and VI, see the [conditional-shape guide](conditional-shape.md).

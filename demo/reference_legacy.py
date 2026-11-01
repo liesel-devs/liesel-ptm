@@ -29,7 +29,6 @@ def build_model() -> ptm.LegacyPTM:
     tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
     smooth_scale = gam.VarIGPrior(1.0, 0.001)
 
-    model.pred.loc += tb_loc.slin("x", scale=1.0, name="m.x")
     # A centered smooth adds a conjugate smoothing-variance Gibbs update.
     model.pred.loc += tb_loc.ps("x", k=5, scale=smooth_scale, name="m.ps(x)")
     model.pred.scale += tb_scale.slin("x", scale=1.0, name="s.x")

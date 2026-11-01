@@ -106,7 +106,8 @@ def test_legacy_computed_intercepts_update_and_standardize_residuals():
     original_intercepts = [
         float(model.vars[name].value) for name in ("beta0", "gamma0")
     ]
-    loc_term = model.pred.loc.terms["m.x"]
+    assert set(model.pred.loc.terms) == {"m.ps(x)"}
+    loc_term = model.pred.loc.terms["m.ps(x)"]
     scale_term = model.pred.scale.terms["s.x"]
     assert isinstance(loc_term, gam.StrctTerm)
     assert isinstance(scale_term, gam.StrctTerm)
