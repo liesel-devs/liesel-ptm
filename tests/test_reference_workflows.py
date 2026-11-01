@@ -131,9 +131,11 @@ def test_legacy_has_shared_modern_deltas_and_the_ptm_spline():
     assert not shape.terms
     assert shape.value.shape == (6,)
     assert shape.latent_ndim == 5
-    assert isinstance(
-        model.vars["y"].dist_node.init_dist().bspline, ptm.bspline.PTMSpline
-    )
+    node = model.response.dist_node
+    assert isinstance(node, ptm.PTMDist)
+    transformation = node.init_dist()
+    assert isinstance(transformation, ptm.LocScaleTransformationDist)
+    assert isinstance(transformation.bspline, ptm.bspline.PTMSpline)
     intercept = shape.intercept
     model.state = model.update_state(
         {intercept.coef.name: jnp.linspace(-0.1, 0.1, intercept.coef.value.size)}

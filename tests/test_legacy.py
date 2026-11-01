@@ -4,8 +4,10 @@ import jax
 import jax.numpy as jnp
 import liesel.goose as gs
 import liesel.model as lsl
+import liesel.optim as opt
 import liesel_gam as gam
 import numpy as np
+import optax
 import pytest
 import tensorflow_probability.substrates.jax.distributions as tfd
 
@@ -37,6 +39,79 @@ def test_intercept_formulas_match_empirical_moment_identification():
     np.testing.assert_allclose(
         ptm.LogScaleIntercept.compute_intercept(y, beta + m, g), gamma
     )
+
+
+def test_shared_response_updates_and_full_data_shuffling_preserve_identification():
+    model = reference_legacy.build_model()
+    model.state = model.update_state(
+        {
+            model.vars["loc_terms"].terms["m.x"].coef.name: jnp.array([0.4]),
+            model.vars["scale_terms"].terms["s.x"].coef.name: jnp.array([0.2]),
+        }
+    )
+    position = model.extract_position(["beta0", "gamma0"])
+    log_lik = model.log_lik
+    data = model.extract_position(["x", "y"])
+    batches = opt.Batches.from_model(model, batch_size=24, shuffle=True)
+    assert set(batches.position_keys) == {"x", "y"}
+    batches = batches.start_epoch(jax.random.key(13))
+    shuffled = batches.get_batched_position(data, batch_index=0)
+    assert not np.array_equal(shuffled["x"], data["x"])
+    model.state = jax.jit(model.update_state)(shuffled)
+    for name, value in position.items():
+        np.testing.assert_allclose(model.vars[name].value, value, atol=2e-6)
+    np.testing.assert_allclose(model.log_lik, log_lik, atol=2e-5)
+    assert model.vars["y"].strong and model.response.weak
+    model.vars["y"].value = shuffled["y"] + 5.0
+    np.testing.assert_allclose(
+        model.vars["beta0"].value, position["beta0"] + 5, atol=2e-6
+    )
+    np.testing.assert_allclose(
+        model.vars["gamma0"].value, position["gamma0"], atol=2e-6
+    )
+    residual = (model.response.value - model.vars["loc"].value) / model.vars[
+        "scale"
+    ].value
+    np.testing.assert_allclose(residual.mean(), 0.0, atol=2e-6)
+    np.testing.assert_allclose(residual.std(), 1.0, atol=1e-6)
+
+
+@pytest.mark.parametrize("keys", [("x", "y"), ("x",), ("y",)])
+def test_legacy_rejects_joint_and_partial_minibatches(keys):
+    model = reference_legacy.build_model()
+    batch = {name: model.vars[name].value[:4] for name in keys}
+    with pytest.raises((ValueError, RuntimeError)) as caught:
+        jax.jit(model.update_state)(batch)
+    messages = []
+    error = caught.value
+    while error is not None:
+        messages.append(str(error))
+        error = error.__cause__
+    assert "LegacyPTM requires full-data fitting" in " ".join(messages)
+    assert model.vars["x"].value.shape == model.vars["y"].value.shape == (24,)
+
+
+@pytest.mark.parametrize("minibatch", [False, True])
+@pytest.mark.parametrize("factory", [opt.LieselOptim, opt.LieselVI])
+def test_legacy_optimization_and_vi_require_full_data(minibatch, factory):
+    model = ptm.LegacyPTM([-0.5, 0.1, 0.8, 1.2], nshape=3)
+    builder = gam.TermBuilder.from_dict({"x": jnp.linspace(-1.0, 1.0, 4)})
+    model.pred.loc += builder.slin("x", scale=1.0)
+    optimizer = factory(
+        model,
+        loss_monitor="train_full_data",
+        optimizers=optax.adam(0.001),
+        batch_size=2 if minibatch else None,
+        stopper=opt.Stopper(epochs=1, patience=1),
+        show_progress=False,
+    )
+    if minibatch:
+        with pytest.raises((ValueError, RuntimeError)) as caught:
+            optimizer.fit()
+        assert "full-data fitting" in str(caught.value) + str(caught.value.__cause__)
+    else:
+        result = optimizer.fit()
+        assert all(np.isfinite(value).all() for value in result.position_final.values())
 
 
 @pytest.mark.parametrize("kernel_class", [gs.NUTSKernel, gs.HMCKernel])
@@ -104,7 +179,11 @@ def test_shape_prior_precision_constraints_and_unclipped_variance():
 
 def test_legacy_transformation_has_gaussian_identity_and_unit_tail_slopes():
     model = reference_legacy.build_model()
-    spline = model.vars["y"].dist_node.init_dist().bspline
+    node = model.response.dist_node
+    assert isinstance(node, ptm.PTMDist)
+    transformation = node.init_dist()
+    assert isinstance(transformation, ptm.LocScaleTransformationDist)
+    spline = transformation.bspline
     tail = jnp.array([-20.0, 20.0])
     coef = jnp.linspace(-0.4, 0.4, 6)
     _, derivative = spline.dot_and_deriv(tail, coef[None, :])
@@ -222,7 +301,7 @@ def test_prediction_defaults_and_model_log_likelihood_follow_liesel_interface():
     nodes, variables = model.copy_nodes_and_vars()
     for name in ("beta0", "gamma0"):
         variables[name].value_node = lsl.Value(samples[name][0, 0])
-    manual = lsl.Model(variables["y"])
+    manual = lsl.Model(variables[model.response.name])
     manual.state = manual.update_state(
         {name: value[0, 0] for name, value in samples.items()}
     )
@@ -241,6 +320,12 @@ def test_default_prediction_with_new_covariates_omits_unreplaced_observations():
     assert result["scale"].shape == (2, 3, 2)
     result = model.predict(samples, newdata={"x": x, "y": jnp.zeros(2)})
     assert result["y"].shape == (2, 3, 2)
+    node = model.response.dist_node
+    assert node is not None
+    prediction = model.predict(samples, [node.name], {"x": x, "y": jnp.zeros(2)})
+    assert prediction[node.name].shape == (2, 3, 2)
+    assert np.isfinite(prediction[node.name]).all()
+    assert model.vars["y"].value.shape == (24,)
 
 
 def test_prediction_accepts_known_unused_covariates_but_rejects_unknown_data():

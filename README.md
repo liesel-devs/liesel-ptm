@@ -79,6 +79,10 @@ legacy.pred.scale += legacy_terms.slin("x", scale=0.5, name="s.x")
 engine_builder = legacy.setup_mcmc(seed=43, num_chains=2)
 ```
 
+Legacy fitting requires full data; joint shuffling is supported, minibatches are
+rejected. `legacy.vars["y"]` is the shared response input; `legacy.response` carries
+the likelihood.
+
 Use standard Liesel scheduling and sampling, then `legacy.predict()` for prediction
 with the recorded intercepts. The linked legacy example contains the complete workflow,
 including a smoothing update. Its Weibull variance prior is unclipped.

@@ -76,6 +76,13 @@ and ``.pred.scale``. The latter returns relative positive scale; use its
 `complete legacy example <https://github.com/liesel-devs/liesel-ptm/blob/codex/cleanup/demo/reference_legacy.py>`_
 includes a smoothing-variance Gibbs update. Its Weibull variance prior is unclipped.
 
+``legacy.vars["y"]`` is the single writable response input. Both computed intercepts
+and :attr:`~liesel_ptm.LegacyPTM.response`, its likelihood view, use that input.
+Fitting requires the full observation count supplied at construction. Joint
+shuffling of response and covariates is supported; minibatches and reduced-data
+training/validation splits are rejected. Prediction with recorded intercepts still
+accepts different observation counts.
+
 Configure Gaussian IWLS proposals for location/scale and joint shape NUTS with
 :meth:`~liesel_ptm.LegacyPTM.setup_mcmc`::
 

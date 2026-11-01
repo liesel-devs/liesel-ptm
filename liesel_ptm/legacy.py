@@ -3,6 +3,7 @@
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from typing import Any
 
 import jax
@@ -119,14 +120,29 @@ def _computed_intercepts(
     return result[0], result[1]
 
 
+def _full_data_response(y, loc, log_scale, *, nobs: int):
+    expected = (nobs,)
+    if jnp.shape(y) != expected or any(
+        jnp.shape(value) not in ((), expected) for value in (loc, log_scale)
+    ):
+        raise ValueError(
+            f"LegacyPTM requires full-data fitting with {nobs} rows; "
+            "minibatches and partial data updates are unsupported."
+        )
+    return y
+
+
 class LegacyPTM(lsl.Model):
     """Shared-shape PTM with computed location and log-scale intercepts.
 
     Parameters
     ----------
     y
-        Response values, or an unowned observed :class:`liesel.model.Var` without
-        a distribution. An array becomes a response variable named ``y``.
+        One-dimensional response values with at least two rows, or an unowned
+        observed :class:`liesel.model.Var` without a distribution. An array becomes
+        a writable observed input named ``y``.
+        The likelihood is attached to :attr:`response`, an identity view of that
+        input, so data updates also reach the computed intercepts.
     nshape
         Number of shape coefficients before constraints; an integer of at least three.
     bounds
@@ -160,9 +176,11 @@ class LegacyPTM(lsl.Model):
     ``loc`` and ``scale``. :meth:`setup_mcmc` records both intercepts at every draw;
     :meth:`predict` uses those records on a copied prediction graph.
 
-    Computed intercepts retain the training response captured at construction.
-    Changing ``y`` through variable/state updates changes only the likelihood's
-    evaluation response. Construct a new model to refit a different training response.
+    Fitting uses the complete observation count supplied at construction. Joint
+    shuffling of response and covariates is supported. Minibatches, training/validation
+    splits and partial data updates with fewer rows are rejected because the computed
+    intercepts depend on the full data. New-data prediction uses recorded intercepts
+    and accepts different observation counts.
 
     See Also
     --------
@@ -172,6 +190,8 @@ class LegacyPTM(lsl.Model):
 
     pred: PTMPredictors
     """Location/scale effects and shared shape, excluding computed intercepts."""
+    response: lsl.Var
+    """Observed likelihood view of the writable response input (``y`` by default)."""
 
     def __init__(
         self,
@@ -186,6 +206,11 @@ class LegacyPTM(lsl.Model):
     ) -> None:
         _validate_geometry(nshape, bounds, minimum=3)
         response = _make_response(y)
+        response_shape = jnp.shape(response.value)
+        if len(response_shape) != 1 or response_shape[0] < 2:
+            raise ValueError(
+                "LegacyPTM requires a one-dimensional response with at least two rows."
+            )
         self.pred = _make_predictors(
             nshape, loc, scale, shape, shape_scale, legacy=True
         )
@@ -198,9 +223,15 @@ class LegacyPTM(lsl.Model):
             _check_intercept_free(predictor)
         if self.pred.shape.terms:
             raise ValueError("Legacy shape must be shared, without covariate terms.")
-        # A separate data node avoids a cycle through the observation variable in
-        # Liesel's variable graph. Training responses stay fixed during prediction.
-        training_y = lsl.Data(response.value)
+        # The strong response input feeds both intercepts and a weak likelihood
+        # view, keeping Liesel's variable graph acyclic without copying the data.
+        training_y = lsl.Calc(
+            partial(_full_data_response, nobs=response_shape[0]),
+            response,
+            self.pred.loc,
+            self.pred.scale.linear_predictor,
+            _name="legacy_full_data_response",
+        )
         beta = LocationIntercept(
             training_y, self.pred.loc, self.pred.scale.linear_predictor, name="beta0"
         )
@@ -219,8 +250,11 @@ class LegacyPTM(lsl.Model):
             knots.knots, loc_full, scale_full, self.pred.shape, bspline="ptm"
         )
         self._scale = scale_full
-        with _response_distribution(self, response, distribution):
-            super().__init__(response)
+        self.response = lsl.Var.new_obs(
+            response, name=f"{response.name or 'y'}_likelihood"
+        )
+        with _response_distribution(self, self.response, distribution):
+            super().__init__(self.response)
 
     def setup_mcmc(
         self,

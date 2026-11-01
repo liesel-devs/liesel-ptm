@@ -172,9 +172,12 @@ def test_convenience_matches_manual_likelihood_and_prior_at_nonzero_coefficients
             model.vars[name].value, manual.vars[name].value, atol=2e-6
         )
     np.testing.assert_allclose(model.pred.shape.value.sum(), 0.0, atol=1e-6)
-    np.testing.assert_array_equal(
-        model.vars["y"].dist_node.init_dist().bspline.knots, knots.knots
-    )
+    response = model.response if isinstance(model, ptm.LegacyPTM) else model.vars["y"]
+    node = response.dist_node
+    assert isinstance(node, ptm.PTMDist)
+    transformation = node.init_dist()
+    assert isinstance(transformation, ptm.LocScaleTransformationDist)
+    np.testing.assert_array_equal(transformation.bspline.knots, knots.knots)
 
 
 @pytest.mark.parametrize("cls,minimum", [(ptm.PTM, 2), (ptm.LegacyPTM, 3)])
