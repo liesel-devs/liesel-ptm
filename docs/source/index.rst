@@ -107,9 +107,6 @@ Configure Gaussian IWLS proposals for location/scale and joint shape NUTS with
 Both computed intercepts are recorded for every posterior draw.
 :meth:`~liesel_ptm.LegacyPTM.predict` uses those records for new covariates without
 changing the fitted graph. Use longer chains and inspect diagnostics for inference.
-For quantities depending on computed intercepts, call ``legacy.predict(...)`` on the
-model. Liesel's variable-level ``Var.predict(...)`` builds a plain submodel and
-recomputes weak intercepts, bypassing the recorded draws.
 
 Migrating the legacy constructor: ``LegacyPTM(y, nshape=...)`` replaces the earlier
 ``LegacyPTM(model)`` wrapper. Add terms through ``.pred``; ``setup_mcmc`` now obtains

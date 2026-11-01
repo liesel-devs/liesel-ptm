@@ -302,6 +302,9 @@ def test_common_response_handle_supports_distribution_summaries(cls):
         name: jnp.broadcast_to(var.value, (2, 2) + var.value.shape)
         for name, var in model.parameters.items()
     }
+    if isinstance(model, ptm.LegacyPTM):
+        for name in ("beta0", "gamma0"):
+            samples[name] = jnp.broadcast_to(model.vars[name].value, (2, 2))
     summary = ptm.summarise_intercept_dist(
         model.response, model.pred.shape.intercept, samples, rgrid=5
     )

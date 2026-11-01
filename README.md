@@ -87,8 +87,6 @@ the likelihood.
 Use standard Liesel scheduling and sampling, then `legacy.predict()` for prediction
 with the recorded intercepts. The linked legacy example contains the complete workflow,
 including a smoothing update. Its Weibull variance prior is unclipped.
-For legacy targets depending on computed intercepts, always call `legacy.predict()`;
-Liesel's variable-level `Var.predict()` recomputes those intercepts.
 
 See the [plotting notebook](demo/term-distribution-plots.ipynb) for distribution effects.
 It illustrates plots with simulated coefficient draws.

@@ -266,8 +266,9 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
         submodel = original_submodel(prediction_model, *args, **kwargs)
         assert training_node not in submodel.nodes
         assert "y" not in submodel.vars
-        assert submodel.vars["beta0"].strong
-        assert submodel.vars["gamma0"].strong
+        for target in args:
+            intercept = {"loc": "beta0", "scale": "gamma0"}[target.name]
+            assert submodel.vars[intercept].strong
         return submodel
 
     monkeypatch.setattr(lsl.Model, "parental_submodel", inspect_graph)
@@ -287,6 +288,11 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
             jnp.exp(samples["gamma0"][..., None] + 0.2 * x),
             rtol=2e-6,
         )
+        for name in ("loc", "scale"):
+            variable_prediction = model.vars[name].predict(
+                samples, newdata={"x": x}, chunk_size=chunk_size
+            )
+            np.testing.assert_allclose(variable_prediction, prediction[name], rtol=2e-6)
     assert model.vars["beta0"].weak and model.vars["gamma0"].weak
     for previous, current in zip(before, jax.tree.leaves(model.state), strict=True):
         np.testing.assert_array_equal(previous, current)
@@ -353,6 +359,8 @@ def test_prediction_requires_recorded_intercepts(missing):
     samples.pop(missing)
     with pytest.raises(ValueError, match="Missing recorded intercept"):
         model.predict(samples, predict=["loc"])
+    with pytest.raises(ValueError, match="Missing recorded intercept"):
+        model.vars["loc"].predict(samples)
 
 
 def test_prediction_checks_intercept_axes_and_supports_custom_names():

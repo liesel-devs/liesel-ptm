@@ -802,7 +802,7 @@ wheels = [
 [[package]]
 name = "liesel"
 version = "0.6.0.dev0+optim.1"
-source = { git = "https://github.com/liesel-devs/liesel.git?branch=vi-modernization#a13147ab3ee03b5066d7cc17c4c06354364d8ba1" }
+source = { git = "https://github.com/liesel-devs/liesel.git?branch=vi-modernization#503631cd3b020a149862fed21bd029c32856802e" }
 dependencies = [
     { name = "arviz" },
     { name = "blackjax" },

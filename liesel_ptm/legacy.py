@@ -192,10 +192,6 @@ class LegacyPTM(lsl.Model):
     ``loc`` and ``scale``. :meth:`setup_mcmc` records both intercepts at every draw;
     :meth:`predict` uses those records on a copied prediction graph.
 
-    Use :meth:`predict` on the model for targets depending on computed intercepts.
-    :meth:`liesel.model.Var.predict` builds a plain Liesel submodel and recomputes
-    weak intercepts; it does not use the recorded intercept draws.
-
     Fitting uses the complete observation count supplied at construction. Joint
     shuffling of response and covariates is supported. Minibatches, training/validation
     splits and partial data updates with fewer rows are rejected because the computed
@@ -459,8 +455,8 @@ class LegacyPTM(lsl.Model):
         become strong value nodes, so Liesel uses the recorded draws. For predictor-only
         targets, Liesel evaluates a submodel without training responses. Include new
         responses in ``newdata`` when predicting response-dependent quantities.
-        Always call this model method for intercept-dependent predictions;
-        :meth:`liesel.model.Var.predict` bypasses recorded-intercept handling.
+        Variable-level :meth:`liesel.model.Var.predict` delegates to this method
+        and also uses the recorded intercept draws.
         """
         model = self
         if predict is None:
