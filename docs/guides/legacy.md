@@ -13,9 +13,10 @@ standardization of the transformation. The legacy formulation uses a different
 transformation construction and computes the intercepts from training residuals.
 
 Run the cells in a fresh session with the [checkout environment](../contributing.md#build-the-documentation).
-Graphviz is needed for the graph. The 24 synthetic observations, 80 adaptation
-iterations, and 12 posterior draws per chain keep the example small. Use longer
-chains and inspect diagnostics before drawing scientific conclusions.
+Graphviz is needed for the graph. The example uses 240 synthetic observations with
+a shared right-skewed shape, 500 adaptation iterations, and 200 posterior draws per
+chain. These settings keep the example small; use longer chains and inspect
+diagnostics before drawing scientific conclusions.
 
 ## Set up the data
 
@@ -38,13 +39,18 @@ import liesel_ptm as ptm
 ```
 
 ``` python
-x = np.linspace(-1.0, 1.0, 24)
-y = 1.0 + 0.5 * x + np.exp(0.15 * x) * np.random.default_rng(42).normal(size=x.size)
+rng = np.random.default_rng(42)
+x = np.linspace(-1.0, 1.0, 240)
+residual = (rng.gamma(shape=2.0, size=x.size) - 2.0) / np.sqrt(2.0)
+y = 1.0 + 0.5 * x + 0.7 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
 registry = gam.PandasRegistry(pd.DataFrame({"x": x}))
 ```
 
-The response has a linear location trend and changing scale. The fixed seed makes
-the generated data reproducible.
+The centered gamma residual has mean zero, variance one, and a long right tail.
+Its shape is the same at every `x`, while the response mean combines a linear trend
+with a sine curve and the standard deviation is `exp(0.3 * x)`. This lets the model
+learn a shared departure from normality alongside location and scale effects.
+The fixed seed makes the data reproducible.
 
 ## Initialize the model
 
@@ -54,7 +60,7 @@ coefficients before their sum-to-zero constraint. The default shape intercept ha
 an unclipped Weibull smoothing-variance prior.
 
 ``` python
-model = ptm.LegacyPTM(y, nshape=6, bounds=(-4.0, 4.0))
+model = ptm.LegacyPTM(y, nshape=8, bounds=(-4.0, 4.0))
 ```
 
 The location and scale predictors in `model.pred` exclude the computed intercepts.
@@ -106,8 +112,8 @@ training observations. Prediction can use a different number of observations.
 ``` python
 builder = model.setup_mcmc(seed=43, num_chains=2)
 builder.show_progress = False
-builder.add_adaptation(80)
-builder.add_posterior(12)
+builder.add_adaptation(500)
+builder.add_posterior(200)
 engine = builder.build()
 engine.sample_all_epochs()
 samples = engine.get_results().get_posterior_samples()
@@ -123,14 +129,15 @@ intercept_shapes = pd.DataFrame(
 Markdown(intercept_shapes.to_markdown(index=False))
 ```
 
-| intercept | shape   |
-|:----------|:--------|
-| beta0     | (2, 12) |
-| gamma0    | (2, 12) |
+| intercept | shape    |
+|:----------|:---------|
+| beta0     | (2, 200) |
+| gamma0    | (2, 200) |
 
 Each intercept array has axes `(chain, draw)`. Retaining these arrays is necessary
-for prediction. With only 12 draws per chain, convergence diagnostics and posterior
-summaries are too unstable for inference.
+for prediction. The short chains show the workflow and recover the main shape;
+check mixing, effective sample sizes, and convergence with longer chains before
+reporting posterior summaries.
 
 ## Predict at new covariates
 
@@ -156,16 +163,36 @@ prediction_shapes = pd.DataFrame(
 Markdown(prediction_shapes.to_markdown(index=False))
 ```
 
-| predictor | shape      |
-|:----------|:-----------|
-| loc       | (2, 12, 2) |
-| scale     | (2, 12, 2) |
-| shape     | (2, 12, 6) |
+| predictor | shape       |
+|:----------|:------------|
+| loc       | (2, 200, 2) |
+| scale     | (2, 200, 2) |
+| shape     | (2, 200, 8) |
 
 Location and scale have axes `(chain, draw, new observation)`. Shape retains its
 shared coefficient axis, with no new-observation axis. These values describe the
 conditional parameters rather than simulated future responses.
 
-Use the [distribution-effects guide](term-distributions.md) to inspect the shared
-shape or conditional response distributions. For a model with covariate-dependent
-shape and a variational fit, continue with the [conditional-shape PTM guide](conditional-shape.md).
+## Inspect the shared shape
+
+Plot the distribution induced by the shared shape intercept, removing the fitted
+location and scale effects. The gray dotted curve shows the normal reference.
+
+``` python
+ptm.plot_intercept_dist(
+    model.response,
+    model.pred.shape.intercept,
+    samples,
+    rgrid=120,
+)
+```
+
+<img src="legacy_files/figure-commonmark/cell-11-output-1.png" width="420" height="300" alt="Fitted legacy density with a long right tail and normal reference." />
+
+The fitted density has a sharper peak and a longer right tail than the reference,
+reflecting the gamma residuals. Location and scale alone could not reproduce this
+asymmetry. The ribbon contains pointwise 5th to 95th posterior percentiles.
+
+Use the [distribution-effects guide](term-distributions.md) to compare other
+distribution displays. For covariate-dependent shape and a variational fit,
+continue with the [conditional-shape PTM guide](conditional-shape.md).

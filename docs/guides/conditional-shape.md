@@ -7,9 +7,10 @@ shape. Use variational inference (VI) to fit the model, then predict at new cova
 values. See [model variants](../index.md#model-variants) for the fixed-shape variant
 of this formulation and the separate legacy PTM.
 
-This example uses 24 synthetic observations so it runs quickly.
-The two training epochs and three posterior draws demonstrate the workflow;
-they do not establish convergence or support substantive inference.
+This example uses 300 synthetic observations with a nonlinear mean, changing
+scale, and skewness that changes direction with `x`. A small variational fit
+recovers visible shape differences. The fixed training budget keeps the example
+short; assess convergence and approximation quality before using it for inference.
 
 Install the [checkout environment](../contributing.md#build-the-documentation)
 before running the cells from top to bottom. Graphviz is needed for the model graph.
@@ -43,16 +44,29 @@ import liesel_ptm as ptm
 ```
 
 ``` python
-x = np.linspace(-1.0, 1.0, 24)
-y = 0.5 * x + np.exp(0.15 * x) * np.random.default_rng(42).normal(size=x.size)
-data = pd.DataFrame(
-    {"x": x, "group": pd.Categorical(np.tile(["a", "b", "c"], 8)), "y": y}
+rng = np.random.default_rng(42)
+x = np.tile(np.linspace(-1.0, 1.0, 100), 3)
+group = pd.Categorical(np.repeat(["a", "b", "c"], 100))
+weight = 1.0 / (1.0 + np.exp(-3.0 * x - 0.6 * (group.codes - 1)))
+right = rng.exponential(size=x.size) - 1.0
+left = rng.exponential(size=x.size) - 1.0
+residual = (weight * right - (1.0 - weight) * left) / np.sqrt(
+    weight**2 + (1.0 - weight) ** 2
 )
+y = 0.8 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
+data = pd.DataFrame({"x": x, "group": group, "y": y})
 registry = gam.PandasRegistry(data)
 ```
 
+The residual combines two independent, centered exponential variables. At small
+`x`, the negative contribution dominates and gives a long left tail; at large `x`,
+the positive contribution gives a long right tail. The denominator keeps its
+conditional variance at one. Thus the conditional mean is `0.8 * sin(pi * x)` and
+the standard deviation is `exp(0.3 * x)` throughout. Group shifts where the skewness
+changes direction, with 100 observations per group.
+
 The registry keeps the observed data and encodes the three categories in `group`.
-The fixed random seed makes the synthetic response reproducible.
+The fixed random seed makes the response reproducible.
 
 ## Initialize the model
 
@@ -63,11 +77,11 @@ mean and standard deviation. By default, each predictor has an intercept; the
 shape intercept has a Weibull smoothing-variance prior.
 
 ``` python
-model = ptm.PTM(registry.get_obs("y"), nshape=4, bounds=(-4.0, 4.0))
+model = ptm.PTM(registry.get_obs("y"), nshape=8, bounds=(-4.0, 4.0))
 ```
 
-`nshape=4` selects four shape coefficients before the sum-to-zero constraint,
-leaving three latent dimensions. The bounds describe the flexible interval on the
+`nshape=8` selects eight shape coefficients before the sum-to-zero constraint,
+leaving seven latent dimensions. The bounds describe the flexible interval on the
 standardized residual scale. Add all terms before creating inference objects.
 
 ## Define location and scale
@@ -93,8 +107,8 @@ match the predictor’s dimension and constraint.
 shape = model.pred.shape
 tb_shape_base = gam.TermBuilder(registry, prefix_names_by="h.")
 tb_shape = gam.MVTermBuilder.from_predictor(shape, term_builder=tb_shape_base)
-shape += tb_shape.ps("x", k=5, scale=0.5, dimension_scale=0.3)
-shape += tb_shape.lin("group", dimension_scale=0.3, name="h.group")
+shape += tb_shape.ps("x", k=5, scale=0.5, dimension_scale=0.7)
+shape += tb_shape.lin("group", dimension_scale=0.7, name="h.group")
 ```
 
 The model’s response is available as `model.response` for distribution summaries
@@ -123,9 +137,9 @@ shape_parameters = list(model.parental_submodel(model.pred.shape).parameters)
 for parameters in (loc_scale_parameters, shape_parameters):
     result = opt.LieselOptim(
         model,
-        optimizers=[opt.Optimizer(parameters, optax.adam(0.001))],
+        optimizers=[opt.Optimizer(parameters, optax.adam(0.01))],
         loss_monitor="train_full_data",
-        stopper=opt.Stopper(epochs=2, patience=2),
+        stopper=opt.Stopper(epochs=600, patience=600),
         seed=43,
         show_progress=False,
     ).fit()
@@ -139,15 +153,16 @@ variational family; they are not posterior draws.
 ## Fit a variational family
 
 Use a full-covariance Gaussian block for location and scale and a diagonal Gaussian
-block for shape. Train the blocks separately, then jointly. The leading sample axes
-below are `(1, 3)`: one sample group containing three approximate posterior draws.
+block for shape. Train the blocks separately, then jointly, using 600 epochs per
+stage and eight Monte Carlo samples for each ELBO estimate. The leading sample axes
+below are `(1, 100)`: one sample group containing 100 approximate posterior draws.
 Parameter dimensions follow those axes.
 
 ``` python
 loc_scale_block = opt.VDist(loc_scale_parameters, model).mvn_tril()
 shape_block = opt.VDist(shape_parameters, model).mvn_diag()
 family = opt.CompositeVDist(loc_scale_block, shape_block).build()
-loss = opt.NegElboLoss.from_vdist(family, nsamples=2)
+loss = opt.NegElboLoss.from_vdist(family, nsamples=8)
 for parameters in (
     loc_scale_block.parameters,
     shape_block.parameters,
@@ -156,15 +171,15 @@ for parameters in (
     result = opt.LieselVI(
         model,
         loss=loss,
-        optimizers=[opt.Optimizer(parameters, optax.adam(0.001))],
+        optimizers=[opt.Optimizer(parameters, optax.adam(0.01))],
         loss_monitor="train_full_data",
-        stopper=opt.Stopper(epochs=2, patience=2),
+        stopper=opt.Stopper(epochs=600, patience=600),
         seed=44,
         show_progress=False,
     ).fit()
     family.q.state = family.q.update_state(result.position_final)
 posterior = loss.approximate_joint_posterior(result)
-samples = posterior.sample((1, 3), seed=jax.random.key(45))
+samples = posterior.sample((1, 100), seed=jax.random.key(45))
 ```
 
 ``` python
@@ -174,31 +189,40 @@ sample_shapes = pd.DataFrame(
 Markdown(sample_shapes.to_markdown(index=False))
 ```
 
-| parameter               | shape      |
-|:------------------------|:-----------|
-| $\beta_{0,loc}$         | (1, 3)     |
-| $\beta_{0,scale}$       | (1, 3)     |
-| $\beta_{0,shape}$\_coef | (1, 3, 3)  |
-| $\beta_{m.ps(x)}$       | (1, 3, 4)  |
-| $\beta_{s.lin(s.X)}$    | (1, 3, 1)  |
-| $\gamma_{h.group}$      | (1, 3, 6)  |
-| $\gamma_{h.ps(x)}$      | (1, 3, 12) |
-| h(shape_scale^2)        | (1, 3)     |
+| parameter               | shape        |
+|:------------------------|:-------------|
+| $\beta_{0,loc}$         | (1, 100)     |
+| $\beta_{0,scale}$       | (1, 100)     |
+| $\beta_{0,shape}$\_coef | (1, 100, 7)  |
+| $\beta_{m.ps(x)}$       | (1, 100, 4)  |
+| $\beta_{s.lin(s.X)}$    | (1, 100, 1)  |
+| $\gamma_{h.group}$      | (1, 100, 14) |
+| $\gamma_{h.ps(x)}$      | (1, 100, 28) |
+| h(shape_scale^2)        | (1, 100)     |
 
-The sample dictionary has the same parameter names as `model.parameters`. For an
-analysis, increase the training budget, inspect the loss and approximation quality,
-and draw enough samples for the quantities you report.
+The sample dictionary has the same parameter names as `model.parameters`. Inspect
+the final joint training stage’s loss before interpreting its samples.
+
+``` python
+result.plot_loss()
+```
+
+<img src="conditional-shape_files/figure-commonmark/cell-11-output-1.png" width="420" height="300" alt="Training and monitoring ELBO losses for the final joint variational stage." />
+
+The Monte Carlo loss fluctuates even near a good solution. A flat trace alone does
+not establish that the Gaussian variational family captures the posterior well;
+compare longer fits and check approximation quality for an analysis.
 
 ## Predict at new covariates
 
-Use `model.predict()` to evaluate the predictors for every draw. With this registry,
-new categorical inputs use their integer codes: `0` and `1` select `a` and `b`.
+Use `model.predict()` to evaluate the predictors for every draw. Supply the group
+labels used in the training data for new categorical inputs.
 
 ``` python
 prediction = model.predict(
     samples,
     predict=["loc", "scale", "shape"],
-    newdata={"x": jnp.array([-0.5, 0.5]), "group": jnp.array([0, 1])},
+    newdata={"x": jnp.array([-0.5, 0.5]), "group": ["a", "b"]},
 )
 ```
 
@@ -212,14 +236,14 @@ prediction_shapes = pd.DataFrame(
 Markdown(prediction_shapes.to_markdown(index=False))
 ```
 
-| predictor | shape        |
-|:----------|:-------------|
-| loc       | (1, 3, 2)    |
-| scale     | (1, 3, 2)    |
-| shape     | (1, 3, 2, 4) |
+| predictor | shape          |
+|:----------|:---------------|
+| loc       | (1, 100, 2)    |
+| scale     | (1, 100, 2)    |
+| shape     | (1, 100, 2, 8) |
 
 Location and scale have axes `(sample group, draw, new observation)`. Shape adds
-one final axis for the four shape coefficients. These are conditional parameter
+one final axis for the eight shape coefficients. These are conditional parameter
 draws; no new responses have been simulated.
 
 ## Inspect a shape effect
@@ -237,7 +261,7 @@ effect = ptm.plot_1d_smooth_dist(
     samples,
     intercept=shape.intercept,
     ngrid=3,
-    rgrid=60,
+    rgrid=120,
 )
 ```
 
@@ -245,9 +269,28 @@ effect = ptm.plot_1d_smooth_dist(
 effect
 ```
 
-<img src="conditional-shape_files/figure-commonmark/cell-14-output-1.png" width="336" height="240" alt="Density ridges for the smooth shape effect and shape intercept." />
+<img src="conditional-shape_files/figure-commonmark/cell-15-output-1.png" width="420" height="300" alt="Fitted densities changing from left skew to right skew across x." />
 
-Compare the density shapes across covariate values. This very short fit illustrates
-the display, so differences and uncertainty bands should not be interpreted as
-reliable posterior evidence. See the [summary API](../api/summaries.md) for tidy
-numerical summaries and the [plot API](../api/plots.md) for display options.
+At small `x`, look for a longer left tail; at large `x`, look for a longer right
+tail. The gray dotted curves show the standard normal reference. These differences
+remain after removing location and scale, so they describe shape rather than a
+changing mean or variance. The ribbons show pointwise 5th to 95th percentiles under
+the fitted variational approximation.
+
+This display isolates the smooth term and shared shape intercept. To include the
+categorical effect too, compare complete standardized conditional distributions
+for group `b`:
+
+``` python
+ptm.plot_conditional_dist(
+    model.response,
+    samples,
+    newdata={"x": [-0.8, 0.0, 0.8], "group": ["b", "b", "b"]},
+    rgrid=120,
+)
+```
+
+<img src="conditional-shape_files/figure-commonmark/cell-16-output-1.png" width="420" height="300" alt="Complete fitted standardized densities for group b at three x values." />
+
+See the [summary API](../api/summaries.md) for tidy numerical summaries and the
+[plot API](../api/plots.md) for display options.

@@ -1,7 +1,7 @@
 """Legacy PTM with Gaussian IWLS, shape NUTS and recorded-intercept prediction.
 
-Run with ``uv run python -m demo.reference_legacy``. The short fit checks integration;
-use longer chains and inspect diagnostics for statistical inference.
+Run with ``uv run python -m demo.reference_legacy``. The response has a nonlinear
+mean, changing scale, and a shared right-skewed shape.
 """
 
 import jax.numpy as jnp
@@ -15,10 +15,12 @@ import liesel_ptm as ptm
 
 def build_model() -> ptm.LegacyPTM:
     """Initialize the shared-shape PTM, then add location and log-scale terms."""
-    x = np.linspace(-1.0, 1.0, 24)
-    y = 1.0 + 0.5 * x + np.exp(0.15 * x) * np.random.default_rng(42).normal(size=x.size)
+    rng = np.random.default_rng(42)
+    x = np.linspace(-1.0, 1.0, 240)
+    residual = (rng.gamma(shape=2.0, size=x.size) - 2.0) / np.sqrt(2.0)
+    y = 1.0 + 0.5 * x + 0.7 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
     registry = gam.PandasRegistry(pd.DataFrame({"x": x}))
-    model = ptm.LegacyPTM(y, nshape=6)
+    model = ptm.LegacyPTM(y, nshape=8)
     tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
     tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
     smooth_scale = gam.VarIGPrior(1.0, 0.001)
@@ -32,7 +34,10 @@ def build_model() -> ptm.LegacyPTM:
 
 
 def fit(
-    model: ptm.LegacyPTM, adaptation: int = 80, posterior: int = 12, num_chains: int = 2
+    model: ptm.LegacyPTM,
+    adaptation: int = 500,
+    posterior: int = 200,
+    num_chains: int = 2,
 ) -> gs.SamplingResults:
     """Sample all parameters and record both computed intercepts at every draw."""
     builder = model.setup_mcmc(seed=43, num_chains=num_chains)

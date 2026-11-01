@@ -6,10 +6,28 @@ It uses the same onion spline and affine standardization as a conditional-shape
 PTM. The [legacy PTM](legacy.md) has its own transformation construction and
 intercept handling.
 
+## Use data with a shared shape
+
+Start with the imports from the [conditional-shape example](conditional-shape.md),
+then replace its data setup with 240 observations whose standardized shape stays
+the same across `x`:
+
+```python
+rng = np.random.default_rng(42)
+x = np.linspace(-1.0, 1.0, 240)
+residual = (rng.gamma(shape=2.0, size=x.size) - 2.0) / np.sqrt(2.0)
+y = 0.8 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
+registry = gam.PandasRegistry(pd.DataFrame({"x": x, "y": y}))
+```
+
+The centered gamma residuals have a long right tail, mean zero, and variance one.
+Only the mean and standard deviation change with `x`. This matches the fixed-shape
+assumption; the conditional-shape guide's skewness-changing data would not.
+
 ## Keep only the shape intercept
 
-Start with the complete [conditional-shape example](conditional-shape.md).
-Initialize the model with [PTM][liesel_ptm.PTM] as shown there, then omit both
+Initialize the model with [PTM][liesel_ptm.PTM] as in the conditional-shape guide,
+add its location and scale effects, then omit both
 shape-term additions in [Define shape effects](conditional-shape.md#define-shape-effects):
 `tb_shape.ps()` and `tb_shape.lin()`.
 
@@ -34,6 +52,10 @@ categorical shape term. The shared
 shape has axes `(sample group, draw, shape coefficient)`, without a
 new-observation axis. Location and scale retain their new-observation axis.
 
-Skip the smooth-term display at the end of the conditional-shape example, which
-requires a covariate-dependent shape term. To display the shared shape, use
-[plot_intercept_dist][liesel_ptm.plot_intercept_dist] with the shape intercept.
+Skip the smooth-term and group-specific displays at the end of the
+conditional-shape example. To display the shared shape, use
+[plot_intercept_dist][liesel_ptm.plot_intercept_dist] with the shape intercept:
+
+```python
+ptm.plot_intercept_dist(model.response, model.pred.shape.intercept, samples)
+```

@@ -23,7 +23,7 @@ def test_modern_identity_shape_recovers_gaussian_likelihood(modern):
     np.testing.assert_allclose(
         dist.log_prob(response.value), expected.log_prob(response.value), atol=2e-5
     )
-    assert dist.batch_shape == (24,)
+    assert dist.batch_shape == (300,)
 
 
 def test_modern_shape_covariates_and_distribution_roundtrip():
@@ -37,7 +37,7 @@ def test_modern_shape_covariates_and_distribution_roundtrip():
     np.testing.assert_allclose(shape.value.sum(axis=-1), 0.0, atol=1e-6)
     assert not np.allclose(shape.value[0], shape.value[-1])
     dist = model.vars["y"].dist_node.init_dist()
-    probabilities = jnp.full(24, 0.7)
+    probabilities = jnp.full_like(model.response.value, 0.7)
     np.testing.assert_allclose(dist.cdf(dist.quantile(probabilities)), 0.7, atol=2e-4)
     assert np.isfinite(model.log_prob)
     np.testing.assert_allclose(dist.mean(), model.vars["loc"].value, atol=2e-4)
@@ -56,7 +56,7 @@ def test_modern_parameter_blocks_cover_the_model(modern):
 def test_modern_staged_optimization_vi_prediction_and_effects():
     model = reference_modern.build_model()
     initial_log_prob = float(model.log_prob)
-    point, samples = reference_modern.fit(model)
+    point, samples = reference_modern.fit(model, epochs=2, draws=3)
     assert set(point) == set(samples) == set(model.parameters)
     assert float(model.log_prob) > initial_log_prob
     for name, values in samples.items():
@@ -67,9 +67,9 @@ def test_modern_staged_optimization_vi_prediction_and_effects():
     prediction = model.predict(
         samples,
         predict=["loc", "scale", "shape"],
-        newdata={"x": jnp.array([-0.5, 0.5]), "group": jnp.array([0, 1])},
+        newdata={"x": jnp.array([-0.5, 0.5]), "group": ["a", "b"]},
     )
-    assert prediction["shape"].shape == (1, 3, 2, 4)
+    assert prediction["shape"].shape == (1, 3, 2, 8)
     assert prediction["loc"].shape == prediction["scale"].shape == (1, 3, 2)
     np.testing.assert_allclose(prediction["shape"].sum(axis=-1), 0.0, atol=1e-6)
     assert np.all(prediction["scale"] > 0.0)
@@ -129,8 +129,8 @@ def test_legacy_has_shared_shape_and_the_ptm_spline():
     model = reference_legacy.build_model()
     shape = model.vars["shape"]
     assert not shape.terms
-    assert shape.value.shape == (6,)
-    assert shape.latent_ndim == 5
+    assert shape.value.shape == (8,)
+    assert shape.latent_ndim == 7
     node = model.response.dist_node
     assert isinstance(node, ptm.PTMDist)
     transformation = node.init_dist()
