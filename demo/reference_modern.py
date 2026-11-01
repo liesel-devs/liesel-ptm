@@ -25,17 +25,15 @@ def build_model() -> ptm.PTM:
     )
     registry = gam.PandasRegistry(data)
     model = ptm.PTM(registry.get_obs("y"), nshape=4)
-    model.pred.loc += gam.TermBuilder(registry, prefix_names_by="m.").ps(
-        "x", k=5, scale=0.5
-    )
-    model.pred.scale += gam.TermBuilder(registry, prefix_names_by="s.").lin(
-        "x", prior=lsl.Dist(tfd.Normal, loc=0.0, scale=0.5)
-    )
+    loc_builder = gam.TermBuilder(registry, prefix_names_by="m.")
+    scale_builder = gam.TermBuilder(registry, prefix_names_by="s.")
+    scale_prior = lsl.Dist(tfd.Normal, loc=0.0, scale=0.5)
+
+    model.pred.loc += loc_builder.ps("x", k=5, scale=0.5)
+    model.pred.scale += scale_builder.lin("x", prior=scale_prior)
     shape = model.pred.shape
-    builder = gam.MVTermBuilder.from_predictor(
-        shape,
-        term_builder=gam.TermBuilder(registry, prefix_names_by="h."),
-    )
+    shape_builder = gam.TermBuilder(registry, prefix_names_by="h.")
+    builder = gam.MVTermBuilder.from_predictor(shape, term_builder=shape_builder)
     shape += builder.ps("x", k=5, scale=0.5, dimension_scale=0.3)
     shape += builder.lin("group", dimension_scale=0.3, name="h.group")
 

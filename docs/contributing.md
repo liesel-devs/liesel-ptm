@@ -38,6 +38,9 @@ Edit `docs/index.md` and other handwritten Markdown directly. Edit executable
 guides in `docs/guides/*.qmd`, then regenerate their `.md` files and figures.
 Keep imports, shared setup, and model choices visible so readers can run the
 cells in a fresh session. Keep expensive examples small and use fixed seeds.
+Initialize term builders in separate assignments before adding terms to predictors.
+Give longer prior specifications their own names so term additions stay on one line
+when practical.
 
 API pages in `docs/api/` use mkdocstrings directives to render the implementation's
 NumPy-style docstrings. Update those docstrings for argument details and exact
