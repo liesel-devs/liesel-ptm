@@ -9,8 +9,8 @@ of this formulation and the separate legacy PTM.
 
 This example uses 300 synthetic observations with a nonlinear mean, changing
 scale, and skewness that changes direction with `x`. A small variational fit
-recovers visible shape differences. The fixed training budget keeps the example
-short; assess convergence and approximation quality before using it for inference.
+recovers visible shape differences. Early stopping keeps the example short;
+assess convergence and approximation quality before using it for inference.
 
 Install the [checkout environment](../contributing.md#build-the-documentation)
 before running the cells from top to bottom. Graphviz is needed for the model graph.
@@ -38,6 +38,7 @@ import liesel_gam as gam
 import numpy as np
 import optax
 import pandas as pd
+import plotnine as p9
 from IPython.display import Markdown
 
 import liesel_ptm as ptm
@@ -88,13 +89,14 @@ standardized residual scale. Add all terms before creating inference objects.
 
 Use a smooth location effect and a linear effect on log scale. The scale
 predictor applies an exponential inverse link, so its values stay positive.
+Eight basis functions let the location smooth represent the sine-shaped mean.
 
 ``` python
 tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
 tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
 
-model.pred.loc += tb_loc.ps("x", k=5, scale=0.5)
-model.pred.scale += tb_scale.lin("x")
+model.pred.loc += tb_loc.ps("x", k=8, scale=1.0)
+model.pred.scale += tb_scale.lin("x", name="s.x")
 ```
 
 ## Define shape effects
@@ -198,7 +200,7 @@ Markdown(pd.DataFrame(vi_runs).to_markdown(index=False))
 | stage              | epochs | status         |
 |:-------------------|-------:|:---------------|
 | location and scale |    389 | early_stopping |
-| shape              |   1127 | early_stopping |
+| shape              |    893 | early_stopping |
 | joint              |    796 | early_stopping |
 
 Draw 1,000 samples from the fitted family for posterior summaries and plots. The
@@ -224,8 +226,8 @@ Markdown(sample_shapes.to_markdown(index=False))
 | $\beta_{0,loc}$         | (1, 1000)     |
 | $\beta_{0,scale}$       | (1, 1000)     |
 | $\beta_{0,shape}$\_coef | (1, 1000, 7)  |
-| $\beta_{m.ps(x)}$       | (1, 1000, 4)  |
-| $\beta_{s.lin(s.X)}$    | (1, 1000, 1)  |
+| $\beta_{m.ps(x)}$       | (1, 1000, 7)  |
+| $\beta_{s.x}$           | (1, 1000, 1)  |
 | $\gamma_{h.group}$      | (1, 1000, 14) |
 | $\gamma_{h.ps(x)}$      | (1, 1000, 28) |
 | h(shape_scale^2)        | (1, 1000)     |
@@ -246,6 +248,54 @@ in the monitored loss; it does not establish that the Gaussian family captures
 the posterior well. Check sensitivity to the stopping settings and assess
 approximation quality for an analysis. More posterior draws reduce Monte Carlo
 noise in summaries, but do not improve the fitted approximation itself.
+
+## Plot location and scale effects
+
+Use liesel-gam’s `plot_1d_smooth()` for the smooth location term. Its blue curve
+and ribbon show the posterior mean and pointwise 5th to 95th percentiles. The
+dashed curve is the generating effect. The smooth excludes the location intercept;
+the generating effect has mean zero over the training inputs.
+
+``` python
+effect_x = np.linspace(-1.0, 1.0, 100)
+true_location = pd.DataFrame({"x": effect_x, "effect": 0.8 * np.sin(np.pi * effect_x)})
+location_effect = gam.plot_1d_smooth(
+    model.pred.loc.terms["m.ps(x)"], samples, show_n_samples=0
+)
+```
+
+``` python
+(
+    location_effect
+    + p9.geom_line(
+        p9.aes("x", "effect"),
+        data=true_location,
+        inherit_aes=False,
+        linetype="dashed",
+    )
+    + p9.labs(title="Location effect", y="Effect on mean")
+)
+```
+
+<img src="conditional-shape_files/figure-commonmark/cell-15-output-1.png" width="420" height="300" alt="Estimated smooth location effect and dashed generating sine curve." />
+
+The scale effect is linear, so use liesel-gam’s `plot_forest()` to inspect its
+coefficient. The dashed line marks the generating log-scale slope of `0.3`.
+A one-unit increase in `x` multiplies the conditional standard deviation by
+`exp(slope)`.
+
+``` python
+(
+    gam.plot_forest(
+        model.pred.scale.terms["s.x"], samples, ymin="q_0.05", ymax="q_0.95"
+    )
+    + p9.geom_hline(yintercept=0.3, linetype="dashed")
+    + p9.labs(title="Linear effect on log scale", x="", y="Coefficient")
+    + p9.theme(figure_size=(7, 2.5))
+)
+```
+
+<img src="conditional-shape_files/figure-commonmark/cell-16-output-1.png" width="420" height="150" alt="Estimated log-scale slope with its 90 percent interval and true slope." />
 
 ## Predict at new covariates
 
@@ -303,7 +353,7 @@ effect = ptm.plot_1d_smooth_dist(
 effect
 ```
 
-<img src="conditional-shape_files/figure-commonmark/cell-17-output-1.png" width="420" height="300" alt="Fitted densities changing from left skew to right skew across x." />
+<img src="conditional-shape_files/figure-commonmark/cell-20-output-1.png" width="420" height="300" alt="Fitted densities changing from left skew to right skew across x." />
 
 At small `x`, look for a longer left tail; at large `x`, look for a longer right
 tail. The gray dotted curves show the standard normal reference. These differences
@@ -324,7 +374,63 @@ ptm.plot_conditional_dist(
 )
 ```
 
-<img src="conditional-shape_files/figure-commonmark/cell-18-output-1.png" width="420" height="300" alt="Complete fitted standardized densities for group b at three x values." />
+<img src="conditional-shape_files/figure-commonmark/cell-21-output-1.png" width="420" height="300" alt="Complete fitted standardized densities for group b at three x values." />
+
+## Compare fitted and true conditional distributions
+
+Compare complete response densities for group `b` at three values of `x`.
+Include location and scale so the comparison is in the original response units.
+The true density uses the same weighted difference of independent exponential
+variables as the data generator. For group `b`, the group offset in `weight` is
+zero. The change-of-scale factor below accounts for both residual standardization
+and the conditional standard deviation.
+
+``` python
+def true_density(y, x):
+    mu = 0.8 * np.sin(np.pi * x)
+    sigma = np.exp(0.3 * x)
+    weight = 1.0 / (1.0 + np.exp(-3.0 * x))
+    residual_sd = np.sqrt(weight**2 + (1.0 - weight) ** 2)
+    difference = residual_sd * (y - mu) / sigma + 2.0 * weight - 1.0
+    log_density = np.where(
+        difference >= 0.0, -difference / weight, difference / (1.0 - weight)
+    )
+    return residual_sd / sigma * np.exp(log_density)
+
+
+comparison = ptm.summarise_conditional_dist(
+    model.response,
+    samples,
+    newdata={"x": [-0.8, 0.0, 0.8], "group": ["b", "b", "b"]},
+    rgrid=jnp.linspace(-4.0, 6.0, 240),
+    include_loc=True,
+    include_scale=True,
+)
+density = comparison.loc[comparison["quantity"] == "density"].copy()
+density["truth"] = true_density(density["r"].to_numpy(), density["x"].to_numpy())
+```
+
+``` python
+(
+    p9.ggplot(density, p9.aes("r"))
+    + p9.geom_ribbon(p9.aes(ymin="q_0.05", ymax="q_0.95"), fill="#56B4E9", alpha=0.3)
+    + p9.geom_line(p9.aes(y="mean"), color="#0072B2")
+    + p9.geom_line(p9.aes(y="truth"), linetype="dashed")
+    + p9.facet_wrap("~x", nrow=1, labeller="label_both")
+    + p9.labs(title="Solid: fitted; dashed: generating density", x="y", y="Density")
+    + p9.theme_light()
+    + p9.theme(figure_size=(8, 3.5))
+)
+```
+
+<img src="conditional-shape_files/figure-commonmark/cell-23-output-1.png" width="480" height="210" alt="Fitted and generating response densities at three x values." />
+
+The solid blue curves average fitted densities over draws, with pointwise 5th
+to 95th percentile bands. The dashed curves are the exact generating densities.
+Unlike the isolated smooth-term display, this comparison includes the categorical
+shape effect as well as location and scale. Look for the change in tail direction
+across panels and for regions where the fitted model misses the generating shape.
+Differences can reflect finite data, spline approximation, and VI.
 
 See the [summary API](../api/summaries.md) for tidy numerical summaries and the
 [plot API](../api/plots.md) for display options.

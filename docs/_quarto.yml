@@ -1,6 +1,7 @@
 project:
   type: default
   render:
+    - guides/fixed-shape.qmd
     - guides/conditional-shape.qmd
     - guides/legacy.qmd
     - guides/term-distributions.qmd

@@ -1,18 +1,46 @@
 # Fit a fixed-shape PTM
 
-A fixed-shape PTM is a variant of the current PTM formulation. It estimates one
-shared standardized shape, while location and scale can vary with covariates.
-It uses the same onion spline and affine standardization as a conditional-shape
-PTM. The [legacy PTM](legacy.md) has its own transformation construction and
-intercept handling.
 
-## Use data with a shared shape
+Fit a penalized transformation model (PTM) with a shared standardized shape and
+covariate effects on the conditional mean and standard deviation. This guide
+starts with synthetic data, fits the model with variational inference (VI), and
+compares its predictions with the distribution that generated the observations.
 
-Start with the imports from the [conditional-shape example](conditional-shape.md),
-then replace its data setup with 240 observations whose standardized shape stays
-the same across `x`:
+Run the cells from top to bottom in a fresh session with the
+[checkout environment](../contributing.md#build-the-documentation).
+Graphviz is needed for the model graph. The example uses 240 observations;
+early stopping keeps the fit small. Assess approximation quality before using
+the results for inference.
 
-```python
+## Set up the data
+
+The response $Y_i$ has conditional mean $\mu_i$, standard deviation $\sigma_i$,
+and one shared shape vector $\delta$. The model transforms the standardized
+response to a normal reference scale:
+
+$$
+P(Y_i \le y) = \Phi\left(h_\delta((y - \mu_i) / \sigma_i)\right).
+$$
+
+Estimate the location, log-scale, and shape coefficients, together with the shape
+intercept’s smoothing variance. Keep the knot grid and other prior scales fixed.
+Here, “fixed shape” means shared across observations; the shape is estimated.
+
+``` python
+import jax
+import jax.numpy as jnp
+import liesel.optim as opt
+import liesel_gam as gam
+import numpy as np
+import optax
+import pandas as pd
+import plotnine as p9
+from IPython.display import Markdown
+
+import liesel_ptm as ptm
+```
+
+``` python
 rng = np.random.default_rng(42)
 x = np.linspace(-1.0, 1.0, 240)
 residual = (rng.gamma(shape=2.0, size=x.size) - 2.0) / np.sqrt(2.0)
@@ -20,42 +48,255 @@ y = 0.8 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
 registry = gam.PandasRegistry(pd.DataFrame({"x": x, "y": y}))
 ```
 
-The centered gamma residuals have a long right tail, mean zero, and variance one.
-Only the mean and standard deviation change with `x`. This matches the fixed-shape
-assumption; the conditional-shape guide's skewness-changing data would not.
+The centered gamma residual has mean zero, variance one, and a long right tail
+at every `x`. The true conditional mean is `0.8 * sin(pi * x)` and the standard
+deviation is `exp(0.3 * x)`. The registry supplies the observed variables to the
+model and its term builders.
 
-## Keep only the shape intercept
+## Define the model
 
-Initialize the model with [PTM][liesel_ptm.PTM] as in the conditional-shape guide,
-add its location and scale effects, then omit both
-shape-term additions in [Define shape effects](conditional-shape.md#define-shape-effects):
-`tb_shape.ps()` and `tb_shape.lin()`.
+[PTM](../api/models.md#liesel_ptm.PTM) creates location, scale, and shape
+predictors, each with an intercept. Add a smooth effect to location and a linear
+effect to log scale. Leave shape with its shared intercept.
 
-The constructor already creates the shape intercept and its smoothing prior.
-Leaving `model.pred.shape` with only this intercept gives a fixed-shape PTM.
-It uses the onion spline with both standardization corrections enabled, so
-location and scale represent the conditional mean and standard deviation.
+``` python
+model = ptm.PTM(registry.get_obs("y"), nshape=8, bounds=(-4.0, 4.0))
+tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
+tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
 
-The [getting-started example](../index.md#build-a-model) shows a complete model
-construction with this shared-shape structure.
+model.pred.loc += tb_loc.ps("x", k=8, scale=1.0)
+model.pred.scale += tb_scale.lin("x", name="s.x")
+```
 
-## Fit and predict
+The eight shape coefficients have a sum-to-zero constraint, leaving seven latent
+dimensions. `bounds` defines the flexible spline interval on the standardized
+response scale. The onion spline’s centering and scaling corrections make location
+and scale the conditional mean and standard deviation. The scale predictor uses
+an exponential inverse link, so its values stay positive.
+The location basis size `k` controls flexibility over `x`; `nshape` controls the
+residual transformation.
 
-Follow the same [starting-value optimization](conditional-shape.md#find-starting-values)
-and [variational fit](conditional-shape.md#fit-a-variational-family). The shape
-parameter block now contains only parameters belonging to the shape intercept
-and its prior.
+``` python
+model.plot(width=20, height=10)
+```
 
-Prediction uses `model.predict()` as in the conditional-shape example. Supply
-`x` in `newdata`; the `group` input is no longer needed after removing the
-categorical shape term. The shared
-shape has axes `(sample group, draw, shape coefficient)`, without a
-new-observation axis. Location and scale retain their new-observation axis.
+![Fixed-shape PTM graph with location and scale effects and shared shape.](fixed-shape_files/figure-commonmark/cell-5-output-1.png)
 
-Skip the smooth-term and group-specific displays at the end of the
-conditional-shape example. To display the shared shape, use
-[plot_intercept_dist][liesel_ptm.plot_intercept_dist] with the shape intercept:
+All observations share the shape intercept and its Weibull smoothing-variance
+prior. Add all terms before creating inference objects.
 
-```python
+## Find starting values
+
+First optimize the model’s log posterior. These point estimates initialize the
+variational family; they are not posterior draws.
+
+``` python
+map_result = opt.LieselOptim(
+    model,
+    optimizers=optax.adam(0.01),
+    loss_monitor="train_full_data",
+    stopper=opt.Stopper(epochs=600, patience=600),
+    seed=43,
+    show_progress=False,
+).fit()
+model.state = model.update_state(map_result.position_min_monitor)
+```
+
+## Fit a variational family
+
+Use one full-covariance Gaussian family for all parameters. Monitor an exponential
+moving average (EMA) of the training loss, using eight Monte Carlo samples per
+ELBO estimate. After at least 300 epochs, stop on a plateau with a 100-epoch
+patience window and relative tolerance `1e-4`. The 3,000-epoch cap bounds runtime.
+
+``` python
+vi = opt.LieselVI(
+    model,
+    loss="mvn_tril",
+    nsamples=8,
+    optimizers=optax.adam(0.003),
+    loss_monitor=opt.EmaTrainLossMonitor(effective_window=20),
+    stopper=opt.Stopper(epochs=3000, patience=100, min_epochs=300, rtol=1e-4),
+    seed=44,
+    show_progress=False,
+)
+result = vi.fit()
+```
+
+``` python
+result.status, result.n_epochs
+```
+
+    ('early_stopping', 602)
+
+`early_stopping` means the EMA plateau criterion was reached; `max_epochs` means
+the cap was reached. Inspect the loss trace too.
+
+``` python
+result.plot_loss()
+```
+
+<img src="fixed-shape_files/figure-commonmark/cell-9-output-1.png" width="420" height="300" alt="Training loss and its EMA for the fixed-shape variational fit." />
+
+A plateau does not establish that a Gaussian family approximates the posterior
+well. Check sensitivity to the stopping settings and assess approximation quality
+for an analysis.
+
+``` python
+posterior = vi.loss.approximate_joint_posterior(result)
+samples = posterior.sample((1, 1000), seed=jax.random.key(45))
+```
+
+The first two axes are `(sample group, draw)`, here `(1, 1000)`. These 1,000 draws
+are used for summaries and plots; they are separate from the eight samples used
+to estimate the training objective. More draws reduce Monte Carlo noise in the
+summaries without improving the fitted family itself.
+
+## Plot location and scale effects
+
+Use liesel-gam’s `plot_1d_smooth()` for the smooth location term. Its blue curve
+and ribbon show the posterior mean and pointwise 5th to 95th percentiles. The
+dashed curve is the generating effect. The smooth excludes the location intercept;
+the generating effect has mean zero over the training inputs.
+
+``` python
+effect_x = np.linspace(-1.0, 1.0, 100)
+true_location = pd.DataFrame({"x": effect_x, "effect": 0.8 * np.sin(np.pi * effect_x)})
+location_effect = gam.plot_1d_smooth(
+    model.pred.loc.terms["m.ps(x)"], samples, show_n_samples=0
+)
+```
+
+``` python
+(
+    location_effect
+    + p9.geom_line(
+        p9.aes("x", "effect"),
+        data=true_location,
+        inherit_aes=False,
+        linetype="dashed",
+    )
+    + p9.labs(title="Location effect", y="Effect on mean")
+)
+```
+
+<img src="fixed-shape_files/figure-commonmark/cell-12-output-1.png" width="420" height="300" alt="Estimated smooth location effect and dashed generating sine curve." />
+
+The scale effect is linear, so use liesel-gam’s `plot_forest()` to inspect its
+coefficient. The dashed line marks the generating log-scale slope of `0.3`.
+A one-unit increase in `x` multiplies the conditional standard deviation by
+`exp(slope)`.
+
+``` python
+(
+    gam.plot_forest(
+        model.pred.scale.terms["s.x"], samples, ymin="q_0.05", ymax="q_0.95"
+    )
+    + p9.geom_hline(yintercept=0.3, linetype="dashed")
+    + p9.labs(title="Linear effect on log scale", x="", y="Coefficient")
+    + p9.theme(figure_size=(7, 2.5))
+)
+```
+
+<img src="fixed-shape_files/figure-commonmark/cell-13-output-1.png" width="420" height="150" alt="Estimated log-scale slope with its 90 percent interval and true slope." />
+
+## Predict at new covariates
+
+Use `model.predict()` to evaluate the conditional parameters at every draw.
+
+``` python
+new_x = np.array([-0.8, 0.0, 0.8])
+prediction = model.predict(
+    samples, predict=["loc", "scale", "shape"], newdata={"x": new_x}
+)
+parameter_means = pd.DataFrame(
+    {
+        "x": new_x,
+        "mean location": prediction["loc"].mean(axis=(0, 1)),
+        "mean scale": prediction["scale"].mean(axis=(0, 1)),
+    }
+).round(3)
+```
+
+``` python
+Markdown(parameter_means.to_markdown(index=False))
+```
+
+|    x | mean location | mean scale |
+|-----:|--------------:|-----------:|
+| -0.8 |        -0.559 |      0.673 |
+|    0 |          0.01 |      0.978 |
+|  0.8 |         0.565 |      1.432 |
+
+Location and scale arrays have axes `(sample group, draw, new observation)`.
+Shared shape has axes `(sample group, draw, shape coefficient)`, with no
+observation axis. The table averages the conditional mean and standard deviation
+over draws; its scale column is not the standard deviation of the posterior
+predictive mixture.
+
+## Inspect the shared shape
+
+Remove location and scale to inspect the distribution induced by the shape
+intercept. The dotted reference is standard normal.
+
+``` python
 ptm.plot_intercept_dist(model.response, model.pred.shape.intercept, samples)
 ```
+
+<img src="fixed-shape_files/figure-commonmark/cell-16-output-1.png" width="420" height="300" alt="Fitted shared right-skewed shape compared with a normal reference." />
+
+Look for a sharper peak and a longer right tail than the reference. The same
+standardized shape applies at every `x`.
+
+## Compare fitted and true conditional distributions
+
+Include both location and scale in
+[summarise_conditional_dist](../api/summaries.md#liesel_ptm.summarise_conditional_dist)
+to compare complete response densities. The generating density follows from
+`y = mu + sigma * (Gamma(2, 1) - 2) / sqrt(2)`, including the density’s change of
+scale. It is zero below the gamma support boundary.
+
+``` python
+def true_density(y, x):
+    mu = 0.8 * np.sin(np.pi * x)
+    sigma = np.exp(0.3 * x)
+    gamma_value = np.maximum(2.0 + np.sqrt(2.0) * (y - mu) / sigma, 0.0)
+    return np.sqrt(2.0) / sigma * gamma_value * np.exp(-gamma_value)
+
+
+comparison = ptm.summarise_conditional_dist(
+    model.response,
+    samples,
+    newdata={"x": new_x},
+    rgrid=jnp.linspace(-4.0, 6.0, 240),
+    include_loc=True,
+    include_scale=True,
+)
+density = comparison.loc[comparison["quantity"] == "density"].copy()
+density["truth"] = true_density(density["r"].to_numpy(), density["x"].to_numpy())
+```
+
+``` python
+(
+    p9.ggplot(density, p9.aes("r"))
+    + p9.geom_ribbon(p9.aes(ymin="q_0.05", ymax="q_0.95"), fill="#56B4E9", alpha=0.3)
+    + p9.geom_line(p9.aes(y="mean"), color="#0072B2")
+    + p9.geom_line(p9.aes(y="truth"), linetype="dashed")
+    + p9.facet_wrap("~x", nrow=1, labeller="label_both")
+    + p9.labs(title="Solid: fitted; dashed: generating density", x="y", y="Density")
+    + p9.theme_light()
+    + p9.theme(figure_size=(8, 3.5))
+)
+```
+
+<img src="fixed-shape_files/figure-commonmark/cell-18-output-1.png" width="480" height="210" alt="Fitted and generating response densities at three x values." />
+
+The solid blue curves average fitted densities over draws; the blue bands contain
+pointwise 5th to 95th percentiles. Dashed curves show the exact generating
+densities. Compare the peak, asymmetry, and tails in each panel. All panels share
+the same standardized shape, while their location and scale differ. Finite data,
+spline approximation, and VI can all contribute to differences from the truth.
+
+Continue with the [conditional-shape guide](conditional-shape.md) when shape
+should also depend on covariates. The [legacy guide](legacy.md) covers the earlier
+transformation construction and computed intercepts; it is a separate formulation.

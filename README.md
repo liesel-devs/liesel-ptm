@@ -87,8 +87,8 @@ conditional-shape PTM.
 
 For fitting, prediction, and more model components, see the guides:
 
+- [Fixed-shape PTM](https://liesel-devs.github.io/liesel-ptm/guides/fixed-shape/): a complete workflow from data to VI, effect plots, and comparisons with the generating distribution.
 - [Conditional-shape PTM](https://liesel-devs.github.io/liesel-ptm/guides/conditional-shape/): location, scale, and shape predictors; optimization and VI.
-- [Fixed-shape PTM](https://liesel-devs.github.io/liesel-ptm/guides/fixed-shape/): shared shape with the current transformation and standardization.
 - [Legacy PTM](https://liesel-devs.github.io/liesel-ptm/guides/legacy/): the legacy transformation and computed intercepts.
 
 `PTM` is a Liesel `Model`; add native liesel-gam terms through `.pred.loc`,

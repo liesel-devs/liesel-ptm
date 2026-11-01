@@ -81,10 +81,10 @@ see [PTMDist][liesel_ptm.PTMDist].
 
 ## Fit, predict, and inspect results
 
+- [Fit a fixed-shape PTM](guides/fixed-shape.md): fit a shared shape, plot location
+  and scale effects, and compare fitted distributions with their generating truth.
 - [Fit a conditional-shape PTM](guides/conditional-shape.md): define covariate effects on location, scale,
   and shape; fit with staged optimization and VI; predict at new inputs.
-- [Fit a fixed-shape PTM](guides/fixed-shape.md): keep a shared shape in the current
-  formulation, using the same standardization and fitting workflow.
 - [Fit a legacy PTM](guides/legacy.md): use the legacy transformation and computed
   intercepts with IWLS and NUTS sampling.
 - [Inspect distribution effects](guides/term-distributions.md): choose summaries

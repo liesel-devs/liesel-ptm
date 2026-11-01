@@ -33,8 +33,8 @@ def build_model() -> ptm.PTM:
     tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
     tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
 
-    model.pred.loc += tb_loc.ps("x", k=5, scale=0.5)
-    model.pred.scale += tb_scale.lin("x")
+    model.pred.loc += tb_loc.ps("x", k=8, scale=1.0)
+    model.pred.scale += tb_scale.lin("x", name="s.x")
     shape = model.pred.shape
     tb_shape_base = gam.TermBuilder(registry, prefix_names_by="h.")
     tb_shape = gam.MVTermBuilder.from_predictor(shape, term_builder=tb_shape_base)
