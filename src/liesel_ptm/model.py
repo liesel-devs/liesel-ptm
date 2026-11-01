@@ -19,17 +19,17 @@ from .dist import LocScaleTransformationDist
 
 @dataclass
 class PTMPredictors:
-    """Native liesel-gam predictors exposed by :class:`~liesel_ptm.PTM`.
+    """Native liesel-gam predictors exposed by [PTM][liesel_ptm.PTM].
 
-    Add terms with ``+=``, ``append`` or ``extend``. In a
-    :class:`~liesel_ptm.LegacyPTM`, location and scale exclude computed intercepts;
+    Add terms with `+=`, `append` or `extend`. In a
+    [LegacyPTM][liesel_ptm.LegacyPTM], location and scale exclude computed intercepts;
     scale still applies an exponential inverse link.
     """
 
     loc: gam.AdditivePredictor
     """Location predictor; identity link by default."""
     scale: gam.AdditivePredictor
-    """Positive scale predictor; access log scale through ``linear_predictor``."""
+    """Positive scale predictor; access log scale through `linear_predictor`."""
     shape: gam.MVAdditivePredictor
     """Shape coefficients, including their structured intercept."""
 
@@ -127,7 +127,7 @@ def _make_predictors(
             raise ValueError("shape_scale must be finite and positive.")
     if shape is None:
         shape = gam.MVAdditivePredictor.from_random_walk(
-            "delta",
+            "shape",
             ndim=nshape,
             intercept_scale=(
                 gam.scale_wb(0.1, scale=0.05, name="shape_scale")
@@ -145,60 +145,72 @@ def _make_predictors(
 
 
 class PTM(lsl.Model):
-    """Modern PTM with location, scale and covariate-dependent shape predictors.
+    """PTM with location, scale and optional covariate-dependent shape effects.
+
+    Uses the onion spline and affine standardization. Keep only the shape intercept
+    for a fixed-shape PTM, or add shape terms for a conditional-shape PTM.
 
     Parameters
     ----------
     y
-        Response values, or an observed :class:`liesel.model.Var` without a
-        distribution. An array becomes a response variable named ``y``.
+        Response values, or an observed `liesel.model.Var` without a
+        distribution. An array becomes a response variable named `y`.
     nshape
         Number of shape coefficients before constraints; an integer of at least two.
     bounds
         Flexible interval on the standardized residual scale. Cubic, equidistant
-        :class:`~liesel_ptm.OnionKnots` are constructed internally.
-    loc, scale, shape
-        Optional native liesel-gam predictors, retained by identity. Defaults are an
-        identity-link location predictor, an exponential-link scale predictor, and a
-        first-order random-walk shape predictor constrained with ``sumzero_coef``.
-        Location and log scale have flat-prior intercepts initialized at zero. Shape
-        has a zero-initialized structured intercept and ``nshape - 1`` latent
-        dimensions. A supplied shape must have the same dimension and constraint.
-        Supplied scales require a positive inverse link, such as exp or softplus,
-        and finite positive initial values. Identity links are rejected even when
-        the starting scale is positive.
+        [OnionKnots][liesel_ptm.OnionKnots] are constructed internally.
+    loc
+        Optional native location predictor, retained by identity. Defaults to an
+        identity link with a flat-prior intercept initialized at zero.
+    scale
+        Optional native scale predictor, retained by identity. Defaults to an
+        exponential inverse link with a flat-prior log-scale intercept initialized
+        at zero. Supplied scales require a positive inverse link, such as exp or
+        softplus, and finite positive initial values. Identity links are rejected
+        even when the starting scale is positive.
+    shape
+        Optional native shape predictor, retained by identity. Defaults to a
+        predictor named `shape`: a first-order random walk constrained with
+        `sumzero_coef`, with a
+        zero-initialized structured intercept and `nshape - 1` latent dimensions.
+        A supplied shape must have `nshape` dimensions and the same constraint.
     shape_scale
         Scale of the automatic shape intercept: a native scale variable,
-        :class:`liesel_gam.VarIGPrior`, or a fixed positive real. ``None`` creates
-        ``gam.scale_wb(0.1, scale=0.05)``: initial standard deviation 0.1 and an
+        `liesel_gam.VarIGPrior`, or a fixed positive real. `None` creates
+        `gam.scale_wb(0.1, scale=0.05)`: initial standard deviation 0.1 and an
         unclipped Weibull(1/2, 0.05) prior on its square. Configure this on the
-        predictor itself when supplying ``shape``.
+        predictor itself when supplying `shape`.
 
     Raises
     ------
     ValueError
         If the shape dimension or interval is invalid, a supplied shape has an
-        incompatible dimension/constraint, or ``y`` already belongs to a model or
+        incompatible dimension/constraint, or `y` already belongs to a model or
         has a distribution.
 
     Notes
     -----
     Location and scale are the conditional mean and standard deviation. Add terms
     after initialization, then create ordinary Liesel optimization, VI or MCMC
-    objects. Graph growth and locking follow :class:`liesel.model.Model` directly.
+    objects. Graph growth and locking follow `liesel.model.Model` directly.
 
     See Also
     --------
-    liesel_ptm.LegacyPTM : Shared shape with computed location and scale intercepts.
-    PTMDist : Likelihood node for constructing a model manually.
+    [LegacyPTM][liesel_ptm.LegacyPTM]
+        Legacy transformation with computed location and scale intercepts.
+    [PTMDist][liesel_ptm.PTMDist]
+        Likelihood node for constructing a model manually.
 
     Examples
     --------
     >>> import liesel_gam as gam
     >>> import liesel_ptm as ptm
     >>> model = ptm.PTM([0.1, -0.2, 0.4], nshape=4)
-    >>> terms = gam.TermBuilder.from_dict({"x": [-1.0, 0.0, 1.0]})
-    >>> model.pred.loc += terms.slin("x", scale=1.0)
+    >>> tb_loc = gam.TermBuilder.from_dict({"x": [-1.0, 0.0, 1.0]})
+    >>> model.pred.loc += tb_loc.slin("x", scale=1.0)
+    >>> model.pred.shape.name
+    'shape'
     >>> model.pred.shape.ndim, model.pred.shape.latent_ndim
     (4, 3)
     """
@@ -248,23 +260,24 @@ class PTMDist(lsl.Dist):
         Knot sequence for the selected spline.
     loc, scale, shape
         Liesel variables/nodes or values supplying location, positive scale and
-        shape coefficients. Shared coefficients have shape ``(n_param,)``;
-        covariate-dependent coefficients have shape ``(n_obs, n_param)``.
+        shape coefficients. Shared coefficients have shape `(n_param,)`;
+        covariate-dependent coefficients have shape `(n_obs, n_param)`.
     centered, scaled
         Whether to center and scale the spline distribution, respectively.
-        Leave both false for the computed-intercept :class:`~liesel_ptm.LegacyPTM`
-        workflow; use both true for the modern mean/standard-deviation interpretation.
+        Leave both false for the computed-intercept [LegacyPTM][liesel_ptm.LegacyPTM]
+        workflow; use both true for the current mean/standard-deviation interpretation.
     trafo_lambda
         PTM spline transition width relative to knot spacing.
     bspline
-        ``"ptm"`` or ``"onion"``. The spline is constructed once and reused by
-        the distribution node.
+        `"ptm"` for the legacy transformation or `"onion"` for the current
+        fixed-shape and conditional-shape PTMs. Covariate-dependent shape requires
+        the onion spline. The spline is constructed once and reused by the node.
     trafo_target_slope
-        PTM tail behavior: transition to unit slope (``"identity"``) or continue
-        with the boundary slope (``"continue_linearly"``).
+        PTM tail behavior: transition to unit slope (`"identity"`) or continue
+        with the boundary slope (`"continue_linearly"`).
     **kwargs
-        Forwarded to :class:`liesel.model.Dist`, including arguments for
-        :class:`~liesel_ptm.LocScaleTransformationDist`.
+        Forwarded to `liesel.model.Dist`, including arguments for
+        [LocScaleTransformationDist][liesel_ptm.LocScaleTransformationDist].
 
     Raises
     ------

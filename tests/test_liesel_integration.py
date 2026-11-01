@@ -7,12 +7,12 @@ import numpy as np
 import tensorflow_probability.substrates.jax.distributions as tfd
 from jax.flatten_util import ravel_pytree
 
-from demo import reference_legacy
+from tests.legacy_model import build_legacy_model
 
 
 def test_gaussian_iwls_geometry_still_targets_the_ptm_posterior():
-    model = reference_legacy.build_model()
-    shape = model.vars["delta"].intercept.coef
+    model = build_legacy_model()
+    shape = model.vars["shape"].intercept.coef
     model.state = model.update_state(
         {shape.name: jnp.linspace(-0.6, 0.6, shape.value.size)}
     )

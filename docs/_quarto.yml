@@ -1,0 +1,20 @@
+project:
+  type: default
+  render:
+    - guides/fixed-shape.qmd
+    - guides/conditional-shape.qmd
+    - guides/legacy.qmd
+    - guides/term-distributions.qmd
+format:
+  gfm:
+    variant: +tex_math_dollars
+    wrap: preserve
+filters:
+  - filters/alt-text.lua
+jupyter: python3
+execute:
+  freeze: auto
+  cache: false
+  daemon: false
+  error: false
+  warning: false

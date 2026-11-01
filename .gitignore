@@ -176,7 +176,8 @@ cython_debug/
 .python-version
 tests/notebooks/test_mixed_model_pspline.ipynb
 .DS_Store
-/docs/source/generated
+/docs/.quarto/
+/.cache/
 /tests/notebooks/
 tests/data/nigeria_cox.raw
 tests/test_survival.ipynb

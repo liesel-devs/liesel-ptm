@@ -1,4 +1,4 @@
-"""Legacy shared-shape PTMs on Liesel and liesel-gam components."""
+"""Legacy PTMs with the PTM spline transformation and computed intercepts."""
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -73,7 +73,7 @@ class LogScaleIntercept(lsl.Var):
     loc
         Location predictor including its computed intercept.
     log_scale_model
-        Intercept-free log-scale predictor. Uses the empirical variance with ``ddof=0``.
+        Intercept-free log-scale predictor. Uses the empirical variance with `ddof=0`.
     name
         Name used to record the intercept in posterior samples.
     """
@@ -149,34 +149,44 @@ def _observation_replaced(
 
 
 class LegacyPTM(lsl.Model):
-    """Shared-shape PTM with computed location and log-scale intercepts.
+    """Legacy PTM with computed location and log-scale intercepts.
+
+    Uses the PTM spline transformation and computes its intercepts from training
+    residuals. For the current fixed-shape or conditional-shape formulation, use
+    [PTM][liesel_ptm.PTM].
 
     Parameters
     ----------
     y
         One-dimensional response values with at least two rows, or an unowned
-        observed :class:`liesel.model.Var` without a distribution. An array becomes
-        a writable observed input named ``y``.
-        The likelihood is attached to :attr:`response`, an identity view of that
-        input, so data updates also reach the computed intercepts.
+        observed `liesel.model.Var` without a distribution. An array becomes
+        a writable observed input named `y`.
+        The likelihood is attached to [response][liesel_ptm.LegacyPTM.response],
+        an identity view of that input, so data updates reach the computed intercepts.
     nshape
         Number of shape coefficients before constraints; an integer of at least three.
     bounds
         Flexible interval on the standardized residual scale. Cubic, equidistant
-        :class:`~liesel_ptm.PTMKnots` are constructed internally.
-    loc, scale, shape
-        Optional native liesel-gam predictors, retained by identity. Location and
-        log scale must be intercept-free. Scale must use ``inv_link=jnp.exp``;
-        its ``linear_predictor`` supplies the log-scale effects. Shape must be a
-        shared, ``sumzero_coef``-constrained predictor with ``nshape`` dimensions.
-        Defaults use empty location/scale effects and the same shape construction
-        as :class:`~liesel_ptm.PTM`. Names ``loc`` and ``scale`` are reserved for
-        the complete predictors; name supplied effects separately.
+        [PTMKnots][liesel_ptm.PTMKnots] are constructed internally.
+    loc
+        Optional native location-effects predictor, retained by identity. Must be
+        intercept-free; defaults to an empty identity-link predictor. The name
+        `loc` is reserved for the complete likelihood predictor.
+    scale
+        Optional native scale-effects predictor, retained by identity. Must be
+        intercept-free with `inv_link=jnp.exp`; defaults to an empty predictor
+        with this link. Its `linear_predictor` supplies the log-scale effects.
+        The name `scale` is reserved for the complete likelihood predictor.
+    shape
+        Optional native shape predictor, retained by identity. Must be shared,
+        without covariate terms, with `nshape` dimensions and the `sumzero_coef`
+        constraint. Defaults to a predictor named `shape`, using the shape
+        construction in [PTM][liesel_ptm.PTM].
     shape_scale
-        Native scale variable, :class:`liesel_gam.VarIGPrior`, or fixed positive real
-        for the automatic shape intercept. ``None`` uses the unclipped Weibull variance
-        prior described in :class:`~liesel_ptm.PTM`. Configure this on the predictor
-        itself when supplying ``shape``.
+        Native scale variable, `liesel_gam.VarIGPrior`, or fixed positive real
+        for the automatic shape intercept. `None` uses the unclipped Weibull variance
+        prior described in [PTM][liesel_ptm.PTM]. Configure this on the predictor
+        itself when supplying `shape`.
 
     Raises
     ------
@@ -187,10 +197,11 @@ class LegacyPTM(lsl.Model):
 
     Notes
     -----
-    Add terms through :attr:`pred` before creating inference objects. Computed
-    intercepts are separate from these predictors and enter the likelihood as
-    ``loc`` and ``scale``. :meth:`setup_mcmc` records both intercepts at every draw;
-    :meth:`predict` uses those records on a copied prediction graph.
+    Add terms through [pred][liesel_ptm.LegacyPTM.pred] before creating inference
+    objects. Computed intercepts are separate from these predictors and enter the
+    likelihood as `loc` and `scale`. [setup_mcmc][liesel_ptm.LegacyPTM.setup_mcmc]
+    records both intercepts at every draw; [predict][liesel_ptm.LegacyPTM.predict]
+    uses those records on a copied prediction graph.
 
     Fitting uses the complete observation count supplied at construction. Joint
     shuffling of response and covariates is supported. Minibatches, training/validation
@@ -200,14 +211,28 @@ class LegacyPTM(lsl.Model):
 
     See Also
     --------
-    LocationIntercept : Compute the location intercept from training residuals.
-    LogScaleIntercept : Compute the corresponding log-scale intercept.
+    [LocationIntercept][liesel_ptm.LocationIntercept]
+        Compute the location intercept from training residuals.
+    [LogScaleIntercept][liesel_ptm.LogScaleIntercept]
+        Compute the corresponding log-scale intercept.
+
+    Examples
+    --------
+    >>> import liesel_gam as gam
+    >>> import liesel_ptm as ptm
+    >>> model = ptm.LegacyPTM([0.1, -0.2, 0.4], nshape=4)
+    >>> tb_loc = gam.TermBuilder.from_dict({"x": [-1.0, 0.0, 1.0]})
+    >>> model.pred.loc += tb_loc.slin("x", scale=1.0)
+    >>> model.pred.shape.name
+    'shape'
+    >>> model.pred.shape.ndim, model.pred.shape.latent_ndim
+    (4, 3)
     """
 
     pred: PTMPredictors
     """Location/scale effects and shared shape, excluding computed intercepts."""
     response: lsl.Var
-    """Observed likelihood view of the writable response input (``y`` by default)."""
+    """Observed likelihood view of the writable response input (`y` by default)."""
 
     def __init__(
         self,
@@ -285,9 +310,9 @@ class LegacyPTM(lsl.Model):
         Parameters
         ----------
         seed, num_chains
-            Random seed and chain count for :class:`liesel.goose.EngineBuilder`.
+            Random seed and chain count for `liesel.goose.EngineBuilder`.
         iwls_kwargs
-            Arguments for :class:`liesel.goose.IWLSKernel`. Defaults to step size 1 and
+            Arguments for `liesel.goose.IWLSKernel`. Defaults to step size 1 and
             target acceptance 0.5. Proposal geometry comes from liesel-gam.
         shape_spec
             NUTS or HMC specification shared by shape coefficients and nonconjugate
@@ -310,13 +335,14 @@ class LegacyPTM(lsl.Model):
         Updates parameter inference specifications. Existing scale inference, including
         conjugate Gibbs, is retained; missing scalar scale updates use NUTS. The fitted
         model remains the posterior target, including its computed-intercept updates.
-        Predictors are taken from :attr:`pred`. Location/scale require isotropic
-        structured terms, such as ``TermBuilder.slin``; plain linear, anisotropic and
-        scale-factored terms require manual Liesel configuration.
+        Predictors are taken from [pred][liesel_ptm.LegacyPTM.pred]. Location/scale
+        require isotropic structured terms, such as `TermBuilder.slin`; plain linear,
+        anisotropic and scale-factored terms require manual Liesel configuration.
 
         See Also
         --------
-        predict : Predict using the recorded intercept draws.
+        [predict][liesel_ptm.LegacyPTM.predict]
+            Predict using the recorded intercept draws.
         """
         model = self
         loc_terms, log_scale_terms, shape = (
@@ -428,23 +454,24 @@ class LegacyPTM(lsl.Model):
         ----------
         samples
             Posterior samples, including both intercepts recorded by
-            :meth:`setup_mcmc`, with the same leading sample axes.
+            [setup_mcmc][liesel_ptm.LegacyPTM.setup_mcmc], with the same leading
+            sample axes.
         predict
-            Variable or node names to predict. ``None`` returns all variables at
-            fitted data. With ``newdata``, observed variables are omitted unless
+            Variable or node names to predict. `None` returns all variables at
+            fitted data. With `newdata`, observed variables are omitted unless
             they or all their observed value inputs have replacement values.
         newdata, chunk_size
-            Passed to :meth:`liesel.model.Model.predict` on a detached prediction graph.
+            Passed to `liesel.model.Model.predict` on a detached prediction graph.
 
         Returns
         -------
         dict
-            Predictions with the sample axes retained, as in ``Model.predict``.
+            Predictions with the sample axes retained, as in `Model.predict`.
 
         Raises
         ------
         ValueError
-            If recorded intercepts are missing, their sample axes differ, or ``predict``
+            If recorded intercepts are missing, their sample axes differ, or `predict`
             is empty.
         KeyError
             If a prediction target or new-data key is not part of the model.
@@ -454,8 +481,8 @@ class LegacyPTM(lsl.Model):
         The fitted model and samples are unchanged. Only copied intercept calculations
         become strong value nodes, so Liesel uses the recorded draws. For predictor-only
         targets, Liesel evaluates a submodel without training responses. Include new
-        responses in ``newdata`` when predicting response-dependent quantities.
-        Variable-level :meth:`liesel.model.Var.predict` delegates to this method
+        responses in `newdata` when predicting response-dependent quantities.
+        Variable-level `liesel.model.Var.predict` delegates to this method
         and also uses the recorded intercept draws.
         """
         model = self

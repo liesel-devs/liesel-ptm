@@ -1,0 +1,278 @@
+---
+title: Fit a conditional-shape PTM
+fig-width: 7
+fig-height: 5
+fig-format: png
+fig-dpi: 120
+---
+
+Extend the [fixed-shape walkthrough](fixed-shape.md) so covariates can also
+change standardized distributional shape. This guide focuses on shape terms and
+staged, blocked variational inference (VI); run its cells in a fresh session with
+the same [checkout environment](../contributing.md#build-the-documentation).
+Graphviz is needed for the model graph.
+
+## Define the task and data
+
+In the [conditional-shape formulation](https://arxiv.org/abs/2609.02662),
+$\delta_i$ varies with covariates:
+
+$$
+P(Y_i \le y) = \Phi\left(h_{\delta_i}((y - \mu_i) / \sigma_i)\right).
+$$
+
+Use 500 synthetic observations from
+$Y = 0.8\sin(\pi x) + e^{0.3x}\varepsilon$, with $x \sim U(-1,1)$.
+The standardized two-piece normal error has full real-line support and changes
+from left to right skew with `x`; the three groups shift its skewness too.
+Estimate predictor coefficients and smoothing variances, keeping basis sizes and
+prior hyperparameters fixed.
+
+```{python}
+import jax
+import jax.numpy as jnp
+import liesel.optim as opt
+import liesel_gam as gam
+import numpy as np
+import optax
+import pandas as pd
+import plotnine as p9
+import tensorflow_probability.substrates.jax.distributions as tfd
+from IPython.display import Markdown
+
+import liesel_ptm as ptm
+```
+
+```{python}
+rng = np.random.default_rng(42)
+x = rng.uniform(-1.0, 1.0, 500)
+group = pd.Categorical(rng.choice(["a", "b", "c"], size=x.size))
+error_dist = tfd.TwoPieceNormal(
+    loc=0.0,
+    scale=1.0,
+    skewness=jnp.exp(0.9 * x + 0.25 * (group.codes - 1)),
+)
+errors = error_dist.sample(seed=jax.random.key(43))
+residual = np.asarray((errors - error_dist.mean()) / error_dist.stddev())
+y = 0.8 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
+data = pd.DataFrame({"x": x, "group": group, "y": y})
+registry = gam.PandasRegistry(data)
+```
+
+## Initialize the model
+
+Create the same [PTM](../api/models.md#liesel_ptm.PTM) as in the fixed-shape
+guide, then add covariates to `model.pred.shape` below.
+
+```{python}
+model = ptm.PTM(registry.get_obs("y"), nshape=8, bounds=(-4.0, 4.0))
+```
+
+## Define location and scale
+
+Use the [same smooth location and linear log-scale terms](fixed-shape.md#define-the-model)
+as in the fixed-shape walkthrough.
+
+```{python}
+tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
+tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
+loc_smooth_scale = gam.scale_wb(value=1.0, scale=1.0, name="loc_smooth_scale")
+
+model.pred.loc += tb_loc.ps("x", k=8, scale=loc_smooth_scale)
+model.pred.scale += tb_scale.lin("x", name="s.x")
+```
+
+## Define shape effects
+
+Add smooth and categorical terms to the shape predictor. The constructor already
+supplies its constrained intercept and prior. Use a multivariate term builder to
+match the predictor's dimension and constraint.
+
+```{python}
+shape = model.pred.shape
+tb_shape_base = gam.TermBuilder(registry, prefix_names_by="h.")
+tb_shape = gam.MVTermBuilder.from_predictor(shape, term_builder=tb_shape_base)
+ps_scale_x = gam.scale_wb(value=0.5, scale=0.25, name="shape_x_scale")
+ps_scale_r = gam.scale_wb(value=0.7, scale=0.5, name="shape_r_scale")
+shape += tb_shape.ps("x", k=5, scale=ps_scale_x, dimension_scale=ps_scale_r)
+shape += tb_shape.lin("group", dimension_scale=0.7, name="h.group")
+```
+
+The P-spline estimates smoothing variances over `x` and over shape-coefficient
+dimensions. The group term uses treatment coding, with `a` as the reference and
+a fixed cross-dimensional scale of `0.7`.
+
+```{python}
+#| fig-alt: "Conditional-shape PTM graph with mean, scale, and shape predictors."
+model.plot(width=24, height=12)
+```
+
+## Find starting values
+
+Optimize location and scale first, then shape, carrying each result forward.
+Parental submodels select all coefficients and log smoothing variances for each
+block. These point estimates initialize VI.
+
+```{python}
+loc_scale_parameters = list(model.parental_submodel(model.pred.loc).parameters)
+loc_scale_parameters += list(model.parental_submodel(model.pred.scale).parameters)
+shape_parameters = list(model.parental_submodel(model.pred.shape).parameters)
+
+for parameters in (loc_scale_parameters, shape_parameters):
+    result = opt.LieselOptim(
+        model,
+        optimizers=[opt.Optimizer(parameters, optax.adam(0.01))],
+        loss_monitor="train_full_data",
+        stopper=opt.Stopper(epochs=600, patience=600),
+        seed=43,
+        show_progress=False,
+    ).fit()
+    model.state = model.update_state(result.position_min_monitor)
+```
+
+## Fit a variational family
+
+Use a full-covariance Gaussian for location and scale and another for shape,
+including each block's log smoothing variances. Train them separately, then
+jointly, using EMA early stopping with a 3,000-epoch cap per stage.
+Gaussian VI often gives intervals that are too narrow. The two blocks are also
+independent in this approximation, so posterior dependence between location/scale
+and shape is not captured.
+
+```{python}
+loc_scale_block = opt.VDist(loc_scale_parameters, model).mvn_tril()
+shape_block = opt.VDist(shape_parameters, model).mvn_tril()
+family = opt.CompositeVDist(loc_scale_block, shape_block).build()
+loss = opt.NegElboLoss.from_vdist(family, nsamples=8)
+vi_runs = []
+for stage, parameters in (
+    ("location and scale", loc_scale_block.parameters),
+    ("shape", shape_block.parameters),
+    ("joint", family.parameters),
+):
+    result = opt.LieselVI(
+        model,
+        loss=loss,
+        optimizers=[opt.Optimizer(parameters, optax.adam(0.003))],
+        loss_monitor=opt.EmaTrainLossMonitor(effective_window=20),
+        stopper=opt.Stopper(epochs=3000, patience=100, min_epochs=300, rtol=1e-4),
+        seed=44,
+        show_progress=False,
+    ).fit()
+    family.q.state = family.q.update_state(result.position_final)
+    vi_runs.append({"stage": stage, "epochs": result.n_epochs, "status": result.status})
+```
+
+Check how long each stage ran and whether it stopped early or reached the cap:
+
+```{python}
+Markdown(pd.DataFrame(vi_runs).to_markdown(index=False))
+```
+
+Draw 1,000 approximate posterior samples for summaries, using the
+[sample axes from the fixed-shape guide](fixed-shape.md#fit-a-variational-family).
+
+```{python}
+posterior = loss.approximate_joint_posterior(result)
+samples = posterior.sample((1, 1000), seed=jax.random.key(45))
+```
+
+Inspect the final joint stage's loss:
+
+```{python}
+#| fig-alt: "Monte Carlo training loss and its EMA for the final joint VI stage."
+result.plot_loss()
+```
+
+A plateau in the EMA is a stopping rule, not a check of approximation accuracy.
+For location and scale effect plots, use the
+[liesel-gam helpers in the fixed-shape guide](fixed-shape.md#plot-location-and-scale-effects).
+
+## Predict at new covariates
+
+Use `model.predict()` to evaluate the predictors for every draw. Supply the group
+labels used in the training data for new categorical inputs.
+
+```{python}
+prediction = model.predict(
+    samples,
+    predict=["loc", "scale", "shape"],
+    newdata={"x": jnp.array([-0.5, 0.5]), "group": ["a", "b"]},
+)
+```
+
+Location and scale have axes `(sample group, draw, new observation)`. Shape adds
+a final axis for its eight coefficients.
+
+## Inspect standardized shape
+
+Include both the smooth and categorical shape terms for group `b`. Location and
+scale are excluded, so differences between curves describe standardized shape.
+For isolated term displays, see the [plotting guide](term-distributions.md).
+
+```{python}
+#| fig-alt: "Complete fitted standardized densities for group b at three x values."
+ptm.plot_conditional_dist(
+    model.response,
+    samples,
+    newdata={"x": [-0.8, 0.0, 0.8], "group": ["b", "b", "b"]},
+    rgrid=120,
+)
+```
+
+The tail direction changes with `x`, but the fitted curves have small shoulders
+near `x = 0` and `x = 0.8`. The generating densities below are smoother; narrow
+VI bands do not rule out this lack of fit.
+
+## Compare fitted and true conditional distributions
+
+Compare the same group on the response scale, including location and scale.
+The [fixed-shape guide](fixed-shape.md#compare-fitted-and-true-conditional-distributions)
+explains the density summaries and change-of-scale factor. Group `b` has zero
+group offset in the generator.
+
+```{python}
+def true_density(y, x):
+    mu = 0.8 * np.sin(np.pi * x)
+    sigma = np.exp(0.3 * x)
+    generator = tfd.TwoPieceNormal(
+        loc=0.0, scale=1.0, skewness=jnp.exp(0.9 * jnp.asarray(x))
+    )
+    raw_error = generator.mean() + generator.stddev() * (y - mu) / sigma
+    return np.asarray(generator.prob(raw_error) * generator.stddev() / sigma)
+
+
+comparison = ptm.summarise_conditional_dist(
+    model.response,
+    samples,
+    newdata={"x": [-0.8, 0.0, 0.8], "group": ["b", "b", "b"]},
+    rgrid=jnp.linspace(-4.0, 6.0, 240),
+    include_loc=True,
+    include_scale=True,
+)
+density = comparison.loc[comparison["quantity"] == "density"].copy()
+density["truth"] = true_density(density["r"].to_numpy(), density["x"].to_numpy())
+```
+
+```{python}
+#| fig-width: 8
+#| fig-height: 3.5
+#| fig-alt: "Fitted and generating response densities at three x values."
+(
+    p9.ggplot(density, p9.aes("r"))
+    + p9.geom_ribbon(p9.aes(ymin="q_0.05", ymax="q_0.95"), fill="#56B4E9", alpha=0.3)
+    + p9.geom_line(p9.aes(y="mean"), color="#0072B2")
+    + p9.geom_line(p9.aes(y="truth"), linetype="dashed")
+    + p9.facet_wrap("~x", nrow=1, labeller="label_both")
+    + p9.labs(title="Solid: fitted; dashed: generating density", x="y", y="Density")
+    + p9.theme_light()
+    + p9.theme(figure_size=(8, 3.5))
+)
+```
+
+The dashed truth makes the extra shoulders visible. The fitted densities capture
+the change in tail direction but do not reproduce every peak. Bands are pointwise
+90% credible bands under the variational approximation.
+
+See the [summary API](../api/summaries.md) for numerical summaries and the
+[plot API](../api/plots.md) for display options.

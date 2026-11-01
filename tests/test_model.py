@@ -167,9 +167,13 @@ def test_convenience_matches_manual_likelihood_and_prior_at_nonzero_coefficients
         graph.state = graph.update_state(position)
     np.testing.assert_allclose(model.log_prior, manual.log_prior, atol=2e-6)
     np.testing.assert_allclose(model.log_lik, manual.log_lik, atol=2e-6)
-    for name in ("loc", "scale", "delta"):
+    for auto_name, manual_name in (
+        ("loc", "loc"),
+        ("scale", "scale"),
+        ("shape", "delta"),
+    ):
         np.testing.assert_allclose(
-            model.vars[name].value, manual.vars[name].value, atol=2e-6
+            model.vars[auto_name].value, manual.vars[manual_name].value, atol=2e-6
         )
     np.testing.assert_allclose(model.pred.shape.value.sum(), 0.0, atol=1e-6)
     response = model.response if isinstance(model, ptm.LegacyPTM) else model.vars["y"]
@@ -185,6 +189,9 @@ def test_minimum_shape_dimension_has_finite_density(cls, minimum):
     model = cls(jnp.array([-0.5, 0.1, 0.8]), nshape=minimum)
     assert isinstance(model, lsl.Model)
     assert np.isfinite(model.log_prob)
+    assert model.pred.shape.name == "shape"
+    assert model.vars["shape"] is model.pred.shape
+    assert "delta" not in model.vars
     assert model.pred.shape.ndim == minimum
     assert model.pred.shape.latent_ndim == minimum - 1
 
@@ -233,6 +240,8 @@ def test_supplied_predictors_and_shape_scale_use_native_inputs():
         and model.pred.scale is scale
         and model.pred.shape is shape
     )
+    assert model.vars["d"] is shape
+    assert "shape" not in model.vars
     assert model.vars["response"] is response
     assert isinstance(shape.intercept, gam.MultivariateIntercept)
     assert shape.intercept.scale is not None

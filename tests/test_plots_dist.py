@@ -366,6 +366,32 @@ def test_plot_conditional_dist_accepts_custom_condition_labels(
     _assert_okabe_ito_scales(plot, 2)
 
 
+@pytest.mark.parametrize(
+    ("include_loc", "include_scale", "label"),
+    [
+        (False, False, "r"),
+        (True, False, "conditional_response"),
+        (False, True, "conditional_response"),
+        (True, True, "conditional_response"),
+    ],
+)
+@pytest.mark.parametrize("transformed", [False, True])
+def test_plot_conditional_dist_labels_the_plotted_scale(
+    include_loc, include_scale, label, transformed
+) -> None:
+    response, samples, _ = _conditional_response()
+    plot = ptm.plot_conditional_dist(
+        response,
+        samples,
+        newdata={"conditional_x": [0.0], "conditional_z": [0.0]},
+        rgrid=jnp.array([0.5, 1.0, 2.0]),
+        response_bijector=tfb.Exp() if transformed else None,
+        include_loc=include_loc,
+        include_scale=include_scale,
+    )
+    assert plot.labels.x == (f"Transformed {label}" if transformed else label)
+
+
 @pytest.mark.parametrize("quantity", ["density", "cdf"])
 def test_plot_conditional_dist_transforms_response_distribution(
     quantity: str,
@@ -390,7 +416,7 @@ def test_plot_conditional_dist_transforms_response_distribution(
     reported = tfd.TransformedDistribution(distribution=fitted, bijector=bijector)
     expected = reported.prob(rgrid) if quantity == "density" else reported.cdf(rgrid)
     assert isinstance(plot.data, pd.DataFrame)
-    assert plot.labels.x == f"Transformed {response.name}"
+    assert plot.labels.x == "Transformed r"
     np.testing.assert_allclose(plot.data["r"], rgrid)
     np.testing.assert_allclose(plot.data["mean"], expected, rtol=1e-5)
 

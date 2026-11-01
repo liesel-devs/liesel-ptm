@@ -1,0 +1,223 @@
+---
+title: Fit a legacy PTM
+fig-width: 7
+fig-height: 5
+fig-format: png
+fig-dpi: 120
+---
+
+Fit the legacy PTM from the
+[first PTM paper](https://doi.org/10.1080/10618600.2026.2703269) using MCMC.
+Its PTM spline and computed intercepts differ from the current formulation;
+shape is shared across observations.
+
+Run the cells in a fresh session with the
+[checkout environment](../contributing.md#build-the-documentation).
+Graphviz is needed for the graph. This example uses 500 observations, 500
+adaptation iterations, and 200 posterior draws per chain. Use longer chains and
+check mixing, effective sample sizes, and convergence before reporting results.
+
+## Define the task and data
+
+The computed intercepts standardize the training residuals to empirical mean zero
+and standard deviation one. Unlike the current `PTM`, legacy location and scale
+are therefore only roughly the conditional mean and standard deviation. See the
+[paper](https://doi.org/10.1080/10618600.2026.2703269) for their construction.
+
+Use $Y = 1 + 0.5x + 0.7\sin(\pi x) + e^{0.3x}\varepsilon$, with
+$x \sim U(-1,1)$ and a shared, standardized right-skewed two-piece normal error
+with support on the whole real line.
+
+```{python}
+import jax
+import jax.numpy as jnp
+import liesel_gam as gam
+import numpy as np
+import pandas as pd
+import plotnine as p9
+import tensorflow_probability.substrates.jax.distributions as tfd
+
+import liesel_ptm as ptm
+```
+
+```{python}
+rng = np.random.default_rng(42)
+x = rng.uniform(-1.0, 1.0, 500)
+error_dist = tfd.TwoPieceNormal(loc=0.0, scale=1.0, skewness=2.0)
+errors = error_dist.sample(x.size, seed=jax.random.key(43))
+residual = np.asarray((errors - error_dist.mean()) / error_dist.stddev())
+y = 1.0 + 0.5 * x + 0.7 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
+registry = gam.PandasRegistry(pd.DataFrame({"x": x}))
+```
+
+## Initialize the model
+
+[LegacyPTM](../api/models.md#liesel_ptm.LegacyPTM) supplies the shared shape and
+computed intercepts. Leave shape with its intercept; legacy shape does not
+support covariate terms.
+
+```{python}
+model = ptm.LegacyPTM(y, nshape=8, bounds=(-4.0, 4.0))
+```
+
+The location and scale predictors in `model.pred` exclude the computed intercepts.
+The scale predictor applies an exponential inverse link to its log-scale effects.
+The complete predictors, including computed intercepts, are `model.vars["loc"]`
+and `model.vars["scale"]`.
+
+## Add location and scale effects
+
+Use a smooth location effect, including its unpenalized linear trend, and a
+linear log-scale effect. An inverse-gamma prior on the smoothing variance allows
+a Gibbs update.
+
+```{python}
+tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
+tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
+smooth_scale = gam.VarIGPrior(1.0, 0.001)
+
+model.pred.loc += tb_loc.ps("x", k=5, scale=smooth_scale, name="m.ps(x)")
+model.pred.scale += tb_scale.slin("x", scale=1.0, name="s.x")
+```
+
+```{python}
+#| fig-alt: "Legacy PTM graph with computed intercepts and shared shape."
+model.plot(width=24, height=12)
+```
+
+The response data feed both computed intercepts. This is why new-data prediction
+must keep their values from the fitted model.
+
+## Sample the parameters
+
+[LegacyPTM.setup_mcmc](../api/models.md#liesel_ptm.LegacyPTM.setup_mcmc) configures
+Gaussian IWLS proposals for location and scale, the smoothing-variance Gibbs update,
+and a joint NUTS block for shape. It records both computed training intercepts
+at every draw for later prediction.
+
+Fit with the complete dataset. Minibatches, training/validation splits, and
+updates with fewer rows are unsupported because the intercepts depend on all
+training observations. Prediction can use a different number of observations.
+
+```{python}
+builder = model.setup_mcmc(seed=43, num_chains=2)
+builder.show_progress = False
+builder.add_adaptation(500)
+builder.add_posterior(200)
+engine = builder.build()
+engine.sample_all_epochs()
+samples = engine.get_results().get_posterior_samples()
+```
+
+`samples["beta0"]` and `samples["gamma0"]` have axes `(chain, draw)`.
+Keep these recorded intercepts for prediction.
+
+## Predict at new covariates
+
+[LegacyPTM.predict](../api/models.md#liesel_ptm.LegacyPTM.predict) evaluates a detached
+prediction graph using the recorded training intercepts. It preserves the fitted
+graph and does not recompute intercepts from new data.
+
+```{python}
+prediction = model.predict(
+    samples,
+    predict=["loc", "scale", "shape"],
+    newdata={"x": jnp.array([-0.5, 0.5])},
+)
+```
+
+Location and scale have axes `(chain, draw, new observation)`. Shared shape has
+axes `(chain, draw, shape coefficient)`.
+
+## Inspect the shared shape
+
+Plot the distribution induced by the shared shape intercept, removing the fitted
+location and scale effects. The gray dotted curve shows the normal reference.
+
+```{python}
+#| fig-alt: "Fitted legacy density with a long right tail and normal reference."
+ptm.plot_intercept_dist(
+    model.response,
+    model.pred.shape.intercept,
+    samples,
+    rgrid=120,
+)
+```
+
+The sharper peak and longer right tail reflect the asymmetric residuals.
+The ribbon is a pointwise 90% credible band.
+
+## Plot location and scale effects
+
+Use the [liesel-gam displays from the fixed-shape guide](fixed-shape.md#plot-location-and-scale-effects).
+The location smooth contains the whole trend except the computed intercept.
+
+```{python}
+#| fig-alt: "Posterior smooth location trend in the legacy PTM."
+gam.plot_1d_smooth(model.pred.loc.terms["m.ps(x)"], samples, show_n_samples=0)
+```
+
+The dashed line below marks the generating log-scale slope of `0.3`.
+
+```{python}
+#| fig-height: 2.5
+#| fig-alt: "Legacy log-scale slope interval compared with its generating value."
+(
+    gam.plot_forest(
+        model.pred.scale.terms["s.x"], samples, ymin="q_0.05", ymax="q_0.95"
+    )
+    + p9.geom_hline(yintercept=0.3, linetype="dashed")
+    + p9.labs(title="Linear effect on log scale", x="", y="Coefficient")
+    + p9.theme(figure_size=(7, 2.5))
+)
+```
+
+## Compare fitted and true conditional distributions
+
+Use the same [truth comparison](fixed-shape.md#compare-fitted-and-true-conditional-distributions)
+as in the fixed-shape guide. The summary helper includes location and scale,
+using the recorded training intercepts.
+
+```{python}
+def true_density(y, x):
+    mu = 1.0 + 0.5 * x + 0.7 * np.sin(np.pi * x)
+    sigma = np.exp(0.3 * x)
+    generator = error_dist
+    raw_error = generator.mean() + generator.stddev() * (y - mu) / sigma
+    return np.asarray(generator.prob(raw_error) * generator.stddev() / sigma)
+
+
+comparison = ptm.summarise_conditional_dist(
+    model.response,
+    samples,
+    newdata={"x": [-0.8, 0.0, 0.8]},
+    rgrid=jnp.linspace(-4.0, 6.0, 240),
+    include_loc=True,
+    include_scale=True,
+)
+density = comparison.loc[comparison["quantity"] == "density"].copy()
+density["truth"] = true_density(density["r"].to_numpy(), density["x"].to_numpy())
+```
+
+```{python}
+#| fig-width: 8
+#| fig-height: 3.5
+#| fig-alt: "Fitted and generating response densities at three x values."
+(
+    p9.ggplot(density, p9.aes("r"))
+    + p9.geom_ribbon(p9.aes(ymin="q_0.05", ymax="q_0.95"), fill="#56B4E9", alpha=0.3)
+    + p9.geom_line(p9.aes(y="mean"), color="#0072B2")
+    + p9.geom_line(p9.aes(y="truth"), linetype="dashed")
+    + p9.facet_wrap("~x", nrow=1, labeller="label_both")
+    + p9.labs(title="Solid: fitted; dashed: generating density", x="y", y="Density")
+    + p9.theme_light()
+    + p9.theme(figure_size=(8, 3.5))
+)
+```
+
+Solid curves average fitted densities over draws, bands are pointwise 90%
+credible bands, and dashed curves show the generating densities. Compare the
+peaks and right tails; finite data, spline approximation, and MCMC error can
+contribute to the remaining differences.
+
+For covariate-dependent shape and VI, see the [conditional-shape guide](conditional-shape.md).

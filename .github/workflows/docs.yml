@@ -1,10 +1,10 @@
 name: docs
 
 on:
+  workflow_dispatch:
   push:
-    branches: [main, codex/cleanup]
+    branches: [main]
   pull_request:
-    branches: [main, codex/cleanup]
 
 permissions:
   contents: read
@@ -16,24 +16,39 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       MPLBACKEND: Agg
     steps:
       - uses: actions/checkout@v7
+      - uses: quarto-dev/quarto-actions/setup@v2
+        with:
+          version: "1.8.27"
       - uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: "3.13"
           enable-cache: true
-      - name: Install package and development tools
-        run: uv sync --locked --group dev
+      - name: Install package and documentation tools
+        run: uv sync --locked --group dev --group docs
+      - name: Install Graphviz
+        run: sudo apt-get update && sudo apt-get install --yes graphviz
+      - name: Check stored output freshness
+        run: uv run --locked --group docs python scripts/docs.py check
+      - name: Execute guides freshly on manual runs
+        if: github.event_name == 'workflow_dispatch'
+        run: uv run --locked --group docs python scripts/docs.py render --fresh
+      - name: Render guides using stored results
+        if: github.event_name != 'workflow_dispatch'
+        run: uv run --locked --group docs python scripts/docs.py render
+      - name: Check freshness guard
+        run: uv run --locked pytest tests/test_docs.py
       - name: Build documentation
-        run: uv run --locked sphinx-build -W --keep-going -b html docs/source docs/build/html
+        run: uv run --locked --group docs zensical build --clean --strict
       - name: Upload Pages artifact
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v5
         with:
-          path: docs/build/html
+          path: site
 
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

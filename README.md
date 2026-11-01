@@ -11,11 +11,19 @@ Liesel provides inference and model graphs; liesel-gam provides predictors, term
 priors, and Gaussian IWLS proposals. This library provides PTM transformations,
 distributions, computed intercepts, and distribution summaries and plots.
 
-Learn more in the paper:
+The current PTM formulation uses an onion spline and affine standardization, with
+two variants: **conditional-shape PTMs** let standardized shape vary with
+covariates; **fixed-shape PTMs** estimate one shared shape. Both allow location and
+scale effects and follow the formulation described in:
+
+Brachem, J., & Kneib, T. (2026). [Reconciling Interpretability with Covariate-Dependent Shape Flexibility in Penalized Transformation Models for Distributional Regression](https://arxiv.org/abs/2609.02662). *arXiv preprint*.
+
+The **legacy PTM** retains the PTM spline transformation and computed-intercept
+handling from the first PTM paper:
 
 Brachem, J., Wiemann, P. F. V., & Kneib, T. (2026). [Bayesian Penalized Transformation Models: Structured Additive Location-Scale Regression for Arbitrary Conditional Distributions](https://doi.org/10.1080/10618600.2026.2703269). *Journal of Computational and Graphical Statistics*.
 
-Application examples are included in the supplementary materials for the paper, which
+Application examples are included in the supplementary materials for the first paper, which
 can be found here: https://github.com/liesel-devs/ptm-supplement
 
 ## Installation
@@ -25,20 +33,38 @@ Liesel's `vi-modernization` branch alongside this library:
 
 ```bash
 pip install "liesel @ git+https://github.com/liesel-devs/liesel.git@vi-modernization" \
-  "git+https://github.com/liesel-devs/liesel-ptm.git@codex/cleanup"
+  "git+https://github.com/liesel-devs/liesel-ptm.git@main"
 ```
 
 For a checkout, `uv sync --locked --group dev` installs the tested environment.
-Run `uv run --locked pytest`, `uv run --locked pre-commit run -a`, and
-`uv run --locked sphinx-build -W --keep-going -b html docs/source docs/build/html`.
+Run `uv run --locked pytest` and `uv run --locked pre-commit run -a`.
+
+## Documentation
+
+Read the [documentation](https://liesel-devs.github.io/liesel-ptm/) for executable
+guides and the API reference. To build it locally, install Quarto 1.8.27 and
+Graphviz, then run:
+
+```bash
+uv sync --locked --group dev --group docs
+uv run --locked --group docs python scripts/docs.py render
+uv run --locked --group docs zensical build --clean --strict
+```
+
+Preview with `uv run --locked --group docs zensical serve`. After changing a guide,
+library code, a shared guide fragment, or dependencies, force fresh execution with
+`uv run --locked --group docs python scripts/docs.py render --fresh`. Commit the
+Quarto sources, generated Markdown and figures, `_freeze` results, and output
+manifest together. See the [contributor instructions](docs/contributing.md) for
+setup, validation, and GitHub Pages deployment.
 
 
 ## Getting Started
 
 
 Construct predictors and terms with [liesel-gam](https://github.com/liesel-devs/liesel-gam).
-This minimal model has a smooth location effect, a constant scale, and a shared
-transformation shape. The data are synthetic.
+This fixed-shape PTM uses the current formulation, with a smooth location effect,
+a constant scale, and a shared transformation shape. The data are synthetic.
 
 ```python
 import jax
@@ -49,17 +75,21 @@ import liesel_ptm as ptm
 
 x = jnp.linspace(-2.0, 2.0, 100)
 y = jnp.sin(x) + jax.random.normal(jax.random.key(42), x.shape)
-builder = gam.TermBuilder(gam.DictRegistry({"x": x}))
+tb_loc = gam.TermBuilder(gam.DictRegistry({"x": x}))
 
 model = ptm.PTM(y, nshape=6, bounds=(-4.0, 4.0))
-model.pred.loc += builder.ps("x", k=10)
-# model.pred.scale and model.pred.shape already have intercepts.
+model.pred.loc += tb_loc.ps("x", k=10)
 ```
 
-For fitting, prediction, and more model components, see the reference examples:
+The constructor supplies location, log-scale, and shape intercepts. Leaving shape
+with only its intercept gives a fixed-shape PTM; add shape terms for a
+conditional-shape PTM.
 
-- [Modern GPTM](demo/reference_modern.py): location, scale, and shape predictors; optimization and VI.
-- [Legacy PTM](demo/reference_legacy.py): shared shape and computed intercepts.
+For fitting, prediction, and more model components, see the guides:
+
+- [Fixed-shape PTM](https://liesel-devs.github.io/liesel-ptm/guides/fixed-shape/): a complete workflow from data to VI, effect plots, and comparisons with the generating distribution.
+- [Conditional-shape PTM](https://liesel-devs.github.io/liesel-ptm/guides/conditional-shape/): location, scale, and shape predictors; optimization and VI.
+- [Legacy PTM](https://liesel-devs.github.io/liesel-ptm/guides/legacy/): the legacy transformation and computed intercepts.
 
 `PTM` is a Liesel `Model`; add native liesel-gam terms through `.pred.loc`,
 `.pred.scale`, and `.pred.shape`, then use ordinary Liesel inference. `nshape`
@@ -74,9 +104,9 @@ recording both intercepts at every posterior draw:
 
 ```python
 legacy = ptm.LegacyPTM(y, nshape=6)
-legacy_terms = gam.TermBuilder.from_dict({"x": x})
-legacy.pred.loc += legacy_terms.slin("x", scale=1.0, name="m.x")
-legacy.pred.scale += legacy_terms.slin("x", scale=0.5, name="s.x")
+tb_legacy = gam.TermBuilder.from_dict({"x": x})
+legacy.pred.loc += tb_legacy.slin("x", scale=1.0, name="m.x")
+legacy.pred.scale += tb_legacy.slin("x", scale=0.5, name="s.x")
 engine_builder = legacy.setup_mcmc(seed=43, num_chains=2)
 ```
 
@@ -85,8 +115,8 @@ rejected. `legacy.vars["y"]` is the shared response input; `legacy.response` car
 the likelihood.
 
 Use standard Liesel scheduling and sampling, then `legacy.predict()` for prediction
-with the recorded intercepts. The linked legacy example contains the complete workflow,
+with the recorded intercepts. The linked legacy guide contains the complete workflow,
 including a smoothing update. Its Weibull variance prior is unclipped.
 
-See the [plotting notebook](demo/term-distribution-plots.ipynb) for distribution effects.
-It illustrates plots with simulated coefficient draws.
+See the [plotting guide](https://liesel-devs.github.io/liesel-ptm/guides/term-distributions/)
+for rendered distribution-effect plots using simulated coefficient draws.
