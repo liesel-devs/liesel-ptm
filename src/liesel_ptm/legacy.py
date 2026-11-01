@@ -180,7 +180,8 @@ class LegacyPTM(lsl.Model):
     shape
         Optional native shape predictor, retained by identity. Must be shared,
         without covariate terms, with `nshape` dimensions and the `sumzero_coef`
-        constraint. Defaults to the shape construction in [PTM][liesel_ptm.PTM].
+        constraint. Defaults to a predictor named `shape`, using the shape
+        construction in [PTM][liesel_ptm.PTM].
     shape_scale
         Native scale variable, `liesel_gam.VarIGPrior`, or fixed positive real
         for the automatic shape intercept. `None` uses the unclipped Weibull variance
@@ -222,6 +223,8 @@ class LegacyPTM(lsl.Model):
     >>> model = ptm.LegacyPTM([0.1, -0.2, 0.4], nshape=4)
     >>> terms = gam.TermBuilder.from_dict({"x": [-1.0, 0.0, 1.0]})
     >>> model.pred.loc += terms.slin("x", scale=1.0)
+    >>> model.pred.shape.name
+    'shape'
     >>> model.pred.shape.ndim, model.pred.shape.latent_ndim
     (4, 3)
     """

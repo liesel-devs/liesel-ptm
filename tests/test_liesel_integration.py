@@ -12,7 +12,7 @@ from demo import reference_legacy
 
 def test_gaussian_iwls_geometry_still_targets_the_ptm_posterior():
     model = reference_legacy.build_model()
-    shape = model.vars["delta"].intercept.coef
+    shape = model.vars["shape"].intercept.coef
     model.state = model.update_state(
         {shape.name: jnp.linspace(-0.6, 0.6, shape.value.size)}
     )

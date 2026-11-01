@@ -50,7 +50,7 @@ if __name__ == "__main__":
     samples = fit(model).get_posterior_samples()
     prediction = model.predict(
         samples,
-        predict=["loc", "scale", "delta"],
+        predict=["loc", "scale", "shape"],
         newdata={"x": jnp.array([-0.5, 0.5])},
     )
     print(

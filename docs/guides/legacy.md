@@ -142,7 +142,7 @@ graph and does not recompute intercepts from new data.
 ``` python
 prediction = model.predict(
     samples,
-    predict=["loc", "scale", "delta"],
+    predict=["loc", "scale", "shape"],
     newdata={"x": jnp.array([-0.5, 0.5])},
 )
 ```
@@ -159,9 +159,9 @@ Markdown(prediction_shapes.to_markdown(index=False))
 
 | predictor | shape      |
 |:----------|:-----------|
-| delta     | (2, 12, 6) |
 | loc       | (2, 12, 2) |
 | scale     | (2, 12, 2) |
+| shape     | (2, 12, 6) |
 
 Location and scale have axes `(chain, draw, new observation)`. Shape retains its
 shared coefficient axis, with no new-observation axis. These values describe the

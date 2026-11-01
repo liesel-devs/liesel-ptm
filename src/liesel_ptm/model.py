@@ -127,7 +127,7 @@ def _make_predictors(
             raise ValueError("shape_scale must be finite and positive.")
     if shape is None:
         shape = gam.MVAdditivePredictor.from_random_walk(
-            "delta",
+            "shape",
             ndim=nshape,
             intercept_scale=(
                 gam.scale_wb(0.1, scale=0.05, name="shape_scale")
@@ -171,7 +171,8 @@ class PTM(lsl.Model):
         even when the starting scale is positive.
     shape
         Optional native shape predictor, retained by identity. Defaults to a
-        first-order random walk constrained with `sumzero_coef`, with a
+        predictor named `shape`: a first-order random walk constrained with
+        `sumzero_coef`, with a
         zero-initialized structured intercept and `nshape - 1` latent dimensions.
         A supplied shape must have `nshape` dimensions and the same constraint.
     shape_scale
@@ -208,6 +209,8 @@ class PTM(lsl.Model):
     >>> model = ptm.PTM([0.1, -0.2, 0.4], nshape=4)
     >>> terms = gam.TermBuilder.from_dict({"x": [-1.0, 0.0, 1.0]})
     >>> model.pred.loc += terms.slin("x", scale=1.0)
+    >>> model.pred.shape.name
+    'shape'
     >>> model.pred.shape.ndim, model.pred.shape.latent_ndim
     (4, 3)
     """

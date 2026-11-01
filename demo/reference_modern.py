@@ -48,7 +48,7 @@ def fit(model: lsl.Model, epochs: int = 2):
     loc_scale_parameters += list(
         model.parental_submodel(model.vars["scale"]).parameters
     )
-    shape_parameters = list(model.parental_submodel(model.vars["delta"]).parameters)
+    shape_parameters = list(model.parental_submodel(model.vars["shape"]).parameters)
 
     for parameters in (loc_scale_parameters, shape_parameters):
         result = opt.LieselOptim(
@@ -89,7 +89,7 @@ def fit(model: lsl.Model, epochs: int = 2):
 if __name__ == "__main__":
     model = build_model()
     point, samples = fit(model)
-    shape = model.vars["delta"]
+    shape = model.vars["shape"]
     smooth = shape.terms["h.ps(x)"]
     summary = ptm.summarise_1d_smooth_dist(
         model.response, smooth, samples, intercept=shape.intercept, ngrid=3, rgrid=9

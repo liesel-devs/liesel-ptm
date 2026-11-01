@@ -28,7 +28,7 @@ def test_modern_identity_shape_recovers_gaussian_likelihood(modern):
 
 def test_modern_shape_covariates_and_distribution_roundtrip():
     model = reference_modern.build_model()
-    shape = model.vars["delta"]
+    shape = model.vars["shape"]
     term = shape.terms["h.ps(x)"]
     coef = jnp.linspace(-0.15, 0.15, term.coef.value.size).reshape(
         term.coef.value.shape
@@ -47,7 +47,7 @@ def test_modern_shape_covariates_and_distribution_roundtrip():
 def test_modern_parameter_blocks_cover_the_model(modern):
     loc = set(modern.parental_submodel(modern.vars["loc"]).parameters)
     scale = set(modern.parental_submodel(modern.vars["scale"]).parameters)
-    shape = set(modern.parental_submodel(modern.vars["delta"]).parameters)
+    shape = set(modern.parental_submodel(modern.vars["shape"]).parameters)
     assert not (loc & scale or loc & shape or scale & shape)
     assert loc | scale | shape == set(modern.parameters)
     assert len(shape) > 3  # Includes the shape intercept's smoothing parameter.
@@ -63,15 +63,15 @@ def test_modern_staged_optimization_vi_prediction_and_effects():
         assert values.shape == (1, 3) + model.parameters[name].value.shape
         assert np.isfinite(values).all()
 
-    shape = model.vars["delta"]
+    shape = model.vars["shape"]
     prediction = model.predict(
         samples,
-        predict=["loc", "scale", "delta"],
+        predict=["loc", "scale", "shape"],
         newdata={"x": jnp.array([-0.5, 0.5]), "group": jnp.array([0, 1])},
     )
-    assert prediction["delta"].shape == (1, 3, 2, 4)
+    assert prediction["shape"].shape == (1, 3, 2, 4)
     assert prediction["loc"].shape == prediction["scale"].shape == (1, 3, 2)
-    np.testing.assert_allclose(prediction["delta"].sum(axis=-1), 0.0, atol=1e-6)
+    np.testing.assert_allclose(prediction["shape"].sum(axis=-1), 0.0, atol=1e-6)
     assert np.all(prediction["scale"] > 0.0)
 
     response = model.vars["y"]
@@ -125,9 +125,9 @@ def test_legacy_computed_intercepts_update_and_standardize_residuals():
     assert np.isfinite(model.log_prob)
 
 
-def test_legacy_has_shared_modern_deltas_and_the_ptm_spline():
+def test_legacy_has_shared_shape_and_the_ptm_spline():
     model = reference_legacy.build_model()
-    shape = model.vars["delta"]
+    shape = model.vars["shape"]
     assert not shape.terms
     assert shape.value.shape == (6,)
     assert shape.latent_ndim == 5

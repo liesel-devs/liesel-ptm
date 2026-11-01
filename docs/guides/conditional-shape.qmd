@@ -191,7 +191,7 @@ new categorical inputs use their integer codes: `0` and `1` select `a` and `b`.
 ```{python}
 prediction = model.predict(
     samples,
-    predict=["loc", "scale", "delta"],
+    predict=["loc", "scale", "shape"],
     newdata={"x": jnp.array([-0.5, 0.5]), "group": jnp.array([0, 1])},
 )
 ```

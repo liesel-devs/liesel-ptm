@@ -25,7 +25,7 @@ def rebuild(variables):
         nshape=6,
         loc=variables["loc_terms"],
         scale=variables["scale_terms"],
-        shape=variables["delta"],
+        shape=variables["shape"],
     )
 
 
@@ -123,7 +123,7 @@ def test_kernel_coverage_gaussian_information_and_shape_block(kernel_class):
     assert Counter(k for ker in builder.kernels for k in ker.position_keys) == Counter(
         model.parameters.keys()
     )
-    shape_keys = set(model.parental_submodel(model.vars["delta"]).parameters)
+    shape_keys = set(model.parental_submodel(model.vars["shape"]).parameters)
     shape_kernel = next(ker for ker in builder.kernels if isinstance(ker, kernel_class))
     assert set(shape_kernel.position_keys) == shape_keys
     assert shape_spec.kernel_group is None  # The caller's specification is unchanged.
@@ -152,7 +152,7 @@ def test_kernel_coverage_gaussian_information_and_shape_block(kernel_class):
 
 def test_shape_prior_precision_constraints_and_unclipped_variance():
     model = reference_legacy.build_model()
-    shape = model.vars["delta"]
+    shape = model.vars["shape"]
     intercept = shape.intercept
     reparam = intercept.dimension_reparam.value
     differences = jnp.diff(jnp.eye(6), axis=0)
@@ -230,11 +230,11 @@ def test_short_sampler_records_end_of_draw_intercepts_and_updates_all_blocks(sam
         assert np.isfinite(values).all()
     prediction = model.predict(
         samples,
-        predict=["loc", "scale", "delta"],
+        predict=["loc", "scale", "shape"],
         newdata={"x": jnp.array([-0.5, 0.5])},
     )
     assert prediction["loc"].shape == prediction["scale"].shape == (2, 12, 2)
-    assert prediction["delta"].shape == (2, 12, 6)
+    assert prediction["shape"].shape == (2, 12, 6)
 
 
 def example_samples(model):
@@ -421,7 +421,7 @@ def test_setup_rejects_overlap_and_unexplained_parameters():
 
 def test_shape_gibbs_and_missing_scale_inference_are_covered():
     variables = reference_legacy.build_model().copy_vars()
-    shape = variables["delta"]
+    shape = variables["shape"]
     builder = gam.MVTermBuilder.from_predictor(
         shape, term_builder=gam.TermBuilder.from_dict({})
     )
@@ -447,10 +447,10 @@ def test_setup_rejects_unconstrained_shape_and_invalid_shape_sampler():
     with pytest.raises(ValueError, match="NUTSKernel or HMCKernel"):
         setup(model, shape_spec=gs.MCMCSpec(gs.IWLSKernel))
     variables = model.copy_vars()
-    variables["delta"] = gam.MVAdditivePredictor.from_random_walk("delta", ndim=6)
+    variables["shape"] = gam.MVAdditivePredictor.from_random_walk("shape", ndim=6)
     with pytest.raises(ValueError, match="sumzero_coef"):
         rebuild(variables)
     # The native predictor remains mutable after construction; re-check its matrix.
-    model.vars["delta"].intercept.dimension_reparam.value = jnp.eye(6)[:, :5]
+    model.vars["shape"].intercept.dimension_reparam.value = jnp.eye(6)[:, :5]
     with pytest.raises(ValueError, match="sumzero_coef"):
         setup(model)

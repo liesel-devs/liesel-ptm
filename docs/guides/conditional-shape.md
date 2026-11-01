@@ -181,9 +181,9 @@ Markdown(sample_shapes.to_markdown(index=False))
 
 | parameter               | shape      |
 |:------------------------|:-----------|
-| $\beta_{0,delta}$\_coef | (1, 3, 3)  |
 | $\beta_{0,loc}$         | (1, 3)     |
 | $\beta_{0,scale}$       | (1, 3)     |
+| $\beta_{0,shape}$\_coef | (1, 3, 3)  |
 | $\beta_{m.ps(x)}$       | (1, 3, 4)  |
 | $\beta_{s.lin(s.X)}$    | (1, 3, 1)  |
 | $\gamma_{h.group}$      | (1, 3, 6)  |
@@ -202,7 +202,7 @@ new categorical inputs use their integer codes: `0` and `1` select `a` and `b`.
 ``` python
 prediction = model.predict(
     samples,
-    predict=["loc", "scale", "delta"],
+    predict=["loc", "scale", "shape"],
     newdata={"x": jnp.array([-0.5, 0.5]), "group": jnp.array([0, 1])},
 )
 ```
@@ -219,9 +219,9 @@ Markdown(prediction_shapes.to_markdown(index=False))
 
 | predictor | shape        |
 |:----------|:-------------|
-| delta     | (1, 3, 2, 4) |
 | loc       | (1, 3, 2)    |
 | scale     | (1, 3, 2)    |
+| shape     | (1, 3, 2, 4) |
 
 Location and scale have axes `(sample group, draw, new observation)`. Shape adds
 one final axis for the four shape coefficients. These are conditional parameter

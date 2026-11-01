@@ -137,7 +137,7 @@ graph and does not recompute intercepts from new data.
 ```{python}
 prediction = model.predict(
     samples,
-    predict=["loc", "scale", "delta"],
+    predict=["loc", "scale", "shape"],
     newdata={"x": jnp.array([-0.5, 0.5])},
 )
 ```
