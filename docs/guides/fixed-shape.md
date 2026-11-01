@@ -11,7 +11,7 @@ intercept handling.
 Start with the complete [conditional-shape example](conditional-shape.md).
 Initialize the model with [PTM][liesel_ptm.PTM] as shown there, then omit both
 shape-term additions in [Define shape effects](conditional-shape.md#define-shape-effects):
-`builder.ps()` and `builder.lin()`.
+`tb_shape.ps()` and `tb_shape.lin()`.
 
 The constructor already creates the shape intercept and its smoothing prior.
 Leaving `model.pred.shape` with only this intercept gives a fixed-shape PTM.

@@ -39,6 +39,8 @@ guides in `docs/guides/*.qmd`, then regenerate their `.md` files and figures.
 Keep imports, shared setup, and model choices visible so readers can run the
 cells in a fresh session. Keep expensive examples small and use fixed seeds.
 Initialize term builders in separate assignments before adding terms to predictors.
+Name them with a `tb_` prefix, such as `tb_loc`, `tb_scale`, or `tb_shape`.
+Use `.lin()` without an explicit prior in guides.
 Give longer prior specifications their own names so term additions stay on one line
 when practical.
 

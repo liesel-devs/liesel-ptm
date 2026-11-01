@@ -75,10 +75,10 @@ import liesel_ptm as ptm
 
 x = jnp.linspace(-2.0, 2.0, 100)
 y = jnp.sin(x) + jax.random.normal(jax.random.key(42), x.shape)
-builder = gam.TermBuilder(gam.DictRegistry({"x": x}))
+tb_loc = gam.TermBuilder(gam.DictRegistry({"x": x}))
 
 model = ptm.PTM(y, nshape=6, bounds=(-4.0, 4.0))
-model.pred.loc += builder.ps("x", k=10)
+model.pred.loc += tb_loc.ps("x", k=10)
 ```
 
 The constructor supplies location, log-scale, and shape intercepts. Leaving shape
@@ -104,9 +104,9 @@ recording both intercepts at every posterior draw:
 
 ```python
 legacy = ptm.LegacyPTM(y, nshape=6)
-legacy_terms = gam.TermBuilder.from_dict({"x": x})
-legacy.pred.loc += legacy_terms.slin("x", scale=1.0, name="m.x")
-legacy.pred.scale += legacy_terms.slin("x", scale=0.5, name="s.x")
+tb_legacy = gam.TermBuilder.from_dict({"x": x})
+legacy.pred.loc += tb_legacy.slin("x", scale=1.0, name="m.x")
+legacy.pred.scale += tb_legacy.slin("x", scale=0.5, name="s.x")
 engine_builder = legacy.setup_mcmc(seed=43, num_chains=2)
 ```
 

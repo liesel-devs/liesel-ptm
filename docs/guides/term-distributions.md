@@ -63,8 +63,8 @@ location, scale, and the shape intercept are excluded unless requested explicitl
 
 ``` python
 smooth_data = pd.DataFrame({"x": np.linspace(-1.0, 1.0, 20)})
-smooth_builder = gam.MVTermBuilder.from_df(smooth_data, dimension_scale)
-smooth = smooth_builder.ps("x", k=5, scale=1.0, dimension_scale=1.0)
+tb_smooth = gam.MVTermBuilder.from_df(smooth_data, dimension_scale)
+smooth = tb_smooth.ps("x", k=5, scale=1.0, dimension_scale=1.0)
 smooth_model = lsl.Model(smooth)
 smooth_samples = simulated_samples(smooth, keys[1])
 ```
@@ -187,10 +187,10 @@ from the smooth-term plot above. Create an intercept example to inspect that
 shared contribution by itself.
 
 ``` python
-intercept_builder = gam.MVTermBuilder.from_df(
+tb_intercept = gam.MVTermBuilder.from_df(
     pd.DataFrame({"x": [0.0, 1.0]}), dimension_scale
 )
-intercept = intercept_builder.intercept(scale=0.1)
+intercept = tb_intercept.intercept(scale=0.1)
 intercept_model = lsl.Model(intercept)
 intercept_samples = simulated_samples(intercept, keys[0], scale=0.12)
 ```
@@ -226,11 +226,11 @@ example, not a fit to the two placeholder observations.
 
 ``` python
 model = ptm.PTM(jnp.zeros(2), nshape=4, shape_scale=0.1)
-conditional_builder = gam.TermBuilder.from_dict(
+tb_conditional = gam.TermBuilder.from_dict(
     {"x": jnp.array([0.0, 1.0]), "z": jnp.array([0.0, 1.0])}
 )
-loc_effect = conditional_builder.lin("x", name="location_effect")
-scale_effect = conditional_builder.lin("z", name="scale_effect")
+loc_effect = tb_conditional.lin("x", name="location_effect")
+scale_effect = tb_conditional.lin("z", name="scale_effect")
 model.pred.loc += loc_effect
 model.pred.scale += scale_effect
 
@@ -321,10 +321,8 @@ Each group has its own term-induced standardized distribution.
 
 ``` python
 groups = pd.Categorical(["a", "b", "a", "c", "b"], categories=["a", "b", "c", "d"])
-cluster_builder = gam.MVTermBuilder.from_df(
-    pd.DataFrame({"group": groups}), dimension_scale
-)
-cluster = cluster_builder.ri("group", scale=1.0, dimension_scale=1.0)
+tb_cluster = gam.MVTermBuilder.from_df(pd.DataFrame({"group": groups}), dimension_scale)
+cluster = tb_cluster.ri("group", scale=1.0, dimension_scale=1.0)
 cluster_model = lsl.Model(cluster)
 cluster_samples = simulated_samples(cluster, keys[6], scale=0.10)
 ```
@@ -367,16 +365,16 @@ tensor2_data = pd.DataFrame(
         "z": np.linspace(-1.0, 1.0, 20),
     }
 )
-scalar2_builder = gam.TermBuilder.from_df(tensor2_data)
-mv2_builder = gam.MVTermBuilder.from_term_builder(scalar2_builder, dimension_scale)
-scalar_x = scalar2_builder.f(
+tb_scalar2 = gam.TermBuilder.from_df(tensor2_data)
+tb_mv2 = gam.MVTermBuilder.from_term_builder(tb_scalar2, dimension_scale)
+scalar_x = tb_scalar2.f(
     "x", basis_fn=linear_basis, penalty=jnp.eye(2), scale=1.0, use_callback=False
 )
-scalar_z = scalar2_builder.f(
+scalar_z = tb_scalar2.f(
     "z", basis_fn=linear_basis, penalty=jnp.eye(2), scale=1.0, use_callback=False
 )
-tensor2 = mv2_builder.tx(scalar_x, scalar_z, dimension_scale=1.0)
-main_x = mv2_builder.f(
+tensor2 = tb_mv2.tx(scalar_x, scalar_z, dimension_scale=1.0)
+main_x = tb_mv2.f(
     "x",
     basis_fn=linear_basis,
     penalty=jnp.eye(2),
@@ -384,7 +382,7 @@ main_x = mv2_builder.f(
     dimension_scale=1.0,
     use_callback=False,
 )
-tensor2_intercept = mv2_builder.intercept(scale=1.0)
+tensor2_intercept = tb_mv2.intercept(scale=1.0)
 tensor2_model = lsl.Model([tensor2, main_x, tensor2_intercept])
 tensor2_samples = {
     **simulated_samples(tensor2, keys[2], scale=0.06),
@@ -430,15 +428,15 @@ tensor3_data = pd.DataFrame(
         "z": np.linspace(0.0, 1.0, 20),
     }
 )
-scalar3_builder = gam.TermBuilder.from_df(tensor3_data)
-mv3_builder = gam.MVTermBuilder.from_term_builder(scalar3_builder, dimension_scale)
+tb_scalar3 = gam.TermBuilder.from_df(tensor3_data)
+tb_mv3 = gam.MVTermBuilder.from_term_builder(tb_scalar3, dimension_scale)
 
 
 def scalar3(name, center, scale):
     def basis(x):
         return linear_basis((x - center) / scale)
 
-    return scalar3_builder.f(
+    return tb_scalar3.f(
         name,
         basis_fn=basis,
         penalty=jnp.eye(2),
@@ -447,7 +445,7 @@ def scalar3(name, center, scale):
     )
 
 
-tensor3 = mv3_builder.tx(
+tensor3 = tb_mv3.tx(
     scalar3("longitude", 10.5, 0.5),
     scalar3("latitude", 50.5, 0.5),
     scalar3("z", 0.5, 0.5),
@@ -534,8 +532,8 @@ columb_polys = {
     for label, group in polys_df.groupby("label", sort=False)
 }
 
-region_builder = gam.MVTermBuilder.from_df(columb, dimension_scale)
-region = region_builder.mrf(
+tb_region = gam.MVTermBuilder.from_df(columb, dimension_scale)
+region = tb_region.mrf(
     "district",
     polys=columb_polys,
     scale=1.0,

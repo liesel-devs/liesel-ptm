@@ -19,14 +19,14 @@ def build_model() -> ptm.LegacyPTM:
     y = 1.0 + 0.5 * x + np.exp(0.15 * x) * np.random.default_rng(42).normal(size=x.size)
     registry = gam.PandasRegistry(pd.DataFrame({"x": x}))
     model = ptm.LegacyPTM(y, nshape=6)
-    loc_builder = gam.TermBuilder(registry, prefix_names_by="m.")
-    scale_builder = gam.TermBuilder(registry, prefix_names_by="s.")
+    tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
+    tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
     smooth_scale = gam.VarIGPrior(1.0, 0.001)
 
-    model.pred.loc += loc_builder.slin("x", scale=1.0, name="m.x")
+    model.pred.loc += tb_loc.slin("x", scale=1.0, name="m.x")
     # A centered smooth adds a conjugate smoothing-variance Gibbs update.
-    model.pred.loc += loc_builder.ps("x", k=5, scale=smooth_scale, name="m.ps(x)")
-    model.pred.scale += scale_builder.slin("x", scale=1.0, name="s.x")
+    model.pred.loc += tb_loc.ps("x", k=5, scale=smooth_scale, name="m.ps(x)")
+    model.pred.scale += tb_scale.slin("x", scale=1.0, name="s.x")
 
     return model
 

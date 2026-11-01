@@ -69,13 +69,13 @@ log scale. The smooth’s inverse-gamma smoothing-variance prior allows a Gibbs
 update. Add all terms before setting up inference.
 
 ``` python
-loc_builder = gam.TermBuilder(registry, prefix_names_by="m.")
-scale_builder = gam.TermBuilder(registry, prefix_names_by="s.")
+tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
+tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
 smooth_scale = gam.VarIGPrior(1.0, 0.001)
 
-model.pred.loc += loc_builder.slin("x", scale=1.0, name="m.x")
-model.pred.loc += loc_builder.ps("x", k=5, scale=smooth_scale, name="m.ps(x)")
-model.pred.scale += scale_builder.slin("x", scale=1.0, name="s.x")
+model.pred.loc += tb_loc.slin("x", scale=1.0, name="m.x")
+model.pred.loc += tb_loc.ps("x", k=5, scale=smooth_scale, name="m.ps(x)")
+model.pred.scale += tb_scale.slin("x", scale=1.0, name="s.x")
 ```
 
 Leave `model.pred.shape` with its shared intercept: legacy shape does not support

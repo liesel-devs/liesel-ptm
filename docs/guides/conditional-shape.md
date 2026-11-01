@@ -32,13 +32,11 @@ enabled, $\mu_i$ and $\sigma_i$ are the conditional mean and standard deviation.
 ``` python
 import jax
 import jax.numpy as jnp
-import liesel.model as lsl
 import liesel.optim as opt
 import liesel_gam as gam
 import numpy as np
 import optax
 import pandas as pd
-import tensorflow_probability.substrates.jax.distributions as tfd
 from IPython.display import Markdown
 
 import liesel_ptm as ptm
@@ -78,12 +76,11 @@ Use a smooth location effect and a linear effect on log scale. The scale
 predictor applies an exponential inverse link, so its values stay positive.
 
 ``` python
-loc_builder = gam.TermBuilder(registry, prefix_names_by="m.")
-scale_builder = gam.TermBuilder(registry, prefix_names_by="s.")
-scale_prior = lsl.Dist(tfd.Normal, loc=0.0, scale=0.5)
+tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
+tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
 
-model.pred.loc += loc_builder.ps("x", k=5, scale=0.5)
-model.pred.scale += scale_builder.lin("x", prior=scale_prior)
+model.pred.loc += tb_loc.ps("x", k=5, scale=0.5)
+model.pred.scale += tb_scale.lin("x")
 ```
 
 ## Define shape effects
@@ -94,10 +91,10 @@ match the predictor’s dimension and constraint.
 
 ``` python
 shape = model.pred.shape
-shape_builder = gam.TermBuilder(registry, prefix_names_by="h.")
-builder = gam.MVTermBuilder.from_predictor(shape, term_builder=shape_builder)
-shape += builder.ps("x", k=5, scale=0.5, dimension_scale=0.3)
-shape += builder.lin("group", dimension_scale=0.3, name="h.group")
+tb_shape_base = gam.TermBuilder(registry, prefix_names_by="h.")
+tb_shape = gam.MVTermBuilder.from_predictor(shape, term_builder=tb_shape_base)
+shape += tb_shape.ps("x", k=5, scale=0.5, dimension_scale=0.3)
+shape += tb_shape.lin("group", dimension_scale=0.3, name="h.group")
 ```
 
 The model’s response is available as `model.response` for distribution summaries

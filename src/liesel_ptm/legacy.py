@@ -221,8 +221,8 @@ class LegacyPTM(lsl.Model):
     >>> import liesel_gam as gam
     >>> import liesel_ptm as ptm
     >>> model = ptm.LegacyPTM([0.1, -0.2, 0.4], nshape=4)
-    >>> terms = gam.TermBuilder.from_dict({"x": [-1.0, 0.0, 1.0]})
-    >>> model.pred.loc += terms.slin("x", scale=1.0)
+    >>> tb_loc = gam.TermBuilder.from_dict({"x": [-1.0, 0.0, 1.0]})
+    >>> model.pred.loc += tb_loc.slin("x", scale=1.0)
     >>> model.pred.shape.name
     'shape'
     >>> model.pred.shape.ndim, model.pred.shape.latent_ndim

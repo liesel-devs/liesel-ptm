@@ -56,10 +56,10 @@ import liesel_ptm as ptm
 
 x = jnp.linspace(-2.0, 2.0, 100)
 y = jnp.sin(x) + jax.random.normal(jax.random.key(42), x.shape)
-builder = gam.TermBuilder(gam.DictRegistry({"x": x}))
+tb_loc = gam.TermBuilder(gam.DictRegistry({"x": x}))
 
 model = ptm.PTM(y, nshape=6, bounds=(-4.0, 4.0))
-model.pred.loc += builder.ps("x", k=10)
+model.pred.loc += tb_loc.ps("x", k=10)
 ```
 
 [PTM][liesel_ptm.PTM] creates the onion spline, standardization corrections,
