@@ -13,6 +13,7 @@ import tensorflow_probability.substrates.jax.distributions as tfd
 
 import liesel_ptm as ptm
 from demo import reference_legacy
+from tests.legacy_model import build_legacy_model
 
 
 def setup(model, **kwargs):
@@ -42,7 +43,7 @@ def test_intercept_formulas_match_empirical_moment_identification():
 
 
 def test_shared_response_updates_and_full_data_shuffling_preserve_identification():
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     model.state = model.update_state(
         {
             model.vars["loc_terms"].terms["m.x"].coef.name: jnp.array([0.4]),
@@ -78,7 +79,7 @@ def test_shared_response_updates_and_full_data_shuffling_preserve_identification
 
 @pytest.mark.parametrize("keys", [("x", "y"), ("x",), ("y",)])
 def test_legacy_rejects_joint_and_partial_minibatches(keys):
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     batch = {name: model.vars[name].value[:4] for name in keys}
     with pytest.raises((ValueError, RuntimeError)) as caught:
         jax.jit(model.update_state)(batch)
@@ -116,7 +117,7 @@ def test_legacy_optimization_and_vi_require_full_data(minibatch, factory):
 
 @pytest.mark.parametrize("kernel_class", [gs.NUTSKernel, gs.HMCKernel])
 def test_kernel_coverage_gaussian_information_and_shape_block(kernel_class):
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     shape_spec = gs.MCMCSpec(kernel_class, kernel_kwargs={"da_target_accept": 0.85})
     builder = setup(model, shape_spec=shape_spec)
     assert builder.positions_included == ["beta0", "gamma0"]
@@ -151,7 +152,7 @@ def test_kernel_coverage_gaussian_information_and_shape_block(kernel_class):
 
 
 def test_shape_prior_precision_constraints_and_unclipped_variance():
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     shape = model.vars["shape"]
     intercept = shape.intercept
     reparam = intercept.dimension_reparam.value
@@ -178,7 +179,7 @@ def test_shape_prior_precision_constraints_and_unclipped_variance():
 
 
 def test_legacy_transformation_has_gaussian_identity_and_unit_tail_slopes():
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     node = model.response.dist_node
     assert isinstance(node, ptm.PTMDist)
     transformation = node.init_dist()
@@ -204,8 +205,8 @@ def test_legacy_transformation_has_gaussian_identity_and_unit_tail_slopes():
 
 @pytest.fixture(scope="module")
 def sampled():
-    model = reference_legacy.build_model()
-    results = reference_legacy.fit(model)
+    model = build_legacy_model()
+    results = reference_legacy.fit(model, adaptation=80, posterior=12)
     return model, results
 
 
@@ -256,7 +257,7 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
     monkeypatch,
     nobs,
 ):
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     samples = example_samples(model)
     before = [np.array(value) for value in jax.tree.leaves(model.state)]
     training_node = model.vars["beta0"].value_node[0].name
@@ -299,7 +300,7 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
 
 
 def test_prediction_defaults_and_model_log_likelihood_follow_liesel_interface():
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     samples = example_samples(model)
     prediction = model.predict(samples)
     assert prediction.keys() == model.vars.keys()
@@ -317,7 +318,7 @@ def test_prediction_defaults_and_model_log_likelihood_follow_liesel_interface():
 
 
 def test_default_prediction_with_new_covariates_omits_unreplaced_observations():
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     samples = example_samples(model)
     x = jnp.array([-0.5, 0.5])
     result = model.predict(samples, newdata={"x": x})
@@ -339,7 +340,7 @@ def test_default_prediction_with_new_covariates_omits_unreplaced_observations():
 
 
 def test_prediction_accepts_known_unused_covariates_but_rejects_unknown_data():
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     builder = gam.TermBuilder.from_dict({"z": jnp.linspace(-1.0, 1.0, 24)})
     model.pred.scale += builder.slin("z", scale=1.0, name="s.z")
     samples = example_samples(model)
@@ -354,7 +355,7 @@ def test_prediction_accepts_known_unused_covariates_but_rejects_unknown_data():
 
 @pytest.mark.parametrize("missing", ["beta0", "gamma0"])
 def test_prediction_requires_recorded_intercepts(missing):
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     samples = example_samples(model)
     samples.pop(missing)
     with pytest.raises(ValueError, match="Missing recorded intercept"):
@@ -364,7 +365,7 @@ def test_prediction_requires_recorded_intercepts(missing):
 
 
 def test_prediction_checks_intercept_axes_and_supports_custom_names():
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     samples = example_samples(model)
     samples["gamma0"] = samples["gamma0"][:1]
     with pytest.raises(ValueError, match="matching sample axes"):
@@ -385,7 +386,7 @@ def test_prediction_checks_intercept_axes_and_supports_custom_names():
 
 @pytest.mark.parametrize("kind", ["plain", "anisotropic", "factored"])
 def test_setup_rejects_unsupported_location_terms(kind):
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     variables = model.copy_vars()
     predictor = variables["loc_terms"]
     builder = gam.TermBuilder.from_dict(
@@ -408,11 +409,11 @@ def test_setup_rejects_unsupported_location_terms(kind):
 
 
 def test_setup_rejects_overlap_and_unexplained_parameters():
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     model.pred.scale += model.pred.loc.terms["m.x"]
     with pytest.raises(ValueError, match="overlap"):
         setup(model)
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     extra = lsl.Var.new_param(0.0, dist=lsl.Dist(tfd.Normal, 0.0, 1.0), name="extra")
     model.add(extra)
     with pytest.raises(ValueError, match="outside .pred"):
@@ -420,7 +421,7 @@ def test_setup_rejects_overlap_and_unexplained_parameters():
 
 
 def test_shape_gibbs_and_missing_scale_inference_are_covered():
-    variables = reference_legacy.build_model().copy_vars()
+    variables = build_legacy_model().copy_vars()
     shape = variables["shape"]
     builder = gam.MVTermBuilder.from_predictor(
         shape, term_builder=gam.TermBuilder.from_dict({})
@@ -443,7 +444,7 @@ def test_shape_gibbs_and_missing_scale_inference_are_covered():
 
 
 def test_setup_rejects_unconstrained_shape_and_invalid_shape_sampler():
-    model = reference_legacy.build_model()
+    model = build_legacy_model()
     with pytest.raises(ValueError, match="NUTSKernel or HMCKernel"):
         setup(model, shape_spec=gs.MCMCSpec(gs.IWLSKernel))
     variables = model.copy_vars()
