@@ -71,7 +71,7 @@ def fit(model: lsl.Model, epochs: int = 3000, draws: int = 1000):
     point = {name: var.value for name, var in model.parameters.items()}
 
     loc_scale_block = opt.VDist(loc_scale_parameters, model).mvn_tril()
-    shape_block = opt.VDist(shape_parameters, model).mvn_diag()
+    shape_block = opt.VDist(shape_parameters, model).mvn_tril()
     family = opt.CompositeVDist(loc_scale_block, shape_block).build()
     loss = opt.NegElboLoss.from_vdist(family, nsamples=8)
     for parameters in (

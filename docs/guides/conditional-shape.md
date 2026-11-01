@@ -174,8 +174,11 @@ variational family; they are not posterior draws.
 
 ## Fit a variational family
 
-Use a full-covariance Gaussian block for location and scale and a diagonal Gaussian
-block for shape. Train the blocks separately, then jointly, using eight Monte Carlo
+Use a full-covariance Gaussian block for location and scale and another for shape.
+The shape block includes its spline coefficients and log smoothing variances,
+allowing their posterior dependence within the block. The two blocks remain
+independent under this variational family. Train them separately, then jointly,
+using eight Monte Carlo
 samples for each ELBO estimate.
 
 Use an Adam learning rate of `0.003` and monitor an exponential moving average
@@ -189,7 +192,7 @@ condition is not reached.
 
 ``` python
 loc_scale_block = opt.VDist(loc_scale_parameters, model).mvn_tril()
-shape_block = opt.VDist(shape_parameters, model).mvn_diag()
+shape_block = opt.VDist(shape_parameters, model).mvn_tril()
 family = opt.CompositeVDist(loc_scale_block, shape_block).build()
 loss = opt.NegElboLoss.from_vdist(family, nsamples=8)
 vi_runs = []
@@ -220,8 +223,8 @@ Markdown(pd.DataFrame(vi_runs).to_markdown(index=False))
 | stage              | epochs | status         |
 |:-------------------|-------:|:---------------|
 | location and scale |    389 | early_stopping |
-| shape              |   1127 | early_stopping |
-| joint              |    611 | early_stopping |
+| shape              |   1979 | early_stopping |
+| joint              |    718 | early_stopping |
 
 Draw 1,000 samples from the fitted family for posterior summaries and plots. The
 leading sample axes are `(1, 1000)`: one sample group containing 1,000 approximate
