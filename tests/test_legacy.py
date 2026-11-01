@@ -251,8 +251,10 @@ def example_samples(model):
     return samples
 
 
+@pytest.mark.parametrize("nobs", [4, 24])
 def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
     monkeypatch,
+    nobs,
 ):
     model = reference_legacy.build_model()
     samples = example_samples(model)
@@ -269,7 +271,7 @@ def test_prediction_reuses_draws_without_training_response_and_preserves_fit(
         return submodel
 
     monkeypatch.setattr(lsl.Model, "parental_submodel", inspect_graph)
-    x = jnp.array([-0.8, 0.1, 0.6, 0.9])
+    x = jnp.linspace(-0.8, 0.9, nobs)
     for chunk_size in (1, None):
         prediction = model.predict(
             samples,
@@ -320,6 +322,8 @@ def test_default_prediction_with_new_covariates_omits_unreplaced_observations():
     assert result["scale"].shape == (2, 3, 2)
     result = model.predict(samples, newdata={"x": x, "y": jnp.zeros(2)})
     assert result["y"].shape == (2, 3, 2)
+    assert model.response.name in result
+    np.testing.assert_array_equal(result[model.response.name], result["y"])
     node = model.response.dist_node
     assert node is not None
     prediction = model.predict(samples, [node.name], {"x": x, "y": jnp.zeros(2)})

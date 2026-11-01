@@ -132,6 +132,22 @@ def _full_data_response(y, loc, log_scale, *, nobs: int):
     return y
 
 
+def _observation_replaced(
+    model: lsl.Model, var: lsl.Var, newdata: gs.PositionInput
+) -> bool:
+    if var.name in newdata:
+        return True
+    if var.strong:
+        return False
+    inputs = model.node_parental_subgraph(var.value_node)
+    sources = {
+        name
+        for name, source in model.observed.items()
+        if source.strong and source.value_node in inputs
+    }
+    return bool(sources) and sources <= newdata.keys()
+
+
 class LegacyPTM(lsl.Model):
     """Shared-shape PTM with computed location and log-scale intercepts.
 
@@ -175,6 +191,10 @@ class LegacyPTM(lsl.Model):
     intercepts are separate from these predictors and enter the likelihood as
     ``loc`` and ``scale``. :meth:`setup_mcmc` records both intercepts at every draw;
     :meth:`predict` uses those records on a copied prediction graph.
+
+    Use :meth:`predict` on the model for targets depending on computed intercepts.
+    :meth:`liesel.model.Var.predict` builds a plain Liesel submodel and recomputes
+    weak intercepts; it does not use the recorded intercept draws.
 
     Fitting uses the complete observation count supplied at construction. Joint
     shuffling of response and covariates is supported. Minibatches, training/validation
@@ -416,7 +436,7 @@ class LegacyPTM(lsl.Model):
         predict
             Variable or node names to predict. ``None`` returns all variables at
             fitted data. With ``newdata``, observed variables are omitted unless
-            replacement values are supplied for them.
+            they or all their observed value inputs have replacement values.
         newdata, chunk_size
             Passed to :meth:`liesel.model.Model.predict` on a detached prediction graph.
 
@@ -439,13 +459,17 @@ class LegacyPTM(lsl.Model):
         become strong value nodes, so Liesel uses the recorded draws. For predictor-only
         targets, Liesel evaluates a submodel without training responses. Include new
         responses in ``newdata`` when predicting response-dependent quantities.
+        Always call this model method for intercept-dependent predictions;
+        :meth:`liesel.model.Var.predict` bypasses recorded-intercept handling.
         """
         model = self
         if predict is None:
             predict = [
                 name
                 for name, var in self.vars.items()
-                if not var.observed or newdata is None or name in newdata
+                if not var.observed
+                or newdata is None
+                or _observation_replaced(self, var, newdata)
             ]
         intercepts = _computed_intercepts(model)
         missing = {var.name for var in intercepts} - samples.keys()

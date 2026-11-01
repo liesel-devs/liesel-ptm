@@ -289,6 +289,26 @@ def test_supplied_modern_scale_must_be_positive_but_need_not_use_exp():
     assert np.isfinite(model.log_prob)
 
 
+def test_modern_scale_rejects_identity_link_even_with_positive_initial_value():
+    scale = gam.AdditivePredictor("sigma", intercept=lsl.Var.new_param(1.0, name="s0"))
+    with pytest.raises(ValueError, match="positive inverse link"):
+        ptm.PTM([0.0, 1.0], nshape=4, scale=scale)
+
+
+@pytest.mark.parametrize("cls", [ptm.PTM, ptm.LegacyPTM])
+def test_common_response_handle_supports_distribution_summaries(cls):
+    model = cls([-0.5, 0.1, 0.8], nshape=4)
+    samples = {
+        name: jnp.broadcast_to(var.value, (2, 2) + var.value.shape)
+        for name, var in model.parameters.items()
+    }
+    summary = ptm.summarise_intercept_dist(
+        model.response, model.pred.shape.intercept, samples, rgrid=5
+    )
+    assert {"density", "cdf", "transformation"} <= set(summary["quantity"])
+    assert np.isfinite(summary["mean"]).all()
+
+
 @pytest.mark.parametrize("link", [None, jax.nn.softplus, lambda x: jnp.exp(2 * x)])
 def test_supplied_legacy_scale_requires_exponential_link(link):
     scale = gam.AdditivePredictor("scale_terms", inv_link=link, intercept=False)

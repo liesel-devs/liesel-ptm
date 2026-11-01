@@ -92,6 +92,6 @@ if __name__ == "__main__":
     shape = model.vars["delta"]
     smooth = shape.terms["h.ps(x)"]
     summary = ptm.summarise_1d_smooth_dist(
-        model.vars["y"], smooth, samples, intercept=shape.intercept, ngrid=3, rgrid=9
+        model.response, smooth, samples, intercept=shape.intercept, ngrid=3, rgrid=9
     )
     print(summary.head())

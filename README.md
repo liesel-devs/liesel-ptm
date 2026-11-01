@@ -66,6 +66,7 @@ For fitting, prediction, and more model components, see the reference examples:
 counts shape coefficients before their sum-to-zero constraint. `bounds` describes
 the flexible interval on the standardized residual scale and defaults to `(-4, 4)`.
 Manual `Model`/`PTMDist` construction remains available.
+Both model classes expose `model.response` for distribution summaries and plots.
 
 For the legacy shared-shape model, location and scale terms exclude the computed
 intercepts. `LegacyPTM` sets up Gaussian IWLS proposals and joint shape NUTS,
@@ -86,6 +87,8 @@ the likelihood.
 Use standard Liesel scheduling and sampling, then `legacy.predict()` for prediction
 with the recorded intercepts. The linked legacy example contains the complete workflow,
 including a smoothing update. Its Weibull variance prior is unclipped.
+For legacy targets depending on computed intercepts, always call `legacy.predict()`;
+Liesel's variable-level `Var.predict()` recomputes those intercepts.
 
 See the [plotting notebook](demo/term-distribution-plots.ipynb) for distribution effects.
 It illustrates plots with simulated coefficient draws.

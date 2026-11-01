@@ -91,6 +91,12 @@ def _check_scale(scale: gam.AdditivePredictor, *, legacy: bool) -> None:
         or not jnp.allclose(scale.value_node.function(probe), jnp.exp(probe))
     ):
         raise ValueError("LegacyPTM scale must use inv_link=jnp.exp.")
+    if not legacy and isinstance(scale.value_node, lsl.Calc):
+        values = scale.value_node.function(probe)
+        if not jnp.all(jnp.isfinite(values) & (values > 0)):
+            raise ValueError(
+                "scale requires a positive inverse link, such as exp or softplus."
+            )
     if not jnp.all(jnp.isfinite(scale.value) & (scale.value > 0)):
         raise ValueError("scale must have finite, positive values.")
 
@@ -158,8 +164,9 @@ class PTM(lsl.Model):
         Location and log scale have flat-prior intercepts initialized at zero. Shape
         has a zero-initialized structured intercept and ``nshape - 1`` latent
         dimensions. A supplied shape must have the same dimension and constraint.
-        Supplied scale values must initially be finite and positive; other positive
-        links, such as softplus, are supported for modern PTMs.
+        Supplied scales require a positive inverse link, such as exp or softplus,
+        and finite positive initial values. Identity links are rejected even when
+        the starting scale is positive.
     shape_scale
         Scale of the automatic shape intercept: a native scale variable,
         :class:`liesel_gam.VarIGPrior`, or a fixed positive real. ``None`` creates
@@ -198,6 +205,8 @@ class PTM(lsl.Model):
 
     pred: PTMPredictors
     """Location, scale and shape predictors; terms can be added after initialization."""
+    response: lsl.Var
+    """Response carrying the likelihood; use for distribution summaries and plots."""
 
     def __init__(
         self,
@@ -225,6 +234,7 @@ class PTM(lsl.Model):
             centered=True,
             scaled=True,
         )
+        self.response = response
         with _response_distribution(self, response, distribution):
             super().__init__(response)
 
