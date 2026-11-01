@@ -1,6 +1,7 @@
 """Behavior that the cleanup must preserve; see GitHub issue #2."""
 
 import jax.numpy as jnp
+import liesel_gam as gam
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -103,8 +104,10 @@ def test_legacy_computed_intercepts_update_and_standardize_residuals():
     original_intercepts = [
         float(model.vars[name].value) for name in ("beta0", "gamma0")
     ]
-    loc_term = model.vars["loc_terms"].terms["m.x"]
-    scale_term = model.vars["log_scale_terms"].terms["s.x"]
+    loc_term = model.pred.loc.terms["m.x"]
+    scale_term = model.pred.scale.terms["s.x"]
+    assert isinstance(loc_term, gam.StrctTerm)
+    assert isinstance(scale_term, gam.StrctTerm)
     model.state = model.update_state(
         {
             loc_term.coef.name: jnp.full_like(loc_term.coef.value, 0.4),
@@ -128,9 +131,11 @@ def test_legacy_has_shared_modern_deltas_and_the_ptm_spline():
     assert not shape.terms
     assert shape.value.shape == (6,)
     assert shape.latent_ndim == 5
-    assert isinstance(
-        model.vars["y"].dist_node.init_dist().bspline, ptm.bspline.PTMSpline
-    )
+    node = model.response.dist_node
+    assert isinstance(node, ptm.PTMDist)
+    transformation = node.init_dist()
+    assert isinstance(transformation, ptm.LocScaleTransformationDist)
+    assert isinstance(transformation.bspline, ptm.bspline.PTMSpline)
     intercept = shape.intercept
     model.state = model.update_state(
         {intercept.coef.name: jnp.linspace(-0.1, 0.1, intercept.coef.value.size)}

@@ -7,7 +7,6 @@ import numpy as np
 import tensorflow_probability.substrates.jax.distributions as tfd
 from jax.flatten_util import ravel_pytree
 
-import liesel_ptm as ptm
 from demo import reference_legacy
 
 
@@ -21,10 +20,7 @@ def test_gaussian_iwls_geometry_still_targets_the_ptm_posterior():
     name = term.coef.name
     interface = gs.LieselInterface(model)
     flat, unravel = ravel_pytree(model.extract_position([name]))
-    builder = ptm.LegacyPTM(model).setup_mcmc(
-        loc_terms=model.vars["loc_terms"],
-        log_scale_terms=model.vars["log_scale_terms"],
-        shape=model.vars["delta"],
+    builder = model.setup_mcmc(
         seed=3,
         num_chains=1,
         iwls_kwargs={"initial_step_size": 0.7},
