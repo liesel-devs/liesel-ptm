@@ -13,7 +13,7 @@ standardization of the transformation. The legacy formulation uses a different
 transformation construction and computes the intercepts from training residuals.
 
 Run the cells in a fresh session with the [checkout environment](../contributing.md#build-the-documentation).
-Graphviz is needed for the graph. The example uses 240 synthetic observations with
+Graphviz is needed for the graph. The example uses 500 synthetic observations with
 a shared right-skewed shape, 500 adaptation iterations, and 200 posterior draws per
 chain. These settings keep the example small; use longer chains and inspect
 diagnostics before drawing scientific conclusions.
@@ -29,11 +29,13 @@ are not independently sampled parameters. Do not also center or scale the spline
 distribution in this model.
 
 ``` python
+import jax
 import jax.numpy as jnp
 import liesel_gam as gam
 import numpy as np
 import pandas as pd
 import plotnine as p9
+import tensorflow_probability.substrates.jax.distributions as tfd
 from IPython.display import Markdown
 
 import liesel_ptm as ptm
@@ -41,17 +43,21 @@ import liesel_ptm as ptm
 
 ``` python
 rng = np.random.default_rng(42)
-x = np.linspace(-1.0, 1.0, 240)
-residual = (rng.gamma(shape=2.0, size=x.size) - 2.0) / np.sqrt(2.0)
+x = rng.uniform(-1.0, 1.0, 500)
+error_dist = tfd.TwoPieceNormal(loc=0.0, scale=1.0, skewness=2.0)
+errors = error_dist.sample(x.size, seed=jax.random.key(43))
+residual = np.asarray((errors - error_dist.mean()) / error_dist.stddev())
 y = 1.0 + 0.5 * x + 0.7 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
 registry = gam.PandasRegistry(pd.DataFrame({"x": x}))
 ```
 
-The centered gamma residual has mean zero, variance one, and a long right tail.
-Its shape is the same at every `x`, while the response mean combines a linear trend
-with a sine curve and the standard deviation is `exp(0.3 * x)`. This lets the model
-learn a shared departure from normality alongside location and scale effects.
-The fixed seed makes the data reproducible.
+Draw the training `x` independently from `Uniform(-1, 1)`. The two-piece normal
+has a longer right tail and support on the whole real line. Centering and scaling
+by its theoretical mean and standard deviation gives residual mean zero and
+variance one. Its shape stays the same across `x`; the response mean combines a
+linear trend with a sine curve, and its standard deviation is `exp(0.3 * x)`.
+Fixed seeds make the data reproducible. Later grids evaluate curves and
+predictions rather than defining the training covariates.
 
 ## Initialize the model
 
@@ -191,7 +197,7 @@ ptm.plot_intercept_dist(
 <img src="legacy_files/figure-commonmark/cell-11-output-1.png" width="420" height="300" alt="Fitted legacy density with a long right tail and normal reference." />
 
 The fitted density has a sharper peak and a longer right tail than the reference,
-reflecting the gamma residuals. Location and scale alone could not reproduce this
+reflecting the asymmetric residuals. Location and scale alone could not reproduce this
 asymmetry. The ribbon contains pointwise 5th to 95th posterior percentiles.
 
 ## Plot location and scale effects
@@ -238,17 +244,19 @@ of `0.3`; a one-unit increase in `x` multiplies the standard deviation by
 
 ## Compare fitted and true conditional distributions
 
-Compare complete fitted response densities with the centered gamma generator.
-Both location and scale are included. The summary helper uses the recorded
-training intercepts, as in the prediction above. The gamma density is zero below
-its support boundary and includes the change-of-scale factor.
+Compare complete fitted response densities with the standardized two-piece normal
+generator. Both location and scale are included. The summary helper uses the
+recorded training intercepts, as in the prediction above. Undo the generator’s
+standardization and include the change-of-scale factor. The density is defined
+on the whole real line; the response grid only selects the visible interval.
 
 ``` python
 def true_density(y, x):
     mu = 1.0 + 0.5 * x + 0.7 * np.sin(np.pi * x)
     sigma = np.exp(0.3 * x)
-    gamma_value = np.maximum(2.0 + np.sqrt(2.0) * (y - mu) / sigma, 0.0)
-    return np.sqrt(2.0) / sigma * gamma_value * np.exp(-gamma_value)
+    generator = error_dist
+    raw_error = generator.mean() + generator.stddev() * (y - mu) / sigma
+    return np.asarray(generator.prob(raw_error) * generator.stddev() / sigma)
 
 
 comparison = ptm.summarise_conditional_dist(

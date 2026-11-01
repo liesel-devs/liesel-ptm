@@ -23,7 +23,7 @@ def test_modern_identity_shape_recovers_gaussian_likelihood(modern):
     np.testing.assert_allclose(
         dist.log_prob(response.value), expected.log_prob(response.value), atol=2e-5
     )
-    assert dist.batch_shape == (300,)
+    assert dist.batch_shape == (500,)
 
 
 def test_modern_shape_covariates_and_distribution_roundtrip():
@@ -50,6 +50,8 @@ def test_modern_parameter_blocks_cover_the_model(modern):
     shape = set(modern.parental_submodel(modern.vars["shape"]).parameters)
     assert not (loc & scale or loc & shape or scale & shape)
     assert loc | scale | shape == set(modern.parameters)
+    assert "h(loc_smooth_scale^2)" in loc
+    assert {"h(shape_x_scale^2)", "h(shape_r_scale^2)"} <= shape
     assert len(shape) > 3  # Includes the shape intercept's smoothing parameter.
 
 

@@ -8,7 +8,7 @@ compares its predictions with the distribution that generated the observations.
 
 Run the cells from top to bottom in a fresh session with the
 [checkout environment](../contributing.md#build-the-documentation).
-Graphviz is needed for the model graph. The example uses 240 observations;
+Graphviz is needed for the model graph. The example uses 500 observations;
 early stopping keeps the fit small. Assess approximation quality before using
 the results for inference.
 
@@ -22,8 +22,9 @@ $$
 P(Y_i \le y) = \Phi\left(h_\delta((y - \mu_i) / \sigma_i)\right).
 $$
 
-Estimate the location, log-scale, and shape coefficients, together with the shape
-intercept’s smoothing variance. Keep the knot grid and other prior scales fixed.
+Estimate the location, log-scale, and shape coefficients, together with the
+location and shape smoothing variances. Keep the knot grid and the hyperparameters
+of the variance priors fixed.
 Here, “fixed shape” means shared across observations; the shape is estimated.
 
 ``` python
@@ -35,6 +36,7 @@ import numpy as np
 import optax
 import pandas as pd
 import plotnine as p9
+import tensorflow_probability.substrates.jax.distributions as tfd
 from IPython.display import Markdown
 
 import liesel_ptm as ptm
@@ -42,29 +44,40 @@ import liesel_ptm as ptm
 
 ``` python
 rng = np.random.default_rng(42)
-x = np.linspace(-1.0, 1.0, 240)
-residual = (rng.gamma(shape=2.0, size=x.size) - 2.0) / np.sqrt(2.0)
+x = rng.uniform(-1.0, 1.0, 500)
+error_dist = tfd.TwoPieceNormal(loc=0.0, scale=1.0, skewness=2.0)
+errors = error_dist.sample(x.size, seed=jax.random.key(43))
+residual = np.asarray((errors - error_dist.mean()) / error_dist.stddev())
 y = 0.8 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
 registry = gam.PandasRegistry(pd.DataFrame({"x": x, "y": y}))
 ```
 
-The centered gamma residual has mean zero, variance one, and a long right tail
-at every `x`. The true conditional mean is `0.8 * sin(pi * x)` and the standard
-deviation is `exp(0.3 * x)`. The registry supplies the observed variables to the
-model and its term builders.
+Draw the training `x` independently from `Uniform(-1, 1)`. The two-piece normal
+uses different normal spreads on the two sides of its mode, giving a longer right
+tail while retaining support on the whole real line. Standardizing it with its
+mean and standard deviation gives residual mean zero and variance one. The true
+conditional mean is `0.8 * sin(pi * x)` and the standard deviation is
+`exp(0.3 * x)`.
+
+Fixed seeds make the data reproducible. The registry supplies the observed
+variables to the model and term builders. Grids below are used only to evaluate
+curves and predictions.
 
 ## Define the model
 
 [PTM](../api/models.md#liesel_ptm.PTM) creates location, scale, and shape
 predictors, each with an intercept. Add a smooth effect to location and a linear
-effect to log scale. Leave shape with its shared intercept.
+effect to log scale. Leave shape with its shared intercept. Give the location
+P-spline’s smoothing variance a Weibull prior with `gam.scale_wb()`. Its initial
+scale is `1.0`; it is estimated during fitting.
 
 ``` python
 model = ptm.PTM(registry.get_obs("y"), nshape=8, bounds=(-4.0, 4.0))
 tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
 tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
+loc_smooth_scale = gam.scale_wb(value=1.0, scale=1.0, name="loc_smooth_scale")
 
-model.pred.loc += tb_loc.ps("x", k=8, scale=1.0)
+model.pred.loc += tb_loc.ps("x", k=8, scale=loc_smooth_scale)
 model.pred.scale += tb_scale.lin("x", name="s.x")
 ```
 
@@ -104,8 +117,12 @@ model.state = model.update_state(map_result.position_min_monitor)
 
 ## Fit a variational family
 
-Use one full-covariance Gaussian family for all parameters. Monitor an exponential
-moving average (EMA) of the training loss, using eight Monte Carlo samples per
+Use one full-covariance Gaussian family for all model parameters, including the
+P-spline smoothing parameter. `gam.scale_wb()` places the prior on the variance
+and uses an exponential bijector by default, so `h(loc_smooth_scale^2)` is the log
+smoothing variance. The family also includes the shape intercept’s log variance.
+Monitor an exponential moving average (EMA) of the training loss, using eight
+Monte Carlo samples per
 ELBO estimate. After at least 300 epochs, stop on a plateau with a 100-epoch
 patience window and relative tolerance `1e-4`. The 3,000-epoch cap bounds runtime.
 
@@ -127,7 +144,7 @@ result = vi.fit()
 result.status, result.n_epochs
 ```
 
-    ('early_stopping', 602)
+    ('early_stopping', 797)
 
 `early_stopping` means the EMA plateau criterion was reached; `max_epochs` means
 the cap was reached. Inspect the loss trace too.
@@ -152,16 +169,36 @@ are used for summaries and plots; they are separate from the eight samples used
 to estimate the training objective. More draws reduce Monte Carlo noise in the
 summaries without improving the fitted family itself.
 
+The sample dictionary includes both coefficients and log smoothing variances:
+
+``` python
+sample_shapes = pd.DataFrame(
+    {"parameter": list(samples), "shape": [value.shape for value in samples.values()]}
+)
+Markdown(sample_shapes.to_markdown(index=False))
+```
+
+| parameter               | shape        |
+|:------------------------|:-------------|
+| $\beta_{0,loc}$         | (1, 1000)    |
+| $\beta_{0,scale}$       | (1, 1000)    |
+| $\beta_{0,shape}$\_coef | (1, 1000, 7) |
+| $\beta_{m.ps(x)}$       | (1, 1000, 7) |
+| $\beta_{s.x}$           | (1, 1000, 1) |
+| h(loc_smooth_scale^2)   | (1, 1000)    |
+| h(shape_scale^2)        | (1, 1000)    |
+
 ## Plot location and scale effects
 
 Use liesel-gam’s `plot_1d_smooth()` for the smooth location term. Its blue curve
 and ribbon show the posterior mean and pointwise 5th to 95th percentiles. The
 dashed curve is the generating effect. The smooth excludes the location intercept;
-the generating effect has mean zero over the training inputs.
+the generating effect is centered over the training inputs to match the smooth.
 
 ``` python
-effect_x = np.linspace(-1.0, 1.0, 100)
-true_location = pd.DataFrame({"x": effect_x, "effect": 0.8 * np.sin(np.pi * effect_x)})
+effect_x = np.linspace(x.min(), x.max(), 100)
+true_effect = 0.8 * np.sin(np.pi * effect_x) - np.mean(0.8 * np.sin(np.pi * x))
+true_location = pd.DataFrame({"x": effect_x, "effect": true_effect})
 location_effect = gam.plot_1d_smooth(
     model.pred.loc.terms["m.ps(x)"], samples, show_n_samples=0
 )
@@ -180,7 +217,7 @@ location_effect = gam.plot_1d_smooth(
 )
 ```
 
-<img src="fixed-shape_files/figure-commonmark/cell-12-output-1.png" width="420" height="300" alt="Estimated smooth location effect and dashed generating sine curve." />
+<img src="fixed-shape_files/figure-commonmark/cell-13-output-1.png" width="420" height="300" alt="Estimated smooth location effect and dashed generating sine curve." />
 
 The scale effect is linear, so use liesel-gam’s `plot_forest()` to inspect its
 coefficient. The dashed line marks the generating log-scale slope of `0.3`.
@@ -198,7 +235,7 @@ A one-unit increase in `x` multiplies the conditional standard deviation by
 )
 ```
 
-<img src="fixed-shape_files/figure-commonmark/cell-13-output-1.png" width="420" height="150" alt="Estimated log-scale slope with its 90 percent interval and true slope." />
+<img src="fixed-shape_files/figure-commonmark/cell-14-output-1.png" width="420" height="150" alt="Estimated log-scale slope with its 90 percent interval and true slope." />
 
 ## Predict at new covariates
 
@@ -224,9 +261,9 @@ Markdown(parameter_means.to_markdown(index=False))
 
 |    x | mean location | mean scale |
 |-----:|--------------:|-----------:|
-| -0.8 |        -0.559 |      0.673 |
-|    0 |          0.01 |      0.978 |
-|  0.8 |         0.565 |      1.432 |
+| -0.8 |         -0.42 |      0.741 |
+|    0 |         0.121 |      1.011 |
+|  0.8 |         0.586 |      1.384 |
 
 Location and scale arrays have axes `(sample group, draw, new observation)`.
 Shared shape has axes `(sample group, draw, shape coefficient)`, with no
@@ -243,7 +280,7 @@ intercept. The dotted reference is standard normal.
 ptm.plot_intercept_dist(model.response, model.pred.shape.intercept, samples)
 ```
 
-<img src="fixed-shape_files/figure-commonmark/cell-16-output-1.png" width="420" height="300" alt="Fitted shared right-skewed shape compared with a normal reference." />
+<img src="fixed-shape_files/figure-commonmark/cell-17-output-1.png" width="420" height="300" alt="Fitted shared right-skewed shape compared with a normal reference." />
 
 Look for a sharper peak and a longer right tail than the reference. The same
 standardized shape applies at every `x`.
@@ -253,15 +290,17 @@ standardized shape applies at every `x`.
 Include both location and scale in
 [summarise_conditional_dist](../api/summaries.md#liesel_ptm.summarise_conditional_dist)
 to compare complete response densities. The generating density follows from
-`y = mu + sigma * (Gamma(2, 1) - 2) / sqrt(2)`, including the density’s change of
-scale. It is zero below the gamma support boundary.
+the same two-piece normal used above. Undo its standardization and include the
+change-of-scale factor when evaluating the density. The density is defined on the
+whole real line; the plotted response grid only selects the visible interval.
 
 ``` python
 def true_density(y, x):
     mu = 0.8 * np.sin(np.pi * x)
     sigma = np.exp(0.3 * x)
-    gamma_value = np.maximum(2.0 + np.sqrt(2.0) * (y - mu) / sigma, 0.0)
-    return np.sqrt(2.0) / sigma * gamma_value * np.exp(-gamma_value)
+    generator = error_dist
+    raw_error = generator.mean() + generator.stddev() * (y - mu) / sigma
+    return np.asarray(generator.prob(raw_error) * generator.stddev() / sigma)
 
 
 comparison = ptm.summarise_conditional_dist(
@@ -289,7 +328,7 @@ density["truth"] = true_density(density["r"].to_numpy(), density["x"].to_numpy()
 )
 ```
 
-<img src="fixed-shape_files/figure-commonmark/cell-18-output-1.png" width="480" height="210" alt="Fitted and generating response densities at three x values." />
+<img src="fixed-shape_files/figure-commonmark/cell-19-output-1.png" width="480" height="210" alt="Fitted and generating response densities at three x values." />
 
 The solid blue curves average fitted densities over draws; the blue bands contain
 pointwise 5th to 95th percentiles. Dashed curves show the exact generating

@@ -4,11 +4,13 @@ Run with ``uv run python -m demo.reference_legacy``. The response has a nonlinea
 mean, changing scale, and a shared right-skewed shape.
 """
 
+import jax
 import jax.numpy as jnp
 import liesel.goose as gs
 import liesel_gam as gam
 import numpy as np
 import pandas as pd
+import tensorflow_probability.substrates.jax.distributions as tfd
 
 import liesel_ptm as ptm
 
@@ -16,8 +18,10 @@ import liesel_ptm as ptm
 def build_model() -> ptm.LegacyPTM:
     """Initialize the shared-shape PTM, then add location and log-scale terms."""
     rng = np.random.default_rng(42)
-    x = np.linspace(-1.0, 1.0, 240)
-    residual = (rng.gamma(shape=2.0, size=x.size) - 2.0) / np.sqrt(2.0)
+    x = rng.uniform(-1.0, 1.0, 500)
+    error_dist = tfd.TwoPieceNormal(loc=0.0, scale=1.0, skewness=2.0)
+    errors = error_dist.sample(x.size, seed=jax.random.key(43))
+    residual = np.asarray((errors - error_dist.mean()) / error_dist.stddev())
     y = 1.0 + 0.5 * x + 0.7 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
     registry = gam.PandasRegistry(pd.DataFrame({"x": x}))
     model = ptm.LegacyPTM(y, nshape=8)

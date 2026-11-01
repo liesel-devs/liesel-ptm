@@ -7,7 +7,7 @@ shape. Use variational inference (VI) to fit the model, then predict at new cova
 values. See [model variants](../index.md#model-variants) for the fixed-shape variant
 of this formulation and the separate legacy PTM.
 
-This example uses 300 synthetic observations with a nonlinear mean, changing
+This example uses 500 synthetic observations with a nonlinear mean, changing
 scale, and skewness that changes direction with `x`. A small variational fit
 recovers visible shape differences. Early stopping keeps the example short;
 assess convergence and approximation quality before using it for inference.
@@ -26,8 +26,8 @@ $$
 P(Y_i \le y) = \Phi\left(h_{\delta_i}((y - \mu_i) / \sigma_i)\right).
 $$
 
-Estimate the predictor coefficients and the shape intercept’s smoothing variance.
-Keep the knot grid and the other prior scales fixed. With centering and scaling
+Estimate the predictor coefficients and smoothing variances. Keep the knot grid
+and the hyperparameters of the variance priors fixed. With centering and scaling
 enabled, $\mu_i$ and $\sigma_i$ are the conditional mean and standard deviation.
 
 ``` python
@@ -39,6 +39,7 @@ import numpy as np
 import optax
 import pandas as pd
 import plotnine as p9
+import tensorflow_probability.substrates.jax.distributions as tfd
 from IPython.display import Markdown
 
 import liesel_ptm as ptm
@@ -46,28 +47,31 @@ import liesel_ptm as ptm
 
 ``` python
 rng = np.random.default_rng(42)
-x = np.tile(np.linspace(-1.0, 1.0, 100), 3)
-group = pd.Categorical(np.repeat(["a", "b", "c"], 100))
-weight = 1.0 / (1.0 + np.exp(-3.0 * x - 0.6 * (group.codes - 1)))
-right = rng.exponential(size=x.size) - 1.0
-left = rng.exponential(size=x.size) - 1.0
-residual = (weight * right - (1.0 - weight) * left) / np.sqrt(
-    weight**2 + (1.0 - weight) ** 2
+x = rng.uniform(-1.0, 1.0, 500)
+group = pd.Categorical(rng.choice(["a", "b", "c"], size=x.size))
+error_dist = tfd.TwoPieceNormal(
+    loc=0.0,
+    scale=1.0,
+    skewness=jnp.exp(0.9 * x + 0.25 * (group.codes - 1)),
 )
+errors = error_dist.sample(seed=jax.random.key(43))
+residual = np.asarray((errors - error_dist.mean()) / error_dist.stddev())
 y = 0.8 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
 data = pd.DataFrame({"x": x, "group": group, "y": y})
 registry = gam.PandasRegistry(data)
 ```
 
-The residual combines two independent, centered exponential variables. At small
-`x`, the negative contribution dominates and gives a long left tail; at large `x`,
-the positive contribution gives a long right tail. The denominator keeps its
-conditional variance at one. Thus the conditional mean is `0.8 * sin(pi * x)` and
-the standard deviation is `exp(0.3 * x)` throughout. Group shifts where the skewness
-changes direction, with 100 observations per group.
+Draw each training `x` independently from `Uniform(-1, 1)`. The two-piece normal
+uses different normal spreads on the two sides of its mode and has support on
+the whole real line. Its asymmetry changes with `x` and group: small `x` gives
+a longer left tail, and large `x` gives a longer right tail. Standardizing by the
+generator’s mean and standard deviation keeps the residual mean zero and variance
+one. Thus the conditional mean is `0.8 * sin(pi * x)` and the standard deviation
+is `exp(0.3 * x)` throughout. Group labels are sampled independently too.
 
-The registry keeps the observed data and encodes the three categories in `group`.
-The fixed random seed makes the response reproducible.
+The registry encodes the three group categories. Fixed seeds make the data
+reproducible. The regular grids below evaluate curves and predictions; they are
+not the training covariates.
 
 ## Initialize the model
 
@@ -90,12 +94,17 @@ standardized residual scale. Add all terms before creating inference objects.
 Use a smooth location effect and a linear effect on log scale. The scale
 predictor applies an exponential inverse link, so its values stay positive.
 Eight basis functions let the location smooth represent the sine-shaped mean.
+Give its smoothing variance a Weibull prior with `gam.scale_wb()`. The initial
+scale is `1.0`; the smoothing variance is estimated along with the coefficients.
+With the default exponential bijector, its parameter `h(loc_smooth_scale^2)` is
+the log variance.
 
 ``` python
 tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
 tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
+loc_smooth_scale = gam.scale_wb(value=1.0, scale=1.0, name="loc_smooth_scale")
 
-model.pred.loc += tb_loc.ps("x", k=8, scale=1.0)
+model.pred.loc += tb_loc.ps("x", k=8, scale=loc_smooth_scale)
 model.pred.scale += tb_scale.lin("x", name="s.x")
 ```
 
@@ -109,9 +118,16 @@ match the predictor’s dimension and constraint.
 shape = model.pred.shape
 tb_shape_base = gam.TermBuilder(registry, prefix_names_by="h.")
 tb_shape = gam.MVTermBuilder.from_predictor(shape, term_builder=tb_shape_base)
-shape += tb_shape.ps("x", k=5, scale=0.5, dimension_scale=0.7)
+ps_scale_x = gam.scale_wb(value=0.5, scale=0.25, name="shape_x_scale")
+ps_scale_r = gam.scale_wb(value=0.7, scale=0.5, name="shape_r_scale")
+shape += tb_shape.ps("x", k=5, scale=ps_scale_x, dimension_scale=ps_scale_r)
 shape += tb_shape.lin("group", dimension_scale=0.7, name="h.group")
 ```
+
+The multivariate P-spline has two smoothing variances: one for variation over
+`x`, and one across the shape-coefficient dimensions. Both have Weibull priors;
+their log variances are `h(shape_x_scale^2)` and `h(shape_r_scale^2)`. The
+categorical term’s cross-dimensional scale stays fixed at `0.7`.
 
 The model’s response is available as `model.response` for distribution summaries
 and plots. `PTM` inherits Liesel’s model methods, including `plot()` and `predict()`.
@@ -123,13 +139,17 @@ model.plot(width=24, height=12)
 ![Conditional-shape PTM graph with mean, scale, and shape predictors.](conditional-shape_files/figure-commonmark/cell-7-output-1.png)
 
 The graph shows separate location, scale, and shape predictors feeding the response.
-The smoothing variance belongs to the shape intercept’s prior.
+Named scale nodes supply the learned smoothing variances for the P-splines and
+the shared shape intercept.
 
 ## Find starting values
 
 First optimize location and scale while holding shape fixed. Then optimize shape
 while holding location and scale fixed. Each stage starts from the previous result.
-The parameter lists include the priors’ parameters as well as term coefficients.
+The parental-submodel parameter lists include the log smoothing variances as
+well as the term coefficients. Thus the location block includes
+`h(loc_smooth_scale^2)`, and the shape block includes both P-spline log variances
+and the shape intercept’s log variance. Use these complete lists for VI too.
 
 ``` python
 loc_scale_parameters = list(model.parental_submodel(model.pred.loc).parameters)
@@ -200,8 +220,8 @@ Markdown(pd.DataFrame(vi_runs).to_markdown(index=False))
 | stage              | epochs | status         |
 |:-------------------|-------:|:---------------|
 | location and scale |    389 | early_stopping |
-| shape              |    893 | early_stopping |
-| joint              |    796 | early_stopping |
+| shape              |   1127 | early_stopping |
+| joint              |    611 | early_stopping |
 
 Draw 1,000 samples from the fitted family for posterior summaries and plots. The
 leading sample axes are `(1, 1000)`: one sample group containing 1,000 approximate
@@ -230,9 +250,13 @@ Markdown(sample_shapes.to_markdown(index=False))
 | $\beta_{s.x}$           | (1, 1000, 1)  |
 | $\gamma_{h.group}$      | (1, 1000, 14) |
 | $\gamma_{h.ps(x)}$      | (1, 1000, 28) |
+| h(loc_smooth_scale^2)   | (1, 1000)     |
+| h(shape_r_scale^2)      | (1, 1000)     |
 | h(shape_scale^2)        | (1, 1000)     |
+| h(shape_x_scale^2)      | (1, 1000)     |
 
-The sample dictionary has the same parameter names as `model.parameters`. Inspect
+The sample dictionary has the same parameter names as `model.parameters`,
+including the P-spline log smoothing variances. Inspect
 the final joint training stage’s loss before interpreting its samples.
 
 ``` python
@@ -254,11 +278,12 @@ noise in summaries, but do not improve the fitted approximation itself.
 Use liesel-gam’s `plot_1d_smooth()` for the smooth location term. Its blue curve
 and ribbon show the posterior mean and pointwise 5th to 95th percentiles. The
 dashed curve is the generating effect. The smooth excludes the location intercept;
-the generating effect has mean zero over the training inputs.
+the generating effect is centered over the training inputs to match the smooth.
 
 ``` python
-effect_x = np.linspace(-1.0, 1.0, 100)
-true_location = pd.DataFrame({"x": effect_x, "effect": 0.8 * np.sin(np.pi * effect_x)})
+effect_x = np.linspace(x.min(), x.max(), 100)
+true_effect = 0.8 * np.sin(np.pi * effect_x) - np.mean(0.8 * np.sin(np.pi * x))
+true_location = pd.DataFrame({"x": effect_x, "effect": true_effect})
 location_effect = gam.plot_1d_smooth(
     model.pred.loc.terms["m.ps(x)"], samples, show_n_samples=0
 )
@@ -380,22 +405,20 @@ ptm.plot_conditional_dist(
 
 Compare complete response densities for group `b` at three values of `x`.
 Include location and scale so the comparison is in the original response units.
-The true density uses the same weighted difference of independent exponential
-variables as the data generator. For group `b`, the group offset in `weight` is
-zero. The change-of-scale factor below accounts for both residual standardization
-and the conditional standard deviation.
+Construct the same two-piece normal used to generate group `b`, whose group
+offset is zero, and undo the residual standardization when evaluating its density.
+The density is defined on the whole real line; the plotted response grid only
+selects the visible interval.
 
 ``` python
 def true_density(y, x):
     mu = 0.8 * np.sin(np.pi * x)
     sigma = np.exp(0.3 * x)
-    weight = 1.0 / (1.0 + np.exp(-3.0 * x))
-    residual_sd = np.sqrt(weight**2 + (1.0 - weight) ** 2)
-    difference = residual_sd * (y - mu) / sigma + 2.0 * weight - 1.0
-    log_density = np.where(
-        difference >= 0.0, -difference / weight, difference / (1.0 - weight)
+    generator = tfd.TwoPieceNormal(
+        loc=0.0, scale=1.0, skewness=jnp.exp(0.9 * jnp.asarray(x))
     )
-    return residual_sd / sigma * np.exp(log_density)
+    raw_error = generator.mean() + generator.stddev() * (y - mu) / sigma
+    return np.asarray(generator.prob(raw_error) * generator.stddev() / sigma)
 
 
 comparison = ptm.summarise_conditional_dist(

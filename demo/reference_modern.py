@@ -5,12 +5,14 @@ The synthetic response changes from left-skewed to right-skewed across x.
 """
 
 import jax
+import jax.numpy as jnp
 import liesel.model as lsl
 import liesel.optim as opt
 import liesel_gam as gam
 import numpy as np
 import optax
 import pandas as pd
+import tensorflow_probability.substrates.jax.distributions as tfd
 
 import liesel_ptm as ptm
 
@@ -18,14 +20,15 @@ import liesel_ptm as ptm
 def build_model() -> ptm.PTM:
     """Construct a synthetic model with smooth and categorical shape effects."""
     rng = np.random.default_rng(42)
-    x = np.tile(np.linspace(-1.0, 1.0, 100), 3)
-    group = pd.Categorical(np.repeat(["a", "b", "c"], 100))
-    weight = 1.0 / (1.0 + np.exp(-3.0 * x - 0.6 * (group.codes - 1)))
-    right = rng.exponential(size=x.size) - 1.0
-    left = rng.exponential(size=x.size) - 1.0
-    residual = (weight * right - (1.0 - weight) * left) / np.sqrt(
-        weight**2 + (1.0 - weight) ** 2
+    x = rng.uniform(-1.0, 1.0, 500)
+    group = pd.Categorical(rng.choice(["a", "b", "c"], size=x.size))
+    error_dist = tfd.TwoPieceNormal(
+        loc=0.0,
+        scale=1.0,
+        skewness=jnp.exp(0.9 * x + 0.25 * (group.codes - 1)),
     )
+    errors = error_dist.sample(seed=jax.random.key(43))
+    residual = np.asarray((errors - error_dist.mean()) / error_dist.stddev())
     y = 0.8 * np.sin(np.pi * x) + np.exp(0.3 * x) * residual
     data = pd.DataFrame({"x": x, "group": group, "y": y})
     registry = gam.PandasRegistry(data)
@@ -33,12 +36,15 @@ def build_model() -> ptm.PTM:
     tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
     tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
 
-    model.pred.loc += tb_loc.ps("x", k=8, scale=1.0)
+    loc_smooth_scale = gam.scale_wb(value=1.0, scale=1.0, name="loc_smooth_scale")
+    model.pred.loc += tb_loc.ps("x", k=8, scale=loc_smooth_scale)
     model.pred.scale += tb_scale.lin("x", name="s.x")
     shape = model.pred.shape
     tb_shape_base = gam.TermBuilder(registry, prefix_names_by="h.")
     tb_shape = gam.MVTermBuilder.from_predictor(shape, term_builder=tb_shape_base)
-    shape += tb_shape.ps("x", k=5, scale=0.5, dimension_scale=0.7)
+    ps_scale_x = gam.scale_wb(value=0.5, scale=0.25, name="shape_x_scale")
+    ps_scale_r = gam.scale_wb(value=0.7, scale=0.5, name="shape_r_scale")
+    shape += tb_shape.ps("x", k=5, scale=ps_scale_x, dimension_scale=ps_scale_r)
     shape += tb_shape.lin("group", dimension_scale=0.7, name="h.group")
 
     return model
