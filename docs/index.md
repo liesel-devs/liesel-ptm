@@ -50,7 +50,6 @@ predictors and terms come from liesel-gam.
 ```python
 import jax
 import jax.numpy as jnp
-import liesel.model as lsl
 import liesel_gam as gam
 
 import liesel_ptm as ptm
@@ -59,38 +58,26 @@ x = jnp.linspace(-2.0, 2.0, 100)
 y = jnp.sin(x) + jax.random.normal(jax.random.key(42), x.shape)
 builder = gam.TermBuilder(gam.DictRegistry({"x": x}))
 
-loc = gam.AdditivePredictor("loc")
-loc += builder.ps("x", k=10)
-scale = gam.AdditivePredictor("scale", inv_link=jnp.exp)
-
-knots = ptm.OnionKnots(-4.0, 4.0, nparam=6)
-shape = gam.MVAdditivePredictor.from_random_walk(
-    "delta",
-    ndim=knots.nparam,
-    intercept=False,
-).constrain("sumzero_coef")
-shape_builder = gam.MVTermBuilder.from_predictor(shape, term_builder=builder)
-shape.intercept = shape_builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
-
-response = lsl.Var.new_obs(
-    y,
-    dist=ptm.PTMDist(
-        knots.knots,
-        loc=loc,
-        scale=scale,
-        shape=shape,
-        bspline="onion",
-        centered=True,
-        scaled=True,
-    ),
-    name="y",
-)
-model = lsl.Model(response)
+model = ptm.PTM(y, nshape=6, bounds=(-4.0, 4.0))
+model.pred.loc += builder.ps("x", k=10)
 ```
 
-With both corrections enabled, location and scale are the conditional mean and
-standard deviation. Shape effects that depend on covariates require the onion
-spline. The [PTMDist reference][liesel_ptm.PTMDist] describes the available options.
+[PTM][liesel_ptm.PTM] creates the onion spline, standardization corrections,
+and intercepts. Add native liesel-gam terms through `model.pred.loc`,
+`model.pred.scale`, and `model.pred.shape` before creating inference objects.
+Leaving shape with only its intercept gives this fixed-shape model; adding shape
+terms gives a conditional-shape PTM.
+
+`nshape` counts shape coefficients before the sum-to-zero constraint. `bounds`
+is the flexible interval on the standardized residual scale. The constructor's
+standardization makes location and scale the conditional mean and standard
+deviation. Use `model.response` for distribution summaries and plots, and ordinary
+Liesel methods for fitting and prediction.
+
+For the earlier transformation and computed intercepts, use
+[LegacyPTM][liesel_ptm.LegacyPTM] as shown in the [legacy guide](guides/legacy.md).
+Both classes inherit from Liesel's `Model`. For manual likelihood construction,
+see [PTMDist][liesel_ptm.PTMDist].
 
 ## Fit, predict, and inspect results
 

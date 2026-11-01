@@ -67,7 +67,7 @@ pymdownx.details = {}
 custom_templates = "docs/.templates"
 
 [project.plugins.mkdocstrings.handlers.python]
-paths = ["."]
+paths = ["src"]
 
 [project.plugins.mkdocstrings.handlers.python.options]
 docstring_style = "numpy"

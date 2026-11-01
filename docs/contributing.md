@@ -104,7 +104,7 @@ A site build alone checks rendering; it does not prove the examples executed.
 
 The documentation workflow validates stored outputs, renders with Quarto, and
 builds Zensical in strict mode for pull requests and pushes to `main`. A manual run
-also executes both guides freshly, which checks that stored outputs remain
+also executes all guides freshly, which checks that stored outputs remain
 reproducible on Linux. Only a push to `main` uploads and deploys the Pages artifact
 to <https://liesel-devs.github.io/liesel-ptm/>. Repository maintainers must select
 **GitHub Actions** as the Pages source in the repository settings.

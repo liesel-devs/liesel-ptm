@@ -24,7 +24,7 @@ def snapshot(root: Path) -> dict[str, str]:
         root / "docs/_quarto.yml",
         root / "scripts/docs.py",
         root / "demo/data/README.md",
-        *root.glob("liesel_ptm/**/*.py"),
+        *root.glob("src/liesel_ptm/**/*.py"),
         *root.glob("demo/reference_*.py"),
         *root.glob("demo/data/*.csv"),
         *root.glob("docs/**/*.qmd"),

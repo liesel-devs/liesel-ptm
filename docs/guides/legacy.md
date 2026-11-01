@@ -29,7 +29,6 @@ distribution in this model.
 
 ``` python
 import jax.numpy as jnp
-import liesel.model as lsl
 import liesel_gam as gam
 import numpy as np
 import pandas as pd
@@ -42,68 +41,47 @@ import liesel_ptm as ptm
 x = np.linspace(-1.0, 1.0, 24)
 y = 1.0 + 0.5 * x + np.exp(0.15 * x) * np.random.default_rng(42).normal(size=x.size)
 registry = gam.PandasRegistry(pd.DataFrame({"x": x}))
-response_value = lsl.Data(y)
 ```
 
 The response has a linear location trend and changing scale. The fixed seed makes
 the generated data reproducible.
 
-## Build the predictors
+## Initialize the model
 
-Construct the location and log-scale terms without intercepts, then supply
-[LocationIntercept](../api/models.md#liesel_ptm.LocationIntercept) and
-[LogScaleIntercept](../api/models.md#liesel_ptm.LogScaleIntercept).
-The centered location smooth uses an inverse-gamma smoothing-variance prior, which
-allows a Gibbs update. The shared shape intercept uses an unclipped Weibull prior.
+[LegacyPTM](../api/models.md#liesel_ptm.LegacyPTM) creates the PTM spline,
+shared shape intercept, and both computed intercepts. `nshape` counts the shape
+coefficients before their sum-to-zero constraint. The default shape intercept has
+an unclipped Weibull smoothing-variance prior.
 
 ``` python
-loc_terms = gam.AdditivePredictor("loc_terms", intercept=False)
-log_scale_terms = gam.AdditivePredictor("log_scale_terms", intercept=False)
+model = ptm.LegacyPTM(y, nshape=6, bounds=(-4.0, 4.0))
+```
+
+The location and scale predictors in `model.pred` exclude the computed intercepts.
+The scale predictor applies an exponential inverse link to its log-scale effects.
+The complete predictors, including computed intercepts, are `model.vars["loc"]`
+and `model.vars["scale"]`.
+
+## Add location and scale effects
+
+Add a linear effect and a centered smooth to location, then a linear effect to
+log scale. The smooth’s inverse-gamma smoothing-variance prior allows a Gibbs
+update. Add all terms before setting up inference.
+
+``` python
 loc_builder = gam.TermBuilder(registry, prefix_names_by="m.")
-loc_terms += loc_builder.slin("x", scale=1.0, name="m.x")
-loc_terms += loc_builder.ps("x", k=5, scale=gam.VarIGPrior(1.0, 0.001), name="m.ps(x)")
-log_scale_terms += gam.TermBuilder(registry, prefix_names_by="s.").slin(
+model.pred.loc += loc_builder.slin("x", scale=1.0, name="m.x")
+model.pred.loc += loc_builder.ps(
+    "x", k=5, scale=gam.VarIGPrior(1.0, 0.001), name="m.ps(x)"
+)
+model.pred.scale += gam.TermBuilder(registry, prefix_names_by="s.").slin(
     "x", scale=1.0, name="s.x"
 )
-
-beta0 = ptm.LocationIntercept(response_value, loc_terms, log_scale_terms, name="beta0")
-loc = gam.AdditivePredictor("loc", intercept=beta0)
-loc += loc_terms
-gamma0 = ptm.LogScaleIntercept(response_value, loc, log_scale_terms, name="gamma0")
-scale = gam.AdditivePredictor("scale", inv_link=jnp.exp, intercept=gamma0)
-scale += log_scale_terms
-
-knots = ptm.PTMKnots(-4.0, 4.0, nparam=6)
-shape = gam.MVAdditivePredictor.from_random_walk(
-    "delta", ndim=knots.nparam, intercept=False
-).constrain("sumzero_coef")
-builder = gam.MVTermBuilder.from_predictor(
-    shape,
-    term_builder=gam.TermBuilder(registry, prefix_names_by="h."),
-)
-shape.intercept = builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
 ```
 
-The shape has six coefficients constrained to sum to zero. There are no
-covariate-dependent shape terms. Use the PTM spline and disable its centering and
-scaling corrections for this computed-intercept workflow.
-
-``` python
-response = lsl.Var.new_obs(
-    y,
-    dist=ptm.PTMDist(
-        knots.knots,
-        loc=loc,
-        scale=scale,
-        shape=shape,
-        bspline="ptm",
-        centered=False,
-        scaled=False,
-    ),
-    name="y",
-)
-model = lsl.Model(response)
-```
+Leave `model.pred.shape` with its shared intercept: legacy shape does not support
+covariate terms. `model.vars["y"]` is the writable response input;
+`model.response` carries the likelihood and is used for distribution plots.
 
 ``` python
 model.plot(width=24, height=12)
@@ -119,17 +97,15 @@ must keep their values from the fitted model.
 [LegacyPTM.setup_mcmc](../api/models.md#liesel_ptm.LegacyPTM.setup_mcmc) configures
 Gaussian IWLS proposals for location and scale, the smoothing-variance Gibbs update,
 and a joint NUTS block for shape. It also records both computed intercepts at every
-draw. Liesel handles scheduling and sampling.
+draw. The method reads the predictors from `model.pred`; no predictor arguments
+are needed. Liesel handles scheduling and sampling.
+
+Fit with the complete dataset. Minibatches, training/validation splits, and
+updates with fewer rows are unsupported because the intercepts depend on all
+training observations. Prediction can use a different number of observations.
 
 ``` python
-legacy = ptm.LegacyPTM(model)
-builder = legacy.setup_mcmc(
-    loc_terms=model.vars["loc_terms"],
-    log_scale_terms=model.vars["log_scale_terms"],
-    shape=model.vars["delta"],
-    seed=43,
-    num_chains=2,
-)
+builder = model.setup_mcmc(seed=43, num_chains=2)
 builder.show_progress = False
 builder.add_adaptation(80)
 builder.add_posterior(12)
@@ -164,7 +140,7 @@ prediction graph using the recorded training intercepts. It preserves the fitted
 graph and does not recompute intercepts from new data.
 
 ``` python
-prediction = legacy.predict(
+prediction = model.predict(
     samples,
     predict=["loc", "scale", "delta"],
     newdata={"x": jnp.array([-0.5, 0.5])},

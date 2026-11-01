@@ -15,7 +15,7 @@ from scripts.docs import MANIFEST, check, snapshot
 @pytest.mark.parametrize(
     "name",
     [
-        "liesel_ptm/model.py",
+        "src/liesel_ptm/model.py",
         "docs/guides/example.qmd",
         "docs/_includes/_setup.qmd",
         "docs/filters/alt-text.lua",

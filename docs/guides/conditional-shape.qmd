@@ -57,57 +57,54 @@ registry = gam.PandasRegistry(data)
 The registry keeps the observed data and encodes the three categories in `group`.
 The fixed random seed makes the synthetic response reproducible.
 
-## Define location and scale
+## Initialize the model
 
-Use a smooth location effect and a linear effect on log scale. The exponential
-inverse link keeps scale positive.
+[PTM](../api/models.md#liesel_ptm.PTM) creates a Liesel model with location,
+scale, and shape predictors in `model.pred`. It sets up the onion spline and
+both standardization corrections, so location and scale represent the conditional
+mean and standard deviation. By default, each predictor has an intercept; the
+shape intercept has a Weibull smoothing-variance prior.
 
 ```{python}
-loc = gam.AdditivePredictor("loc")
-scale = gam.AdditivePredictor("scale", inv_link=jnp.exp)
-loc += gam.TermBuilder(registry, prefix_names_by="m.").ps("x", k=5, scale=0.5)
-scale += gam.TermBuilder(registry, prefix_names_by="s.").lin(
+model = ptm.PTM(registry.get_obs("y"), nshape=4, bounds=(-4.0, 4.0))
+```
+
+`nshape=4` selects four shape coefficients before the sum-to-zero constraint,
+leaving three latent dimensions. The bounds describe the flexible interval on the
+standardized residual scale. Add all terms before creating inference objects.
+
+## Define location and scale
+
+Use a smooth location effect and a linear effect on log scale. The scale
+predictor applies an exponential inverse link, so its values stay positive.
+
+```{python}
+model.pred.loc += gam.TermBuilder(registry, prefix_names_by="m.").ps(
+    "x", k=5, scale=0.5
+)
+model.pred.scale += gam.TermBuilder(registry, prefix_names_by="s.").lin(
     "x", prior=lsl.Dist(tfd.Normal, loc=0.0, scale=0.5)
 )
 ```
 
-## Define shape and the response
+## Define shape effects
 
-Use [OnionKnots](../api/models.md#liesel_ptm.OnionKnots) and the onion spline when
-shape varies across observations. The sum-to-zero constraint identifies the shape
-coefficients. The shape intercept has a Weibull smoothing-variance prior; the smooth
-and categorical terms describe additional changes in distribution shape.
+Add smooth and categorical terms to the shape predictor. The constructor already
+supplies its constrained intercept and prior. Use a multivariate term builder to
+match the predictor's dimension and constraint.
 
 ```{python}
-knots = ptm.OnionKnots(-4.0, 4.0, nparam=4)
-shape = gam.MVAdditivePredictor.from_random_walk(
-    "delta", ndim=knots.nparam, intercept=False
-).constrain("sumzero_coef")
+shape = model.pred.shape
 builder = gam.MVTermBuilder.from_predictor(
     shape,
     term_builder=gam.TermBuilder(registry, prefix_names_by="h."),
 )
-shape.intercept = builder.intercept(scale=gam.scale_wb(0.1, scale=0.05))
 shape += builder.ps("x", k=5, scale=0.5, dimension_scale=0.3)
 shape += builder.lin("group", dimension_scale=0.3, name="h.group")
 ```
 
-[PTMDist](../api/models.md#liesel_ptm.PTMDist) connects the predictors to the observed
-response. Enable both corrections for the mean/standard-deviation interpretation.
-
-```{python}
-response = registry.get_obs("y")
-response.dist_node = ptm.PTMDist(
-    knots.knots,
-    loc=loc,
-    scale=scale,
-    shape=shape,
-    bspline="onion",
-    centered=True,
-    scaled=True,
-)
-model = lsl.Model(response)
-```
+The model's response is available as `model.response` for distribution summaries
+and plots. `PTM` inherits Liesel's model methods, including `plot()` and `predict()`.
 
 ```{python}
 #| fig-alt: "Conditional-shape PTM graph with mean, scale, and shape predictors."
@@ -124,9 +121,9 @@ while holding location and scale fixed. Each stage starts from the previous resu
 The parameter lists include the priors' parameters as well as term coefficients.
 
 ```{python}
-loc_scale_parameters = list(model.parental_submodel(model.vars["loc"]).parameters)
-loc_scale_parameters += list(model.parental_submodel(model.vars["scale"]).parameters)
-shape_parameters = list(model.parental_submodel(model.vars["delta"]).parameters)
+loc_scale_parameters = list(model.parental_submodel(model.pred.loc).parameters)
+loc_scale_parameters += list(model.parental_submodel(model.pred.scale).parameters)
+shape_parameters = list(model.parental_submodel(model.pred.shape).parameters)
 
 for parameters in (loc_scale_parameters, shape_parameters):
     result = opt.LieselOptim(
@@ -220,10 +217,10 @@ Include the shape intercept explicitly. Location, scale, and the categorical sha
 term are excluded from this display.
 
 ```{python}
-shape = model.vars["delta"]
+shape = model.pred.shape
 smooth = shape.terms["h.ps(x)"]
 effect = ptm.plot_1d_smooth_dist(
-    model.vars["y"],
+    model.response,
     smooth,
     samples,
     intercept=shape.intercept,

@@ -79,8 +79,11 @@ builder = gam.TermBuilder(gam.DictRegistry({"x": x}))
 
 model = ptm.PTM(y, nshape=6, bounds=(-4.0, 4.0))
 model.pred.loc += builder.ps("x", k=10)
-# model.pred.scale and model.pred.shape already have intercepts.
 ```
+
+The constructor supplies location, log-scale, and shape intercepts. Leaving shape
+with only its intercept gives a fixed-shape PTM; add shape terms for a
+conditional-shape PTM.
 
 For fitting, prediction, and more model components, see the guides:
 
@@ -112,7 +115,7 @@ rejected. `legacy.vars["y"]` is the shared response input; `legacy.response` car
 the likelihood.
 
 Use standard Liesel scheduling and sampling, then `legacy.predict()` for prediction
-with the recorded intercepts. The linked legacy example contains the complete workflow,
+with the recorded intercepts. The linked legacy guide contains the complete workflow,
 including a smoothing update. Its Weibull variance prior is unclipped.
 
 See the [plotting guide](https://liesel-devs.github.io/liesel-ptm/guides/term-distributions/)

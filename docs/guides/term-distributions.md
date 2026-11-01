@@ -225,40 +225,28 @@ with chosen coefficient values and a shared normal shape. It is a plotting
 example, not a fit to the two placeholder observations.
 
 ``` python
-x = lsl.Var.new_obs(jnp.array([0.0, 1.0]), name="x")
-z = lsl.Var.new_obs(jnp.array([0.0, 1.0]), name="z")
-loc_coef = lsl.Var.new_param(1.0, name="loc_coef")
-scale_coef = lsl.Var.new_param(jnp.log(2.0), name="scale_coef")
-loc = lsl.Var.new_calc(
-    lambda x, coef: x * coef,
-    x,
-    loc_coef,
-    name="loc",
+model = ptm.PTM(jnp.zeros(2), nshape=4, shape_scale=0.1)
+conditional_builder = gam.TermBuilder.from_dict(
+    {"x": jnp.array([0.0, 1.0]), "z": jnp.array([0.0, 1.0])}
 )
-scale = lsl.Var.new_calc(
-    lambda z, coef: jnp.exp(z * coef),
-    z,
-    scale_coef,
-    name="scale",
-)
-shape = lsl.Var.new_param(jnp.zeros(4), name="shape")
-response = lsl.Var.new_obs(
-    jnp.zeros(2),
-    dist=lsl.Dist(
-        dist,
-        coef=shape,
-        loc=loc,
-        scale=scale,
-    ),
-    name="response",
-)
-model = lsl.Model(response)
+loc_effect = conditional_builder.lin("x", name="location_effect")
+scale_effect = conditional_builder.lin("z", name="scale_effect")
+model.pred.loc += loc_effect
+model.pred.scale += scale_effect
+
 samples = {
-    shape.name: jnp.zeros((1, 1, 4)),
-    loc_coef.name: jnp.ones((1, 1)),
-    scale_coef.name: jnp.full((1, 1), jnp.log(2.0)),
+    name: jnp.zeros((1, 1) + jnp.shape(var.value))
+    for name, var in model.parameters.items()
 }
+samples[loc_effect.coef.name] = jnp.ones((1, 1, 1))
+samples[scale_effect.coef.name] = jnp.full((1, 1, 1), jnp.log(2.0))
 ```
+
+[PTM](../api/models.md#liesel_ptm.PTM) supplies the standardized transformation
+and intercepts. The sample dictionary has one chosen value for every parameter:
+zero intercepts and shape coefficients, a location slope of one, and a log-scale
+slope of `log(2)`. These values give a normal distribution with mean `x` and
+standard deviation `2**z`; they are not fitted estimates.
 
 Each `newdata` row specifies one condition. Enable `include_loc` and
 `include_scale` to include both predictors, and supply `rgrid` in response units.
@@ -275,7 +263,7 @@ cases = [
 
 ``` python
 ptm.plot_conditional_dist(
-    response,
+    model.response,
     samples,
     newdata=cases,
     condition_labels=["A", "B", "C"],
@@ -307,7 +295,7 @@ response units. Supply the grid on that reported scale.
 
 ``` python
 ptm.plot_conditional_dist(
-    response,
+    model.response,
     samples,
     newdata=cases,
     condition_labels=["A", "B", "C"],

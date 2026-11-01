@@ -8,16 +8,15 @@ intercept handling.
 
 ## Keep only the shape intercept
 
-Start with the complete [conditional-shape example](conditional-shape.md). In
-[Define shape and the response](conditional-shape.md#define-shape-and-the-response),
-retain the shape intercept and omit both additions to `shape`: the smooth term
-from `builder.ps()` and the categorical term from `builder.lin()`.
+Start with the complete [conditional-shape example](conditional-shape.md).
+Initialize the model with [PTM][liesel_ptm.PTM] as shown there, then omit both
+shape-term additions in [Define shape effects](conditional-shape.md#define-shape-effects):
+`builder.ps()` and `builder.lin()`.
 
-Keep [OnionKnots][liesel_ptm.OnionKnots], `bspline="onion"`, and
-`centered=True, scaled=True`. These
-choices standardize the transformation so the location and scale predictors
-represent the conditional mean and standard deviation. The shape intercept
-remains a vector of estimated coefficients with a smoothing prior.
+The constructor already creates the shape intercept and its smoothing prior.
+Leaving `model.pred.shape` with only this intercept gives a fixed-shape PTM.
+It uses the onion spline with both standardization corrections enabled, so
+location and scale represent the conditional mean and standard deviation.
 
 The [getting-started example](../index.md#build-a-model) shows a complete model
 construction with this shared-shape structure.
