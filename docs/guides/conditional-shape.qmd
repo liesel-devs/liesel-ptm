@@ -157,37 +157,57 @@ variational family; they are not posterior draws.
 ## Fit a variational family
 
 Use a full-covariance Gaussian block for location and scale and a diagonal Gaussian
-block for shape. Train the blocks separately, then jointly, using 600 epochs per
-stage and eight Monte Carlo samples for each ELBO estimate. The leading sample axes
-below are `(1, 100)`: one sample group containing 100 approximate posterior draws.
-Parameter dimensions follow those axes.
+block for shape. Train the blocks separately, then jointly, using eight Monte Carlo
+samples for each ELBO estimate.
 
 Use an Adam learning rate of `0.003` and monitor an exponential moving average
 (EMA) of the training loss with an effective window of 20 updates. This smooths
 the noisy Monte Carlo estimates. Each update uses the complete dataset here.
+
+Allow each stage at least 300 epochs, then use a patience window of 100 epochs.
+Stop when the best EMA in that window improves on its oldest value by no more
+than a relative tolerance of `1e-4`. The 3,000-epoch limit caps the runtime if this
+condition is not reached.
 
 ```{python}
 loc_scale_block = opt.VDist(loc_scale_parameters, model).mvn_tril()
 shape_block = opt.VDist(shape_parameters, model).mvn_diag()
 family = opt.CompositeVDist(loc_scale_block, shape_block).build()
 loss = opt.NegElboLoss.from_vdist(family, nsamples=8)
-for parameters in (
-    loc_scale_block.parameters,
-    shape_block.parameters,
-    family.parameters,
+vi_runs = []
+for stage, parameters in (
+    ("location and scale", loc_scale_block.parameters),
+    ("shape", shape_block.parameters),
+    ("joint", family.parameters),
 ):
     result = opt.LieselVI(
         model,
         loss=loss,
         optimizers=[opt.Optimizer(parameters, optax.adam(0.003))],
         loss_monitor=opt.EmaTrainLossMonitor(effective_window=20),
-        stopper=opt.Stopper(epochs=600, patience=600),
+        stopper=opt.Stopper(epochs=3000, patience=100, min_epochs=300, rtol=1e-4),
         seed=44,
         show_progress=False,
     ).fit()
     family.q.state = family.q.update_state(result.position_final)
+    vi_runs.append({"stage": stage, "epochs": result.n_epochs, "status": result.status})
+```
+
+Check how long each stage ran and whether it stopped early or reached the cap:
+
+```{python}
+Markdown(pd.DataFrame(vi_runs).to_markdown(index=False))
+```
+
+Draw 1,000 samples from the fitted family for posterior summaries and plots. The
+leading sample axes are `(1, 1000)`: one sample group containing 1,000 approximate
+posterior draws. Parameter dimensions follow those axes. This draw count is
+separate from the eight Monte Carlo samples used to estimate the ELBO during
+training.
+
+```{python}
 posterior = loss.approximate_joint_posterior(result)
-samples = posterior.sample((1, 100), seed=jax.random.key(45))
+samples = posterior.sample((1, 1000), seed=jax.random.key(45))
 ```
 
 ```{python}
@@ -207,9 +227,11 @@ result.plot_loss()
 
 The training loss fluctuates while the EMA shows its recent trend with some lag.
 The EMA smooths the same training estimates; it is not a validation loss. We keep
-the final variational parameters for sampling and use a fixed training budget.
-A flat EMA alone does not establish that the Gaussian family captures the
-posterior well; compare longer fits and check approximation quality for an analysis.
+the final variational parameters for sampling. Early stopping detects a plateau
+in the monitored loss; it does not establish that the Gaussian family captures
+the posterior well. Check sensitivity to the stopping settings and assess
+approximation quality for an analysis. More posterior draws reduce Monte Carlo
+noise in summaries, but do not improve the fitted approximation itself.
 
 ## Predict at new covariates
 

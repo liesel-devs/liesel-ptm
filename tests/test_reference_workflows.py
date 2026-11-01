@@ -56,7 +56,7 @@ def test_modern_parameter_blocks_cover_the_model(modern):
 def test_modern_staged_optimization_vi_prediction_and_effects():
     model = reference_modern.build_model()
     initial_log_prob = float(model.log_prob)
-    point, samples = reference_modern.fit(model, epochs=2, draws=3)
+    point, samples = reference_modern.fit(model, epochs=300, draws=3)
     assert set(point) == set(samples) == set(model.parameters)
     assert float(model.log_prob) > initial_log_prob
     for name, values in samples.items():

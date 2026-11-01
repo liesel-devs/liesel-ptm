@@ -44,8 +44,8 @@ def build_model() -> ptm.PTM:
     return model
 
 
-def fit(model: lsl.Model, epochs: int = 600, draws: int = 100):
-    """Pre-optimize location/scale then shape, and fit a blocked Gaussian family."""
+def fit(model: lsl.Model, epochs: int = 3000, draws: int = 1000):
+    """Initialize with MAP, then fit VI with early stopping up to ``epochs``."""
     loc_scale_parameters = list(model.parental_submodel(model.vars["loc"]).parameters)
     loc_scale_parameters += list(
         model.parental_submodel(model.vars["scale"]).parameters
@@ -57,7 +57,7 @@ def fit(model: lsl.Model, epochs: int = 600, draws: int = 100):
             model,
             optimizers=[opt.Optimizer(parameters, optax.adam(0.01))],
             loss_monitor="train_full_data",
-            stopper=opt.Stopper(epochs=epochs, patience=epochs),
+            stopper=opt.Stopper(epochs=600, patience=600),
             seed=43,
             show_progress=False,
         ).fit()
@@ -78,7 +78,7 @@ def fit(model: lsl.Model, epochs: int = 600, draws: int = 100):
             loss=loss,
             optimizers=[opt.Optimizer(parameters, optax.adam(0.003))],
             loss_monitor=opt.EmaTrainLossMonitor(effective_window=20),
-            stopper=opt.Stopper(epochs=epochs, patience=epochs),
+            stopper=opt.Stopper(epochs=epochs, patience=100, min_epochs=300, rtol=1e-4),
             seed=44,
             show_progress=False,
         ).fit()

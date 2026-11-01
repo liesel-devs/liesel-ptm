@@ -153,37 +153,63 @@ variational family; they are not posterior draws.
 ## Fit a variational family
 
 Use a full-covariance Gaussian block for location and scale and a diagonal Gaussian
-block for shape. Train the blocks separately, then jointly, using 600 epochs per
-stage and eight Monte Carlo samples for each ELBO estimate. The leading sample axes
-below are `(1, 100)`: one sample group containing 100 approximate posterior draws.
-Parameter dimensions follow those axes.
+block for shape. Train the blocks separately, then jointly, using eight Monte Carlo
+samples for each ELBO estimate.
 
 Use an Adam learning rate of `0.003` and monitor an exponential moving average
 (EMA) of the training loss with an effective window of 20 updates. This smooths
 the noisy Monte Carlo estimates. Each update uses the complete dataset here.
+
+Allow each stage at least 300 epochs, then use a patience window of 100 epochs.
+Stop when the best EMA in that window improves on its oldest value by no more
+than a relative tolerance of `1e-4`. The 3,000-epoch limit caps the runtime if this
+condition is not reached.
 
 ``` python
 loc_scale_block = opt.VDist(loc_scale_parameters, model).mvn_tril()
 shape_block = opt.VDist(shape_parameters, model).mvn_diag()
 family = opt.CompositeVDist(loc_scale_block, shape_block).build()
 loss = opt.NegElboLoss.from_vdist(family, nsamples=8)
-for parameters in (
-    loc_scale_block.parameters,
-    shape_block.parameters,
-    family.parameters,
+vi_runs = []
+for stage, parameters in (
+    ("location and scale", loc_scale_block.parameters),
+    ("shape", shape_block.parameters),
+    ("joint", family.parameters),
 ):
     result = opt.LieselVI(
         model,
         loss=loss,
         optimizers=[opt.Optimizer(parameters, optax.adam(0.003))],
         loss_monitor=opt.EmaTrainLossMonitor(effective_window=20),
-        stopper=opt.Stopper(epochs=600, patience=600),
+        stopper=opt.Stopper(epochs=3000, patience=100, min_epochs=300, rtol=1e-4),
         seed=44,
         show_progress=False,
     ).fit()
     family.q.state = family.q.update_state(result.position_final)
+    vi_runs.append({"stage": stage, "epochs": result.n_epochs, "status": result.status})
+```
+
+Check how long each stage ran and whether it stopped early or reached the cap:
+
+``` python
+Markdown(pd.DataFrame(vi_runs).to_markdown(index=False))
+```
+
+| stage              | epochs | status         |
+|:-------------------|-------:|:---------------|
+| location and scale |    389 | early_stopping |
+| shape              |   1127 | early_stopping |
+| joint              |    796 | early_stopping |
+
+Draw 1,000 samples from the fitted family for posterior summaries and plots. The
+leading sample axes are `(1, 1000)`: one sample group containing 1,000 approximate
+posterior draws. Parameter dimensions follow those axes. This draw count is
+separate from the eight Monte Carlo samples used to estimate the ELBO during
+training.
+
+``` python
 posterior = loss.approximate_joint_posterior(result)
-samples = posterior.sample((1, 100), seed=jax.random.key(45))
+samples = posterior.sample((1, 1000), seed=jax.random.key(45))
 ```
 
 ``` python
@@ -193,16 +219,16 @@ sample_shapes = pd.DataFrame(
 Markdown(sample_shapes.to_markdown(index=False))
 ```
 
-| parameter               | shape        |
-|:------------------------|:-------------|
-| $\beta_{0,loc}$         | (1, 100)     |
-| $\beta_{0,scale}$       | (1, 100)     |
-| $\beta_{0,shape}$\_coef | (1, 100, 7)  |
-| $\beta_{m.ps(x)}$       | (1, 100, 4)  |
-| $\beta_{s.lin(s.X)}$    | (1, 100, 1)  |
-| $\gamma_{h.group}$      | (1, 100, 14) |
-| $\gamma_{h.ps(x)}$      | (1, 100, 28) |
-| h(shape_scale^2)        | (1, 100)     |
+| parameter               | shape         |
+|:------------------------|:--------------|
+| $\beta_{0,loc}$         | (1, 1000)     |
+| $\beta_{0,scale}$       | (1, 1000)     |
+| $\beta_{0,shape}$\_coef | (1, 1000, 7)  |
+| $\beta_{m.ps(x)}$       | (1, 1000, 4)  |
+| $\beta_{s.lin(s.X)}$    | (1, 1000, 1)  |
+| $\gamma_{h.group}$      | (1, 1000, 14) |
+| $\gamma_{h.ps(x)}$      | (1, 1000, 28) |
+| h(shape_scale^2)        | (1, 1000)     |
 
 The sample dictionary has the same parameter names as `model.parameters`. Inspect
 the final joint training stage’s loss before interpreting its samples.
@@ -211,13 +237,15 @@ the final joint training stage’s loss before interpreting its samples.
 result.plot_loss()
 ```
 
-<img src="conditional-shape_files/figure-commonmark/cell-11-output-1.png" width="420" height="300" alt="Monte Carlo training loss and its EMA for the final joint VI stage." />
+<img src="conditional-shape_files/figure-commonmark/cell-13-output-1.png" width="420" height="300" alt="Monte Carlo training loss and its EMA for the final joint VI stage." />
 
 The training loss fluctuates while the EMA shows its recent trend with some lag.
 The EMA smooths the same training estimates; it is not a validation loss. We keep
-the final variational parameters for sampling and use a fixed training budget.
-A flat EMA alone does not establish that the Gaussian family captures the
-posterior well; compare longer fits and check approximation quality for an analysis.
+the final variational parameters for sampling. Early stopping detects a plateau
+in the monitored loss; it does not establish that the Gaussian family captures
+the posterior well. Check sensitivity to the stopping settings and assess
+approximation quality for an analysis. More posterior draws reduce Monte Carlo
+noise in summaries, but do not improve the fitted approximation itself.
 
 ## Predict at new covariates
 
@@ -242,11 +270,11 @@ prediction_shapes = pd.DataFrame(
 Markdown(prediction_shapes.to_markdown(index=False))
 ```
 
-| predictor | shape          |
-|:----------|:---------------|
-| loc       | (1, 100, 2)    |
-| scale     | (1, 100, 2)    |
-| shape     | (1, 100, 2, 8) |
+| predictor | shape           |
+|:----------|:----------------|
+| loc       | (1, 1000, 2)    |
+| scale     | (1, 1000, 2)    |
+| shape     | (1, 1000, 2, 8) |
 
 Location and scale have axes `(sample group, draw, new observation)`. Shape adds
 one final axis for the eight shape coefficients. These are conditional parameter
@@ -275,7 +303,7 @@ effect = ptm.plot_1d_smooth_dist(
 effect
 ```
 
-<img src="conditional-shape_files/figure-commonmark/cell-15-output-1.png" width="420" height="300" alt="Fitted densities changing from left skew to right skew across x." />
+<img src="conditional-shape_files/figure-commonmark/cell-17-output-1.png" width="420" height="300" alt="Fitted densities changing from left skew to right skew across x." />
 
 At small `x`, look for a longer left tail; at large `x`, look for a longer right
 tail. The gray dotted curves show the standard normal reference. These differences
@@ -296,7 +324,7 @@ ptm.plot_conditional_dist(
 )
 ```
 
-<img src="conditional-shape_files/figure-commonmark/cell-16-output-1.png" width="420" height="300" alt="Complete fitted standardized densities for group b at three x values." />
+<img src="conditional-shape_files/figure-commonmark/cell-18-output-1.png" width="420" height="300" alt="Complete fitted standardized densities for group b at three x values." />
 
 See the [summary API](../api/summaries.md) for tidy numerical summaries and the
 [plot API](../api/plots.md) for display options.
