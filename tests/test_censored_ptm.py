@@ -118,7 +118,8 @@ class TestConstruction:
         assert model.response.observed
         assert model.response.value.shape == (6, 3)
         node = likelihood_node(model)
-        assert isinstance(node, ptm.PTMDist)
+        assert isinstance(node, surv.CensoredDist)
+        assert node.censoring_records is None
         assert isinstance(node.distribution, partial)
         assert node.distribution.func is surv.CensoredDistribution
         assert "censoring_records" not in node.distribution.keywords

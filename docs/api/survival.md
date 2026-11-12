@@ -5,14 +5,17 @@ with columns `[time, lower, upper]` and supplies the censoring distributions tha
 evaluate them. Encode records with [censored][liesel_ptm.survival_dist.censored]
 or a dedicated helper, check them with
 [censoring_status][liesel_ptm.survival_dist.censoring_status], and fit them with
-[PTM.from_censored][liesel_ptm.PTM.from_censored]. The distributions wrap any
-scalar-event response distribution for manual model construction.
+[PTM.from_censored][liesel_ptm.PTM.from_censored]. To censor another Liesel
+likelihood, wrap it in a [CensoredDist][liesel_ptm.survival_dist.CensoredDist],
+optionally caching the row types for fixed data.
 See [Fit a censored PTM](../guides/censored.md) for an executable fixed-shape
 example with right censoring and predicted survival curves.
 
 ::: liesel_ptm.survival_dist.censored
 
 ::: liesel_ptm.survival_dist.censoring_status
+
+::: liesel_ptm.survival_dist.CensoredDist
 
 ::: liesel_ptm.survival_dist.uncensored
 

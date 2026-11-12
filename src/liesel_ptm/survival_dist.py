@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from functools import partial
-from typing import Any, NamedTuple, cast
+from typing import Any, NamedTuple, Self, cast
 
 import jax
 import jax.numpy as jnp
@@ -1077,6 +1077,174 @@ class CensoredDistribution(_BaseCensoringDistribution):
         return jnp.stack((samples, nan, nan), axis=-1)
 
 
+class CensoredDist(lsl.Dist):
+    """Liesel distribution node that evaluates censoring records.
+
+    Wraps a scalar-event distribution in a
+    [CensoredDistribution][liesel_ptm.survival_dist.CensoredDistribution]. Its
+    variable holds records with trailing columns ``[time, lower, upper]``, such as
+    those from [censored][liesel_ptm.survival_dist.censored].
+
+    Parameters
+    ----------
+    distribution
+        Constructor of the uncensored, scalar-event distribution.
+    censoring_records
+        Optional records from which to cache each row's observation type. The
+        cache evaluates only the likelihood branch each row needs, but assumes
+        that row types stay fixed. Values may change while every row keeps its
+        type. By default, row types are read from the records at each evaluation.
+    **kwinputs
+        Keyword inputs of the distribution, and other keyword arguments of
+        `liesel.model.Dist`. Positional inputs are not supported.
+
+    Raises
+    ------
+    ValueError
+        If ``distribution`` is already censored or ``censoring_records`` lacks a
+        trailing dimension of size 3 and an observation axis.
+
+    Notes
+    -----
+    With the cache on, each eager update checks that the row types of the
+    variable's records still match the cached ones, raising a `ValueError`
+    otherwise. Values traced by JAX cannot be checked.
+
+    Summary and plotting functions use the uncensored distribution.
+
+    See Also
+    --------
+    [PTM.from_censored][liesel_ptm.PTM.from_censored]
+        Censored PTM with an uncached `CensoredDist`.
+
+    Examples
+    --------
+    >>> import liesel.model as lsl
+    >>> import tensorflow_probability.substrates.jax.distributions as tfd
+    >>> from liesel_ptm import survival_dist as surv
+    >>> records = surv.right_censored([0.5, 1.0], event_observed=[True, False])
+    >>> uncached = surv.CensoredDist(tfd.Normal, loc=0.0, scale=1.0)
+    >>> cached = surv.CensoredDist(
+    ...     tfd.Normal, censoring_records=records, loc=0.0, scale=1.0
+    ... )
+    >>> y = lsl.Var.new_obs(records, uncached, name="y").update()
+    >>> y_cached = lsl.Var.new_obs(records, cached, name="y").update()
+    >>> [round(float(value), 3) for value in y.log_prob]
+    [-1.044, -1.841]
+    >>> bool((y_cached.log_prob == y.log_prob).all())
+    True
+    """
+
+    def __init__(
+        self,
+        distribution: Callable[..., Any],
+        *,
+        censoring_records: ValuesLike | None = None,
+        **kwinputs: Any,
+    ) -> None:
+        if _is_censored(distribution):
+            raise ValueError(
+                "The distribution is already censored; pass the uncensored "
+                "distribution instead."
+            )
+        self._censoring_records: np.ndarray | None = None
+        self._cached_status: np.ndarray | None = None
+        keywords: dict[str, Any] = {"distribution": distribution}
+        if censoring_records is not None:
+            records = _as_record_array(censoring_records)
+            if records.ndim < 2:
+                raise ValueError(
+                    "censoring_records must have trailing event shape (3,) and "
+                    "at least one observation axis."
+                )
+            self._censoring_records = records
+            self._cached_status = censoring_status(records)
+            keywords["censoring_records"] = records
+        super().__init__(partial(CensoredDistribution, **keywords), **kwinputs)
+
+    @classmethod
+    def from_dist(
+        cls, dist: lsl.Dist, *, censoring_records: ValuesLike | None = None
+    ) -> Self:
+        """Censor an existing distribution node, which is left unchanged.
+
+        The new node shares the keyword inputs and ``per_obs`` setting of
+        ``dist``, which must not belong to a variable yet.
+
+        Parameters
+        ----------
+        dist
+            Distribution node with keyword inputs only, such as a
+            [PTMDist][liesel_ptm.PTMDist].
+        censoring_records
+            As in [CensoredDist][liesel_ptm.survival_dist.CensoredDist].
+
+        Raises
+        ------
+        ValueError
+            If ``dist`` has positional inputs, belongs to a variable, or is
+            already censored.
+        """
+        if dist.inputs:
+            raise ValueError(
+                "CensoredDist supports keyword inputs only; pass the inputs of "
+                "dist by keyword."
+            )
+        if dist.var is not None or dist.at is not None:
+            raise ValueError("dist already belongs to a variable.")
+        node = cls(
+            dist.distribution, censoring_records=censoring_records, **dist.kwinputs
+        )
+        node.per_obs = dist.per_obs
+        return node
+
+    @property
+    def base_distribution(self) -> Callable[..., Any]:
+        """Constructor of the uncensored distribution."""
+        return _uncensored_constructor(self.distribution)
+
+    @property
+    def censoring_records(self) -> np.ndarray | None:
+        """Records whose row types are cached, or `None` without a cache."""
+        return self._censoring_records
+
+    def update(self) -> Self:
+        if self._cached_status is not None and self.at is not None:
+            self._check_cached_status(self.at.value)
+        super().update()
+        return self
+
+    def _check_cached_status(self, value: Any) -> None:
+        try:
+            records = np.asarray(value)
+        except jax.errors.TracerArrayConversionError:
+            return
+        cached = self._cached_status
+        assert cached is not None
+        status = censoring_status(records)
+        if status.shape != cached.shape:
+            raise ValueError(
+                f"The records have batch shape {status.shape}, but the cached "
+                f"row types have shape {cached.shape}. Rebuild the distribution "
+                "with the new records or without censoring_records."
+            )
+        changed = np.argwhere(status != cached)
+        if changed.size:
+            rows = ", ".join(str(tuple(map(int, row))) for row in changed[:5])
+            raise ValueError(
+                "The records' row types no longer match the cached censoring "
+                f"records at index {rows}{', ...' if len(changed) > 5 else ''}. "
+                "Rebuild the distribution with the new records or without "
+                "censoring_records."
+            )
+
+
+def _is_censored(distribution: Callable[..., Any]) -> bool:
+    return distribution is CensoredDistribution or (
+        isinstance(distribution, partial) and distribution.func is CensoredDistribution
+    )
+
+
 def _as_record_value(value: ArrayLike) -> Array:
     value = jnp.asarray(value)
     if value.ndim == 0 or value.shape[-1] != 3:
@@ -1209,7 +1377,7 @@ def _uncensored_constructor(distribution: Callable[..., Any]) -> Callable[..., A
 
     Other constructors are returned unchanged.
     """
-    if isinstance(distribution, partial) and distribution.func is CensoredDistribution:
+    if _is_censored(distribution) and isinstance(distribution, partial):
         keywords = distribution.keywords or {}
         try:
             base_distribution = keywords["distribution"]

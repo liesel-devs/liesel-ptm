@@ -15,7 +15,7 @@ from jax.typing import ArrayLike
 
 from .bspline import OnionKnots, OnionSpline, PTMSpline
 from .dist import LocScaleTransformationDist
-from .survival_dist import CensoredDistribution, censoring_status
+from .survival_dist import CensoredDist, censoring_status
 
 
 @dataclass
@@ -326,9 +326,10 @@ class PTM(lsl.Model):
 
         Notes
         -----
-        Record types are re-read from the response value whenever it is
-        evaluated, so the records can be updated after construction. Their
-        widths are only validated here.
+        The response distribution is an uncached
+        [CensoredDist][liesel_ptm.survival_dist.CensoredDist]: record types are
+        re-read from the response value whenever it is evaluated, so the records
+        can be updated after construction. Their widths are only validated here.
 
         Summary and plotting functions accept `model.response` and use the
         uncensored distribution of the modeled response.
@@ -379,7 +380,7 @@ class PTM(lsl.Model):
             nshape, loc, scale, shape, shape_scale, legacy=False
         )
         knots = OnionKnots(*bounds, nparam=nshape)
-        distribution = PTMDist(
+        distribution: lsl.Dist = PTMDist(
             knots.knots,
             loc=self.pred.loc,
             scale=self.pred.scale,
@@ -390,9 +391,7 @@ class PTM(lsl.Model):
         )
         if censored:
             # Uncached, so record values and their types can change later.
-            distribution.distribution = partial(
-                CensoredDistribution, distribution=distribution.distribution
-            )
+            distribution = CensoredDist.from_dist(distribution)
         self.response = response
         with _response_distribution(self, response, distribution):
             super().__init__(response)
