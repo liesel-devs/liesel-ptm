@@ -14,6 +14,7 @@ from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
 from .dist import LocScaleTransformationDist, TransformationDist
+from .survival_dist import _uncensored_constructor
 
 type DistInput = Callable[..., TransformationDist] | lsl.Var | lsl.Dist
 type NewData = gs.Position | Mapping[str, ArrayLike] | None
@@ -54,6 +55,7 @@ def _make_dist(
         constructor_fn = constructor.dist_node
     if isinstance(constructor_fn, lsl.Dist):
         constructor_fn = constructor_fn.distribution
+    constructor_fn = _uncensored_constructor(constructor_fn)
 
     kwargs = {"coef": coef}
     dist_class = getattr(constructor_fn, "func", constructor_fn)
@@ -212,7 +214,7 @@ def _response_dist(
     if model is None:
         raise ValueError("The supplied response must belong to a built model.")
 
-    constructor = dist_node.distribution
+    constructor = _uncensored_constructor(dist_node.distribution)
     dist_class = getattr(constructor, "func", constructor)
     if not (
         isinstance(dist_class, type) and issubclass(dist_class, TransformationDist)

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import partial
 from typing import Any, NamedTuple, cast
 
+import jax
 import jax.numpy as jnp
 import liesel.model as lsl
 import numpy as np
@@ -14,6 +15,7 @@ from tensorflow_probability.substrates.jax import tf2jax as tf
 
 Array = Any
 KeyArray = Any
+type ValuesLike = ArrayLike | Sequence[Any]
 
 
 def _as_float_array(value: Array) -> Array:
@@ -34,27 +36,380 @@ def uncensored(value: Array) -> Array:
     return jnp.stack((value, nan, nan), axis=-1)
 
 
-def left_censored(upper: Array) -> Array:
-    """Create left-censored records ``[nan, nan, upper]``."""
-    upper = _as_float_array(upper)
-    nan = _nan_like(upper)
-    return jnp.stack((nan, nan, upper), axis=-1)
+CENSORING_STATUS_LABELS = (
+    "uncensored",
+    "left_censored",
+    "right_censored",
+    "interval_censored",
+)
 
 
-def right_censored(lower: Array) -> Array:
-    """Create right-censored records ``[nan, lower, nan]``."""
+def _record_status_masks(
+    time: Array, lower: Array, upper: Array, xp: Any = jnp
+) -> tuple[Array, Array, Array, Array]:
+    """Classify records by their missing-value pattern.
+
+    Returns masks in the order of ``CENSORING_STATUS_LABELS``. Every other
+    pattern is invalid. The likelihood, record splitting and
+    :func:`censoring_status` all use this classification.
+    """
+    time_nan = xp.isnan(time)
+    lower_nan = xp.isnan(lower)
+    upper_nan = xp.isnan(upper)
+    return (
+        ~time_nan & lower_nan & upper_nan,
+        time_nan & lower_nan & ~upper_nan,
+        time_nan & ~lower_nan & upper_nan,
+        time_nan & ~lower_nan & ~upper_nan,
+    )
+
+
+def _input_array(value: ValuesLike) -> tuple[Array, bool]:
+    """Return a value at its input precision and whether it is concrete.
+
+    Concrete values are classified with NumPy before any conversion to the JAX
+    default dtype can erase a positive interval width. Traced values are
+    classified with JAX at their traced precision and cannot be validated.
+    """
+    try:
+        array = np.asarray(value)
+    except jax.errors.TracerArrayConversionError:
+        return jnp.asarray(value), False
+    if not np.issubdtype(array.dtype, np.inexact):
+        array = array.astype(np.float64)
+    return array, True
+
+
+def _event_mask(event_observed: ValuesLike) -> tuple[Array, bool]:
+    try:
+        mask = np.asarray(event_observed)
+    except jax.errors.TracerArrayConversionError:
+        return jnp.asarray(event_observed) != 0, False
+    if mask.dtype == np.bool_:
+        return mask, True
+    if not (np.issubdtype(mask.dtype, np.number) and np.isin(mask, (0, 1)).all()):
+        raise ValueError(
+            "event_observed must be a Boolean value or mask containing only 0 and 1."
+        )
+    return mask != 0, True
+
+
+def _encode(
+    *,
+    exact: Array,
+    left: Array,
+    right: Array,
+    interval: Array,
+    time: ValuesLike,
+    lower: ValuesLike,
+    upper: ValuesLike,
+) -> Array:
+    time = _as_float_array(time)
     lower = _as_float_array(lower)
-    nan = _nan_like(lower)
-    return jnp.stack((nan, lower, nan), axis=-1)
-
-
-def interval_censored(lower: Array, upper: Array) -> Array:
-    """Create interval-censored records ``[nan, lower, upper]``."""
-    lower = _as_float_array(lower)
     upper = _as_float_array(upper)
-    lower, upper = jnp.broadcast_arrays(lower, upper)
-    nan = _nan_like(lower)
-    return jnp.stack((nan, lower, upper), axis=-1)
+    dtype = jnp.result_type(time, lower, upper)
+    nan = jnp.asarray(jnp.nan, dtype=dtype)
+    time = jnp.where(exact, time.astype(dtype), nan)
+    lower = jnp.where(right | interval, lower.astype(dtype), nan)
+    upper = jnp.where(left | interval, upper.astype(dtype), nan)
+    time, lower, upper = jnp.broadcast_arrays(time, lower, upper)
+    return jnp.stack((time, lower, upper), axis=-1)
+
+
+def _require(invalid: Array, message: str) -> None:
+    if np.any(invalid):
+        raise ValueError(message)
+
+
+def _one_sided_censored(
+    value: ValuesLike, event_observed: ValuesLike, *, side: str
+) -> Array:
+    array, concrete_value = _input_array(value)
+    observed, concrete_mask = _event_mask(event_observed)
+    if concrete_value and concrete_mask:
+        _require(
+            observed & ~np.isfinite(array),
+            "Observed event times (event_observed=True) must be finite.",
+        )
+    censored_rows = ~observed
+    no_rows = jnp.zeros((), dtype=bool)
+    return _encode(
+        exact=observed,
+        left=censored_rows if side == "left" else no_rows,
+        right=censored_rows if side == "right" else no_rows,
+        interval=no_rows,
+        time=value,
+        lower=value,
+        upper=value,
+    )
+
+
+def left_censored(upper: ValuesLike, *, event_observed: ValuesLike = False) -> Array:
+    """Encode left-censored observations, optionally mixed with exact ones.
+
+    Parameters
+    ----------
+    upper
+        Upper bounds of censored observations. Where ``event_observed`` is true,
+        the same value is the exact event time instead.
+    event_observed
+        Scalar flag or mask broadcastable with ``upper``, either Boolean or
+        containing only 0 and 1. By default, every observation is left-censored.
+
+    Returns
+    -------
+    jax.Array
+        Records with trailing columns ``[time, lower, upper]``:
+        ``[nan, nan, upper]`` for censored and ``[upper, nan, nan]`` for observed
+        rows.
+
+    Raises
+    ------
+    ValueError
+        If ``event_observed`` is not binary or an observed time is not finite.
+
+    Examples
+    --------
+    >>> from liesel_ptm import survival_dist as surv
+    >>> surv.left_censored([1.0, 2.0], event_observed=[False, True])
+    Array([[nan, nan,  1.],
+           [ 2., nan, nan]], dtype=float32)
+    """
+    return _one_sided_censored(upper, event_observed, side="left")
+
+
+def right_censored(lower: ValuesLike, *, event_observed: ValuesLike = False) -> Array:
+    """Encode right-censored observations, optionally mixed with exact ones.
+
+    Parameters
+    ----------
+    lower
+        Lower bounds of censored observations, such as follow-up times. Where
+        ``event_observed`` is true, the same value is the exact event time
+        instead.
+    event_observed
+        Scalar flag or mask broadcastable with ``lower``, either Boolean or
+        containing only 0 and 1. By default, every observation is right-censored.
+
+    Returns
+    -------
+    jax.Array
+        Records with trailing columns ``[time, lower, upper]``:
+        ``[nan, lower, nan]`` for censored and ``[lower, nan, nan]`` for observed
+        rows.
+
+    Raises
+    ------
+    ValueError
+        If ``event_observed`` is not binary or an observed time is not finite.
+
+    Examples
+    --------
+    >>> from liesel_ptm import survival_dist as surv
+    >>> surv.right_censored([1.0, 2.0], event_observed=[True, False])
+    Array([[ 1., nan, nan],
+           [nan,  2., nan]], dtype=float32)
+    """
+    return _one_sided_censored(lower, event_observed, side="right")
+
+
+def interval_censored(
+    lower: ValuesLike, upper: ValuesLike, *, event_observed: ValuesLike = False
+) -> Array:
+    """Encode interval-censored observations, optionally mixed with exact ones.
+
+    Parameters
+    ----------
+    lower, upper
+        Broadcastable interval bounds. Censored rows require
+        ``lower < upper``; an infinite endpoint is kept as an interval bound.
+        Observed rows require matching finite bounds, the exact event time.
+    event_observed
+        Scalar flag or mask broadcastable with the bounds, either Boolean or
+        containing only 0 and 1. By default, every observation is
+        interval-censored.
+
+    Returns
+    -------
+    jax.Array
+        Records with trailing columns ``[time, lower, upper]``:
+        ``[nan, lower, upper]`` for censored and ``[lower, nan, nan]`` for
+        observed rows.
+
+    Raises
+    ------
+    ValueError
+        If ``event_observed`` is not binary, a censored row lacks positive
+        width, or an observed row lacks matching finite bounds.
+
+    Notes
+    -----
+    Widths are checked at input precision. The interval status is kept even if
+    conversion to the output dtype collapses the bounds;
+    [PTM.from_censored][liesel_ptm.PTM.from_censored] then rejects the records.
+
+    Examples
+    --------
+    >>> from liesel_ptm import survival_dist as surv
+    >>> surv.interval_censored([0.0, 1.0], [2.0, 1.0], event_observed=[0, 1])
+    Array([[nan,  0.,  2.],
+           [ 1., nan, nan]], dtype=float32)
+    """
+    lower_array, concrete_lower = _input_array(lower)
+    upper_array, concrete_upper = _input_array(upper)
+    observed, concrete_mask = _event_mask(event_observed)
+    if concrete_lower and concrete_upper and concrete_mask:
+        observed, lower_array, upper_array = np.broadcast_arrays(
+            observed, lower_array, upper_array
+        )
+        _require(
+            observed & ~((lower_array == upper_array) & np.isfinite(lower_array)),
+            "Observed rows (event_observed=True) require matching finite bounds.",
+        )
+        _require(
+            ~observed & ~(upper_array > lower_array),
+            "Interval-censored rows require positive-width intervals, lower < upper.",
+        )
+    no_rows = jnp.zeros((), dtype=bool)
+    return _encode(
+        exact=observed,
+        left=no_rows,
+        right=no_rows,
+        interval=~observed,
+        time=lower,
+        lower=lower,
+        upper=upper,
+    )
+
+
+def censored(
+    lower: ValuesLike, upper: ValuesLike, *, event_observed: ValuesLike | None = None
+) -> Array:
+    """Encode observations from their bounds as censoring records.
+
+    Parameters
+    ----------
+    lower, upper
+        Broadcastable bounds with ``lower <= upper``. Use ``-inf`` as the lower
+        bound of a left-censored and ``inf`` as the upper bound of a
+        right-censored observation. Matching finite bounds give an exact time.
+    event_observed
+        ``None`` infers every observation type from the bounds. Otherwise, a
+        scalar flag or mask broadcastable with the bounds, either Boolean or
+        containing only 0 and 1. True rows are exact and require matching finite
+        bounds; false rows are censored and require ``lower < upper``.
+
+    Returns
+    -------
+    jax.Array
+        Records with trailing columns ``[time, lower, upper]``. Exact,
+        left-censored, right-censored, and interval-censored rows are
+        ``[t, nan, nan]``, ``[nan, nan, upper]``, ``[nan, lower, nan]``, and
+        ``[nan, lower, upper]``.
+
+    Raises
+    ------
+    ValueError
+        If ``event_observed`` is not binary, or bounds are missing, decreasing,
+        both infinite, infinite on the wrong side, or inconsistent with
+        ``event_observed``.
+
+    Notes
+    -----
+    Bounds are compared with exact equality at input precision, before
+    conversion to the output dtype. An interval whose bounds collapse during
+    that conversion stays interval-censored; it never becomes exact.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from liesel_ptm import survival_dist as surv
+    >>> records = surv.censored([1.0, -np.inf, 2.0, 3.0], [1.0, 4.0, np.inf, 5.0])
+    >>> surv.censoring_status(records).tolist()
+    ['uncensored', 'left_censored', 'right_censored', 'interval_censored']
+    """
+    lower_array, concrete_lower = _input_array(lower)
+    upper_array, concrete_upper = _input_array(upper)
+    if event_observed is None:
+        observed, concrete_mask = None, True
+    else:
+        observed, concrete_mask = _event_mask(event_observed)
+    concrete = concrete_lower and concrete_upper and concrete_mask
+    xp: Any = np if concrete else jnp
+    if not concrete:
+        lower_array = jnp.asarray(lower_array)
+        upper_array = jnp.asarray(upper_array)
+    finite_lower = xp.isfinite(lower_array)
+    finite_upper = xp.isfinite(upper_array)
+    matching = finite_lower & (lower_array == upper_array)
+    exact = matching if observed is None else xp.asarray(observed)
+    censored_rows = ~exact
+    left = censored_rows & (lower_array == -xp.inf) & finite_upper
+    right = censored_rows & finite_lower & (upper_array == xp.inf)
+    interval = censored_rows & finite_lower & finite_upper & (lower_array < upper_array)
+    if concrete:
+        _require(
+            exact & ~matching,
+            "Observed rows (event_observed=True) require matching finite bounds.",
+        )
+        _require(
+            censored_rows & ~(left | right | interval),
+            "Censored rows require lower < upper, without NaN and with at most one "
+            "infinite endpoint: -inf for lower or inf for upper.",
+        )
+    return _encode(
+        exact=exact,
+        left=left,
+        right=right,
+        interval=interval,
+        time=lower,
+        lower=lower,
+        upper=upper,
+    )
+
+
+def censoring_status(records: ValuesLike) -> np.ndarray:
+    """Report the observation type encoded in censoring records.
+
+    Parameters
+    ----------
+    records
+        Records with trailing columns ``[time, lower, upper]``.
+
+    Returns
+    -------
+    numpy.ndarray
+        String labels with the record batch shape: ``"uncensored"``,
+        ``"left_censored"``, ``"right_censored"``, ``"interval_censored"``, or
+        ``"invalid"`` for any other missing-value pattern. Interval widths are
+        not checked.
+
+    Raises
+    ------
+    ValueError
+        If the records lack a trailing dimension of size 3.
+
+    Examples
+    --------
+    >>> from liesel_ptm import survival_dist as surv
+    >>> surv.censoring_status(surv.right_censored([1.0, 2.0], event_observed=[1, 0]))
+    array(['uncensored', 'right_censored'], dtype='<U17')
+    """
+    array = _as_record_array(records)
+    masks = _record_status_masks(array[..., 0], array[..., 1], array[..., 2], xp=np)
+    return np.select(masks, CENSORING_STATUS_LABELS, default="invalid")
+
+
+def _as_record_array(records: ValuesLike) -> np.ndarray:
+    array = np.asarray(records)
+    if array.ndim == 0 or array.shape[-1] != 3:
+        raise ValueError(
+            "Censored records must have trailing event shape (3,), with "
+            "layout [time, lower, upper]."
+        )
+    if not np.issubdtype(array.dtype, np.inexact):
+        array = array.astype(np.float64)
+    return array
 
 
 def _logdiffexp(log_a: Array, log_b: Array) -> Array:
@@ -409,17 +764,17 @@ class CensoredDistribution(_BaseCensoringDistribution):
             np.moveaxis(records_padded, observation_axis, -2), (-1, 3)
         )
 
-        time = records_compact[..., 0]
-        lower = records_compact[..., 1]
-        upper = records_compact[..., 2]
-        time_nan = np.isnan(time)
-        lower_nan = np.isnan(lower)
-        upper_nan = np.isnan(upper)
-
-        is_uncensored = ~time_nan & lower_nan & upper_nan
-        is_left_censored = time_nan & lower_nan & ~upper_nan
-        is_right_censored = time_nan & ~lower_nan & upper_nan
-        is_interval_censored = time_nan & ~lower_nan & ~upper_nan
+        (
+            is_uncensored,
+            is_left_censored,
+            is_right_censored,
+            is_interval_censored,
+        ) = _record_status_masks(
+            records_compact[..., 0],
+            records_compact[..., 1],
+            records_compact[..., 2],
+            xp=np,
+        )
         is_valid = (
             is_uncensored | is_left_censored | is_right_censored | is_interval_censored
         )
@@ -482,14 +837,12 @@ class CensoredDistribution(_BaseCensoringDistribution):
         lower = value[..., 1]
         upper = value[..., 2]
 
-        time_nan = jnp.isnan(time)
-        lower_nan = jnp.isnan(lower)
-        upper_nan = jnp.isnan(upper)
-
-        is_uncensored = ~time_nan & lower_nan & upper_nan
-        is_left_censored = time_nan & lower_nan & ~upper_nan
-        is_right_censored = time_nan & ~lower_nan & upper_nan
-        is_interval_censored = time_nan & ~lower_nan & ~upper_nan
+        (
+            is_uncensored,
+            is_left_censored,
+            is_right_censored,
+            is_interval_censored,
+        ) = _record_status_masks(time, lower, upper)
 
         zero = jnp.asarray(0.0, dtype=value.dtype)
         time_safe = jnp.where(is_uncensored, time, zero)
@@ -846,16 +1199,24 @@ class CensoredVars(NamedTuple):
 def _base_distribution_from_dist(
     dist: lsl.Dist,
 ) -> Callable[..., tfd.Distribution]:
-    distribution = dist.distribution
+    return cast(
+        Callable[..., tfd.Distribution], _uncensored_constructor(dist.distribution)
+    )
 
+
+def _uncensored_constructor(distribution: Callable[..., Any]) -> Callable[..., Any]:
+    """Return the event-time constructor wrapped by a ``CensoredDistribution``.
+
+    Other constructors are returned unchanged.
+    """
     if isinstance(distribution, partial) and distribution.func is CensoredDistribution:
         keywords = distribution.keywords or {}
         try:
             base_distribution = keywords["distribution"]
         except KeyError as err:
             raise ValueError(
-                "setup_censored_vars requires a CensoredDistribution partial with "
-                "a fixed base 'distribution'."
+                "A CensoredDistribution partial must fix its base 'distribution'; "
+                "the uncensored distribution cannot be recovered."
             ) from err
 
         fixed_kwargs = {
@@ -867,7 +1228,7 @@ def _base_distribution_from_dist(
             return partial(base_distribution, **fixed_kwargs)
         return base_distribution
 
-    return cast(Callable[..., tfd.Distribution], distribution)
+    return distribution
 
 
 def setup_censored_vars(
@@ -911,18 +1272,12 @@ def setup_censored_vars(
     if value.ndim != 2:
         raise ValueError("setup_censored_vars expects records with shape (n, 3).")
 
-    time = value[..., 0]
-    lower = value[..., 1]
-    upper = value[..., 2]
-
-    time_nan = jnp.isnan(time)
-    lower_nan = jnp.isnan(lower)
-    upper_nan = jnp.isnan(upper)
-
-    is_uncensored = ~time_nan & lower_nan & upper_nan
-    is_left_censored = time_nan & lower_nan & ~upper_nan
-    is_right_censored = time_nan & ~lower_nan & upper_nan
-    is_interval_censored = time_nan & ~lower_nan & ~upper_nan
+    (
+        is_uncensored,
+        is_left_censored,
+        is_right_censored,
+        is_interval_censored,
+    ) = _record_status_masks(value[..., 0], value[..., 1], value[..., 2])
 
     if dist is not None and dist.inputs:
         raise ValueError(

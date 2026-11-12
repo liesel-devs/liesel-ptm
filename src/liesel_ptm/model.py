@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from numbers import Integral, Real
-from typing import Literal
+from typing import Literal, Self
 
 import jax.numpy as jnp
 import liesel.model as lsl
@@ -15,6 +15,7 @@ from jax.typing import ArrayLike
 
 from .bspline import OnionKnots, OnionSpline, PTMSpline
 from .dist import LocScaleTransformationDist
+from .survival_dist import CensoredDistribution, censoring_status
 
 
 @dataclass
@@ -59,6 +60,43 @@ def _make_response(y: ArrayLike | Sequence[float] | lsl.Var) -> lsl.Var:
             "y must be an unowned observed variable without a distribution."
         )
     return response
+
+
+def _check_record_structure(response: lsl.Var) -> None:
+    records = np.asarray(response.value)
+    if records.ndim != 2 or records.shape[-1] != 3 or not records.shape[0]:
+        raise ValueError(
+            "Censoring records must be a nonempty array with shape (n, 3) and "
+            f"columns [time, lower, upper]; got shape {records.shape}."
+        )
+    invalid = np.flatnonzero(censoring_status(records) == "invalid")
+    if invalid.size:
+        raise ValueError(
+            "Censoring records have invalid missing-value patterns at row "
+            f"indices {', '.join(map(str, invalid[:5]))}"
+            f"{', ...' if invalid.size > 5 else ''}. Encode them with "
+            "liesel_ptm.survival_dist.censored() or a dedicated helper."
+        )
+
+
+def _check_interval_widths(response: lsl.Var) -> None:
+    # The likelihood converts records to the distribution dtype before
+    # evaluating intervals, which can collapse narrow bounds.
+    dist_node = response.dist_node
+    assert dist_node is not None
+    dtype = dist_node.init_dist().dtype
+    records = np.asarray(jnp.asarray(response.value, dtype=dtype))
+    interval = censoring_status(records) == "interval_censored"
+    collapsed = np.flatnonzero(interval & ~(records[:, 2] > records[:, 1]))
+    if collapsed.size:
+        raise ValueError(
+            "Interval-censored records must have positive width (upper > lower) "
+            f"in the likelihood dtype {np.dtype(dtype).name}; check row indices "
+            f"{', '.join(map(str, collapsed[:5]))}"
+            f"{', ...' if collapsed.size > 5 else ''}. Fix the bounds, "
+            "or rescale them or enable 64-bit JAX if a narrow interval lost its "
+            "width through precision."
+        )
 
 
 @contextmanager
@@ -231,8 +269,112 @@ class PTM(lsl.Model):
         shape: gam.MVAdditivePredictor | None = None,
         shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
     ) -> None:
+        self._initialize(
+            y,
+            nshape=nshape,
+            bounds=bounds,
+            loc=loc,
+            scale=scale,
+            shape=shape,
+            shape_scale=shape_scale,
+            censored=False,
+        )
+
+    @classmethod
+    def from_censored(
+        cls,
+        y: ArrayLike | lsl.Var,
+        *,
+        nshape: int,
+        bounds: tuple[float, float] = (-4.0, 4.0),
+        loc: gam.AdditivePredictor | None = None,
+        scale: gam.AdditivePredictor | None = None,
+        shape: gam.MVAdditivePredictor | None = None,
+        shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
+    ) -> Self:
+        """Create a PTM for censored observations.
+
+        The likelihood uses densities for exact observations and probabilities
+        for censored ones. Predictors, priors and their defaults are those of
+        [PTM][liesel_ptm.PTM].
+
+        Parameters
+        ----------
+        y
+            Nonempty censoring records with shape `(n, 3)` and columns
+            `[time, lower, upper]`, or an observed `liesel.model.Var` without a
+            distribution containing them. An array becomes a response variable
+            named `y`. Create records with
+            [censored][liesel_ptm.survival_dist.censored] or a dedicated helper,
+            such as [right_censored][liesel_ptm.survival_dist.right_censored].
+        nshape, bounds, loc, scale, shape, shape_scale
+            As in [PTM][liesel_ptm.PTM].
+
+        Returns
+        -------
+        PTM
+            An ordinary PTM whose response distribution evaluates censoring
+            records.
+
+        Raises
+        ------
+        ValueError
+            If records do not have shape `(n, 3)`, contain invalid
+            missing-value patterns, or contain an interval without positive
+            width in the likelihood dtype, or for the reasons listed under
+            [PTM][liesel_ptm.PTM].
+
+        Notes
+        -----
+        Record types are re-read from the response value whenever it is
+        evaluated, so the records can be updated after construction. Their
+        widths are only validated here.
+
+        Summary and plotting functions accept `model.response` and use the
+        uncensored distribution of the modeled response.
+
+        Examples
+        --------
+        >>> import liesel_ptm as ptm
+        >>> from liesel_ptm import survival_dist as surv
+        >>> records = surv.right_censored(
+        ...     [0.4, -0.2, 1.3], event_observed=[True, False, True]
+        ... )
+        >>> model = ptm.PTM.from_censored(records, nshape=4)
+        >>> model.response.value.shape
+        (3, 3)
+        >>> surv.censoring_status(model.response.value).tolist()
+        ['uncensored', 'right_censored', 'uncensored']
+        """
+        model = cls.__new__(cls)
+        model._initialize(
+            y,
+            nshape=nshape,
+            bounds=bounds,
+            loc=loc,
+            scale=scale,
+            shape=shape,
+            shape_scale=shape_scale,
+            censored=True,
+        )
+        return model
+
+    def _initialize(
+        self,
+        y: ArrayLike | Sequence[float] | lsl.Var,
+        *,
+        nshape: int,
+        bounds: tuple[float, float],
+        loc: gam.AdditivePredictor | None,
+        scale: gam.AdditivePredictor | None,
+        shape: gam.MVAdditivePredictor | None,
+        shape_scale: lsl.Var | gam.VarIGPrior | float | None,
+        censored: bool,
+    ) -> None:
         _validate_geometry(nshape, bounds, minimum=2)
         response = _make_response(y)
+        if censored:
+            _check_record_structure(response)
         self.pred = _make_predictors(
             nshape, loc, scale, shape, shape_scale, legacy=False
         )
@@ -246,9 +388,16 @@ class PTM(lsl.Model):
             centered=True,
             scaled=True,
         )
+        if censored:
+            # Uncached, so record values and their types can change later.
+            distribution.distribution = partial(
+                CensoredDistribution, distribution=distribution.distribution
+            )
         self.response = response
         with _response_distribution(self, response, distribution):
             super().__init__(response)
+            if censored:
+                _check_interval_widths(response)
 
 
 class PTMDist(lsl.Dist):

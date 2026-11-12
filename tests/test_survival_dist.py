@@ -960,7 +960,8 @@ class TestCensoredDistributionNumericalStability:
 
     def test_invalid_intervals_return_negative_infinity(self):
         dist = CensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
-        records = interval_censored(jnp.array([1.0, 2.0]), jnp.array([1.0, 1.0]))
+        # The encoder rejects these widths, so build the raw records directly.
+        records = jnp.array([[jnp.nan, 1.0, 1.0], [jnp.nan, 2.0, 1.0]])
 
         log_prob = dist.log_prob(records)
 
