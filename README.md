@@ -42,7 +42,7 @@ Run `uv run --locked pytest` and `uv run --locked pre-commit run -a`.
 ## Documentation
 
 Read the [documentation](https://liesel-devs.github.io/liesel-ptm/) for executable
-guides and the API reference. To build it locally, install Quarto 1.8.27 and
+guides and the API reference. To build it locally, install Quarto 1.11.9 and
 Graphviz, then run:
 
 ```bash
@@ -88,6 +88,7 @@ conditional-shape PTM.
 For fitting, prediction, and more model components, see the guides:
 
 - [Fixed-shape PTM](https://liesel-devs.github.io/liesel-ptm/guides/fixed-shape/): a complete workflow from data to VI, effect plots, and comparisons with the generating distribution.
+- [Censored PTM](https://liesel-devs.github.io/liesel-ptm/guides/censored/): right-censored log event times and survival predictions.
 - [Conditional-shape PTM](https://liesel-devs.github.io/liesel-ptm/guides/conditional-shape/): location, scale, and shape predictors; optimization and VI.
 - [Legacy PTM](https://liesel-devs.github.io/liesel-ptm/guides/legacy/): the legacy transformation and computed intercepts.
 

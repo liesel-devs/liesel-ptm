@@ -83,6 +83,8 @@ see [PTMDist][liesel_ptm.PTMDist].
 
 - [Fit a fixed-shape PTM](guides/fixed-shape.md): fit a shared shape, plot location
   and scale effects, and compare fitted distributions with their generating truth.
+- [Fit a censored PTM](guides/censored.md): fit right-censored log event times
+  and compare predicted survival curves with the generating truth.
 - [Fit a conditional-shape PTM](guides/conditional-shape.md): extend the fixed-shape
   workflow with shape effects and staged, blocked VI.
 - [Fit a legacy PTM](guides/legacy.md): use the legacy transformation and computed
