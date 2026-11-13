@@ -2,12 +2,14 @@
 
 import jax
 import jax.numpy as jnp
+import liesel.goose as gs
 import liesel.model as lsl
 import liesel_gam as gam
 import numpy as np
 import pytest
 
 import liesel_ptm as ptm
+from liesel_ptm import survival_dist as surv
 from liesel_ptm.bspline import PTMSpline
 
 
@@ -377,3 +379,66 @@ def test_fixed_shape_scale_accepts_integer_and_rejects_bool():
     assert len(model.parameters) == 3
     with pytest.raises(TypeError, match="shape_scale"):
         ptm.PTM([0.0, 1.0], nshape=4, shape_scale=True)
+
+
+def _ptm_from_records(y, **kwargs):
+    records = surv.right_censored(y, censored=[False, True, False])
+    return ptm.PTM.from_censored(records, **kwargs)
+
+
+def _transformation_dist(model) -> ptm.LocScaleTransformationDist:
+    node = model.response.dist_node
+    assert node is not None
+    dist = node.init_dist()
+    dist = getattr(dist, "distribution", dist)
+    assert isinstance(dist, ptm.LocScaleTransformationDist)
+    return dist
+
+
+@pytest.mark.parametrize("constructor", [ptm.PTM, _ptm_from_records])
+def test_gauss_legendre_order_reaches_the_spline(constructor):
+    y = jnp.array([-0.5, 0.1, 0.8])
+    default = _transformation_dist(constructor(y, nshape=4))
+    assert default.gauss_legendre_order == 8
+    dist = _transformation_dist(constructor(y, nshape=4, gauss_legendre_order=4))
+    assert dist.gauss_legendre_order == 4
+    assert dist.spline_bijector.gauss_legendre_order == 4
+
+
+def test_gauss_legendre_order_is_used_in_jitted_likelihood():
+    y = jnp.array([-0.8, 0.2, 1.1])
+    bounds = (-3.0, 5.0)
+    log_liks = {}
+    for order in (2, 8):
+        model = ptm.PTM(y, nshape=4, bounds=bounds, gauss_legendre_order=order)
+        position = {
+            name: var.value
+            + jnp.linspace(1.0, 2.0, var.value.size).reshape(var.value.shape)
+            for name, var in model.parameters.items()
+        }
+        interface = gs.LieselInterface(model)
+        update = jax.jit(interface.update_state)
+        model.state = update(position, model.state)
+        log_liks[order] = model.log_lik
+        expected = ptm.LocScaleTransformationDist(
+            coef=model.vars["shape"].value,
+            loc=model.vars["loc"].value,
+            scale=model.vars["scale"].value,
+            bspline=ptm.OnionSpline(ptm.OnionKnots(*bounds, nparam=4).knots),
+            centered=True,
+            scaled=True,
+            gauss_legendre_order=order,
+        )
+        np.testing.assert_allclose(
+            log_liks[order], expected.log_prob(y).sum(), rtol=1e-5
+        )
+    assert not np.isclose(log_liks[2], log_liks[8], rtol=1e-4)
+
+
+@pytest.mark.parametrize("order,error", [(0, ValueError), (1.5, TypeError)])
+def test_invalid_gauss_legendre_order(order, error):
+    with pytest.raises(error, match="gauss_legendre_order must be"):
+        ptm.PTM([0.0, 1.0], nshape=4, gauss_legendre_order=order)
+    knots = ptm.OnionKnots(-4.0, 4.0, nparam=4).knots
+    with pytest.raises(error, match="gauss_legendre_order must be"):
+        ptm.PTMDist(knots, 0.0, 1.0, jnp.zeros(4), gauss_legendre_order=order)
