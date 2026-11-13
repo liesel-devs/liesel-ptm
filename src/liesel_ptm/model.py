@@ -13,6 +13,7 @@ import liesel_gam as gam
 import numpy as np
 from jax.typing import ArrayLike
 
+from .bijector import _validate_gauss_legendre_order
 from .bspline import OnionKnots, OnionSpline, PTMSpline
 from .dist import LocScaleTransformationDist
 from .survival_dist import CensoredDist
@@ -191,13 +192,24 @@ class PTM(lsl.Model):
         `gam.scale_wb(0.1, scale=0.05)`: initial standard deviation 0.1 and an
         unclipped Weibull(1/2, 0.05) prior on its square. Configure this on the
         predictor itself when supplying `shape`.
+    gauss_legendre_order
+        Number of Gauss-Legendre nodes per knot interval for the spline moments
+        used to center and scale the spline. These moments are recomputed in
+        every likelihood evaluation, once per row of shape coefficients, so
+        lowering the order mainly speeds up models with covariate-dependent
+        shape. Orders 5 or 6 are usually accurate for mildly non-normal shapes;
+        very wiggly shapes need the default. Check a lower order at fitted
+        coefficients with
+        [moment_quadrature_diagnostic][liesel_ptm.SplineBijector.moment_quadrature_diagnostic].
 
     Raises
     ------
+    TypeError
+        If `gauss_legendre_order` is not an integer.
     ValueError
         If the shape dimension or interval is invalid, a supplied shape has an
-        incompatible dimension/constraint, or `y` already belongs to a model or
-        has a distribution.
+        incompatible dimension/constraint, `gauss_legendre_order` is not
+        positive, or `y` already belongs to a model or has a distribution.
 
     Notes
     -----
@@ -240,6 +252,7 @@ class PTM(lsl.Model):
         scale: gam.AdditivePredictor | None = None,
         shape: gam.MVAdditivePredictor | None = None,
         shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
+        gauss_legendre_order: int = 8,
     ) -> None:
         self._initialize(
             y,
@@ -249,6 +262,7 @@ class PTM(lsl.Model):
             scale=scale,
             shape=shape,
             shape_scale=shape_scale,
+            gauss_legendre_order=gauss_legendre_order,
             censored=False,
         )
 
@@ -263,6 +277,7 @@ class PTM(lsl.Model):
         scale: gam.AdditivePredictor | None = None,
         shape: gam.MVAdditivePredictor | None = None,
         shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
+        gauss_legendre_order: int = 8,
         cache: bool = False,
     ) -> Self:
         """Create a PTM for censored observations.
@@ -280,7 +295,7 @@ class PTM(lsl.Model):
             named `y`. Create records with
             [censored][liesel_ptm.survival_dist.censored] or a dedicated helper,
             such as [right_censored][liesel_ptm.survival_dist.right_censored].
-        nshape, bounds, loc, scale, shape, shape_scale
+        nshape, bounds, loc, scale, shape, shape_scale, gauss_legendre_order
             As in [PTM][liesel_ptm.PTM].
         cache
             Whether to cache each row's observation type, as in
@@ -336,6 +351,7 @@ class PTM(lsl.Model):
             scale=scale,
             shape=shape,
             shape_scale=shape_scale,
+            gauss_legendre_order=gauss_legendre_order,
             censored=True,
             cache=cache,
         )
@@ -351,6 +367,7 @@ class PTM(lsl.Model):
         scale: gam.AdditivePredictor | None,
         shape: gam.MVAdditivePredictor | None,
         shape_scale: lsl.Var | gam.VarIGPrior | float | None,
+        gauss_legendre_order: int,
         censored: bool,
         cache: bool = False,
     ) -> None:
@@ -370,6 +387,7 @@ class PTM(lsl.Model):
             bspline="onion",
             centered=True,
             scaled=True,
+            gauss_legendre_order=gauss_legendre_order,
         )
         if censored:
             distribution = CensoredDist.from_dist(distribution, cache=cache)
@@ -402,14 +420,21 @@ class PTMDist(lsl.Dist):
     trafo_target_slope
         PTM tail behavior: transition to unit slope (`"identity"`) or continue
         with the boundary slope (`"continue_linearly"`).
+    gauss_legendre_order
+        Number of Gauss-Legendre nodes per knot interval for the spline moments
+        used when `centered` or `scaled` is true. It is fixed when the node is
+        created, so it also works in jitted model code.
     **kwargs
         Forwarded to `liesel.model.Dist`, including arguments for
         [LocScaleTransformationDist][liesel_ptm.LocScaleTransformationDist].
 
     Raises
     ------
+    TypeError
+        If `gauss_legendre_order` is not an integer.
     ValueError
-        If the spline or tail-slope option is unsupported.
+        If the spline or tail-slope option is unsupported, or
+        `gauss_legendre_order` is not positive.
     """
 
     def __init__(
@@ -423,9 +448,11 @@ class PTMDist(lsl.Dist):
         trafo_lambda: float = 0.1,
         bspline: Literal["ptm", "onion"] = "ptm",
         trafo_target_slope: Literal["identity", "continue_linearly"] = "identity",
+        gauss_legendre_order: int = 8,
         **kwargs,
     ) -> None:
         knots = jnp.asarray(knots)
+        gauss_legendre_order = _validate_gauss_legendre_order(gauss_legendre_order)
         if trafo_target_slope not in ("identity", "continue_linearly"):
             raise ValueError(f"Unsupported tail slope: {trafo_target_slope!r}.")
         if bspline == "ptm":
@@ -443,5 +470,6 @@ class PTMDist(lsl.Dist):
             bspline=spline,
             centered=centered,
             scaled=scaled,
+            gauss_legendre_order=gauss_legendre_order,
         )
         super().__init__(constructor, loc=loc, scale=scale, coef=shape, **kwargs)
