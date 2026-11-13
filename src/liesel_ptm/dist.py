@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import operator
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from functools import cache, partial
-from typing import Any, Literal, cast
+from typing import Any, Literal, Self, cast
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.distributions as tfd
 from tensorflow_probability.python.internal import reparameterization
 from tensorflow_probability.substrates.jax import tf2jax as tf
+from tensorflow_probability.substrates.jax.internal import (
+    parameter_properties as tfp_parameter_properties,
+)
+from tensorflow_probability.substrates.jax.internal import slicing as tfp_slicing
 
 from .bspline import OnionKnots, OnionSpline, PTMSpline
 
@@ -166,6 +171,37 @@ def onion_dist(
     return partial(dist_class, bspline=bspline, **kwargs)
 
 
+def _is_array_parameter(value: Any) -> bool:
+    """Whether a parameter is an array or float, which JAX may trace."""
+    return isinstance(value, jax.Array | np.ndarray | float | np.floating)
+
+
+def _flatten_transformation_dist(
+    dist: TransformationDist,
+) -> tuple[tuple[Any, ...], tuple[tuple[str, ...], tuple[tuple[str, Any], ...]]]:
+    parameters = dist.parameters
+    keys = dist._array_parameter_keys()
+    static = tuple((key, value) for key, value in parameters.items() if key not in keys)
+    return tuple(parameters[key] for key in keys), (keys, static)
+
+
+def _unflatten_transformation_dist(
+    cls: type[TransformationDist],
+    aux: tuple[tuple[str, ...], tuple[tuple[str, Any], ...]],
+    children: Sequence[Any],
+) -> TransformationDist:
+    keys, static = aux
+    return cls(**dict(static), **dict(zip(keys, children, strict=True)))
+
+
+def _register_pytree(cls: type[TransformationDist]) -> None:
+    jax.tree_util.register_pytree_node(
+        cls,
+        _flatten_transformation_dist,
+        partial(_unflatten_transformation_dist, cls),
+    )
+
+
 class TransformationDist(tfd.Distribution):
     """
     Transformation distribution using a spline and optional parametric component.
@@ -229,6 +265,14 @@ class TransformationDist(tfd.Distribution):
         Indicates whether centering is applied.
     scaled
         Indicates whether scaling is applied.
+
+    Notes
+    -----
+    Like other TFP distributions, it supports `copy()`, batch slicing such as
+    `dist[..., rows]`, and passing into `jax.jit`. Slicing takes the parameter
+    properties of the parametric distribution, so a batched parameter that
+    distribution does not declare cannot be sliced. The reference distribution
+    is shared by all rows and must not have a batch shape for slicing.
     """
 
     def __init__(
@@ -252,7 +296,11 @@ class TransformationDist(tfd.Distribution):
             raise TypeError("Spline coefficients must have a floating-point dtype.")
 
         gauss_legendre_order = _validate_gauss_legendre_order(gauss_legendre_order)
+        # Record the parametric keyword arguments at the top level, so that
+        # type(self)(**self.parameters) rebuilds the distribution. TFP's copy(),
+        # slicing and the pytree registration rely on this.
         parameters = dict(locals())
+        parameters.update(parameters.pop("parametric_distribution_kwargs"))
 
         self.coef = coef
         self.parametric_distribution_kwargs = parametric_distribution_kwargs
@@ -310,6 +358,92 @@ class TransformationDist(tfd.Distribution):
             parameters=parameters,
             name=name,
         )
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        _register_pytree(cls)
+
+    @classmethod
+    def _parameter_properties(cls, dtype, num_classes=None):
+        # Keyword arguments of the parametric distribution depend on the instance;
+        # __getitem__ and the pytree registration take them from that
+        # distribution.
+        return {"coef": tfp_parameter_properties.ParameterProperties(event_ndims=1)}
+
+    def _array_parameter_keys(self) -> tuple[str, ...]:
+        parametric = tuple(
+            key
+            for key, value in self.parametric_distribution_kwargs.items()
+            if _is_array_parameter(value)
+        )
+        return ("coef",) + parametric
+
+    def __getitem__(self, slices: Any) -> Self:
+        """Slice the batch dimensions, like other TFP distributions.
+
+        Integer arrays select rows; axes of size one broadcast. The reference
+        distribution is shared and left unchanged.
+
+        Raises
+        ------
+        ValueError
+            If the reference distribution has a batch shape, or a batched
+            parameter of the parametric distribution lacks TFP parameter
+            properties.
+        """
+        if tuple(self.reference_distribution.batch_shape) != ():
+            raise ValueError(
+                "Slicing a TransformationDist requires a reference distribution "
+                "without batch shape."
+            )
+        event_ndims = {"coef": 1}
+        properties: dict[str, Any] = {}
+        if self.parametric_distribution is not None:
+            try:
+                properties = type(self.parametric_distribution).parameter_properties(
+                    dtype=self.dtype
+                )
+            except NotImplementedError:
+                properties = {}
+        for key, value in self.parametric_distribution_kwargs.items():
+            if key in properties:
+                ndims = properties[key].event_ndims
+                if callable(ndims):
+                    ndims = ndims(self.parametric_distribution)
+                event_ndims[key] = ndims
+            elif getattr(value, "ndim", 0) > 0:
+                raise ValueError(
+                    f"Cannot slice the parametric distribution parameter {key!r}: "
+                    f"{type(self.parametric_distribution).__name__} declares no TFP "
+                    "parameter properties for it."
+                )
+        if not isinstance(slices, Sequence):
+            slices = (slices,)
+        batch_shape = tuple(int(dim) for dim in tuple(self.batch_shape))
+        batch_shape_tensor = self.batch_shape_tensor()
+        expected = jax.eval_shape(lambda: jnp.zeros(batch_shape)[tuple(slices)]).shape
+
+        def sliced(keys: Sequence[str]) -> Self:
+            parameters = dict(self.parameters)
+            for key in keys:
+                parameters[key] = tfp_slicing._slice_single_param(
+                    parameters[key], event_ndims[key], slices, batch_shape_tensor
+                )
+            return type(self)(**parameters)
+
+        # Parameters shared by all rows stay unsliced. Expanding a shared coef
+        # to one row each would recompute the spline moments for every row.
+        varying = [
+            key
+            for key, ndims in event_ndims.items()
+            if any(
+                dim != 1 for dim in jnp.shape(self.parameters[key])[: -ndims or None]
+            )
+        ]
+        result = sliced(varying)
+        if tuple(result.batch_shape) != tuple(expected):
+            result = sliced(list(event_ndims))
+        return result
 
     def _batch_shape_tuple(self) -> tuple[int, ...]:
         return tuple(int(dim) for dim in tuple(self.batch_shape))
@@ -885,6 +1019,9 @@ class TransformationDist(tfd.Distribution):
         return y
 
 
+_register_pytree(TransformationDist)
+
+
 class LocScaleTransformationDist(TransformationDist):
     """
     Location–scale specialization of
@@ -963,6 +1100,15 @@ class LocScaleTransformationDist(TransformationDist):
             integration_bounds=integration_bounds,
             response_moment_order=response_moment_order,
         )
+
+    @classmethod
+    def _parameter_properties(cls, dtype, num_classes=None):
+        properties = tfp_parameter_properties.ParameterProperties
+        return {
+            "coef": properties(event_ndims=1),
+            "loc": properties(),
+            "scale": properties(default_constraining_bijector_fn=tfb.Softplus),
+        }
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
         """

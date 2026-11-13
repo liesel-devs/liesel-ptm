@@ -12,6 +12,7 @@ import numpy as np
 import tensorflow_probability.substrates.jax.distributions as tfd
 from jax.typing import ArrayLike
 from tensorflow_probability.substrates.jax import tf2jax as tf
+from tensorflow_probability.substrates.jax.internal import slicing as tfp_slicing
 
 Array = Any
 KeyArray = Any
@@ -577,22 +578,23 @@ def _interval_log_prob(
 
 class CensoredDistribution(tfd.Distribution):
     """
-    Censoring-record wrapper for scalar-event TFP distributions.
+    Censoring-record wrapper for a scalar-event TFP distribution.
 
-    The wrapped distribution models uncensored observations on its native
-    scale. This wrapper models censoring records with event shape ``(3,)`` and
-    layout ``[time, lower, upper]``:
+    The wrapped distribution, available as ``distribution``, models uncensored
+    observations on their native scale. This wrapper models censoring records
+    with event shape ``(3,)`` and layout ``[time, lower, upper]``:
 
     - ``[time, nan, nan]`` for uncensored observations.
     - ``[nan, nan, upper]`` for left-censored observations.
     - ``[nan, lower, nan]`` for right-censored observations.
     - ``[nan, lower, upper]`` for interval-censored observations.
 
-    Optionally, pass ``censoring_records`` at construction time to cache the
-    censoring indicators for a fixed observed data set. In cached mode,
-    ``log_prob(value)`` still expects full records with trailing event shape
-    ``(3,)``; the cached indicators determine which likelihood branch is
-    evaluated along the cached observation axis.
+    Optionally, pass concrete ``censoring_records`` to cache each row's type
+    for a fixed data set. In cached mode, ``log_prob(value)`` still expects
+    full records with trailing event shape ``(3,)``; the cached types decide
+    which likelihood contribution each row gets, and only that one is
+    evaluated. The cache selects rows of ``distribution`` with TFP batch
+    slicing, so a base distribution with an observation axis must support it.
 
     Censored records contribute ``P(Y <= upper)`` (left), ``P(Y > lower)``
     (right) and ``P(lower < Y <= upper)`` (interval). The inequalities only
@@ -602,38 +604,63 @@ class CensoredDistribution(tfd.Distribution):
     patterns or intervals without positive width; otherwise, such rows have
     log probability ``-inf``.
 
+    The wrapper supports batch slicing, and an uncached wrapper can be passed
+    into a jitted function. A cached wrapper must be built inside it, because
+    it reads the record values when it is built.
+
+    Parameters
+    ----------
+    distribution
+        Built, scalar-event distribution with a floating-point dtype, such as
+        ``tfd.Normal(0.0, 1.0)``. It keeps its own ``validate_args`` setting.
+    censoring_records
+        Optional concrete records whose row types to cache.
+    validate_args
+        Whether ``log_prob`` checks concrete records.
+    allow_nan_stats, name
+        As in TFP distributions.
+
     Raises
     ------
+    TypeError
+        If ``distribution`` is not a built distribution, or cached records are
+        not concrete.
     ValueError
         If the base distribution does not have a scalar event and a
-        floating-point dtype.
+        floating-point dtype, or cannot be batch-sliced although the cache
+        needs to select its rows.
+
+    Examples
+    --------
+    >>> import tensorflow_probability.substrates.jax.distributions as tfd
+    >>> from liesel_ptm import survival_dist as surv
+    >>> records = surv.right_censored([0.5, 1.0], censored=[False, True])
+    >>> dist = surv.CensoredDistribution(tfd.Normal(0.0, 1.0))
+    >>> [round(float(value), 3) for value in dist.log_prob(records)]
+    [-1.044, -1.841]
     """
 
     def __init__(
         self,
-        distribution: Callable[..., tfd.Distribution],
+        distribution: tfd.Distribution,
         censoring_records: ArrayLike | None = None,
         validate_args: bool = False,
         allow_nan_stats: bool = True,
         name: str = "CensoredDistribution",
-        **distribution_kwargs,
     ) -> None:
         parameters = dict(locals())
-        self.distribution = distribution
-        self.distribution_kwargs = distribution_kwargs
-        self._base_validate_args = validate_args
-        self._base_allow_nan_stats = allow_nan_stats
-        self.base_distribution = distribution(
-            validate_args=validate_args,
-            allow_nan_stats=allow_nan_stats,
-            **distribution_kwargs,
-        )
+        if not isinstance(distribution, tfd.Distribution):
+            raise TypeError(
+                f"{type(self).__name__} wraps a built distribution, such as "
+                f"tfd.Normal(0.0, 1.0); got {distribution!r}."
+            )
+        self._distribution = distribution
 
-        if tuple(self.base_distribution.event_shape) != ():
+        if tuple(distribution.event_shape) != ():
             raise ValueError(
                 f"{type(self).__name__} requires a scalar-event base distribution."
             )
-        base_dtype = self.base_distribution.dtype
+        base_dtype = distribution.dtype
         if base_dtype is None or not jnp.issubdtype(base_dtype, jnp.floating):
             raise ValueError(
                 f"{type(self).__name__} requires a floating-point base "
@@ -643,7 +670,7 @@ class CensoredDistribution(tfd.Distribution):
 
         super().__init__(
             dtype=base_dtype,
-            reparameterization_type=self.base_distribution.reparameterization_type,
+            reparameterization_type=distribution.reparameterization_type,
             validate_args=validate_args,
             allow_nan_stats=allow_nan_stats,
             parameters=parameters,
@@ -656,6 +683,7 @@ class CensoredDistribution(tfd.Distribution):
         self._cached_result_batch_shape: tuple[int, ...] | None = None
         self._cached_padded_record_batch_shape: tuple[int, ...] | None = None
         self._cached_observation_axis = 0
+        self._cached_base_observation_axis: int | None = None
         self._cached_n_observations = 0
         self._cached_uncensored_indices = jnp.asarray([], dtype=jnp.int32)
         self._cached_left_censored_indices = jnp.asarray([], dtype=jnp.int32)
@@ -677,19 +705,42 @@ class CensoredDistribution(tfd.Distribution):
     def _event_shape_tensor(self):
         return jnp.asarray((3,), dtype=jnp.int32)
 
+    @property
+    def distribution(self) -> tfd.Distribution:
+        """The uncensored distribution."""
+        return self._distribution
+
     def _batch_shape(self):
-        return self.base_distribution.batch_shape
+        return self.distribution.batch_shape
 
     def _batch_shape_tensor(self, **kwargs):
-        return self.base_distribution.batch_shape_tensor()
+        return self.distribution.batch_shape_tensor()
+
+    def __getitem__(self, slices: Any) -> Self:
+        if not isinstance(slices, Sequence):
+            slices = (slices,)
+        distribution = self.distribution[slices]
+        records = self.censoring_records
+        if records is not None:
+            records = tfp_slicing._slice_single_param(
+                records, 1, slices, self.batch_shape_tensor()
+            )
+        return type(self)(
+            distribution,
+            censoring_records=records,
+            validate_args=self.validate_args,
+            allow_nan_stats=self.allow_nan_stats,
+            name=self.name,
+        )
 
     def _set_cached_censoring_records(self, censoring_records: ArrayLike) -> None:
         try:
             records_np = np.asarray(censoring_records)
-        except Exception as err:
+        except jax.errors.TracerArrayConversionError as err:
             raise TypeError(
-                "censoring_records must be a concrete array available at "
-                "distribution construction time."
+                "censoring_records must be concrete when the distribution is built. "
+                "A cached CensoredDistribution cannot be passed into a jitted "
+                "function; build it inside the function instead."
             ) from err
 
         if not np.issubdtype(records_np.dtype, np.inexact):
@@ -703,7 +754,7 @@ class CensoredDistribution(tfd.Distribution):
 
         record_batch_shape = tuple(int(dim) for dim in records_np.shape[:-1])
         base_batch_shape = tuple(
-            int(dim) for dim in tuple(self.base_distribution.batch_shape)
+            int(dim) for dim in tuple(self.distribution.batch_shape)
         )
         try:
             result_batch_shape = tuple(
@@ -724,12 +775,8 @@ class CensoredDistribution(tfd.Distribution):
         non_singleton_axes = [
             axis for axis, dim in enumerate(padded_record_batch_shape) if dim != 1
         ]
-        if not non_singleton_axes:
-            raise ValueError(
-                "censoring_records must include a non-singleton observation batch axis."
-            )
-
-        observation_axis = non_singleton_axes[-1]
+        # A single observation uses the last axis.
+        observation_axis = non_singleton_axes[-1] if non_singleton_axes else rank - 1
         if any(dim != 1 for dim in padded_record_batch_shape[:observation_axis]):
             raise ValueError(
                 "Cached censoring records may only vary along one compact "
@@ -786,6 +833,19 @@ class CensoredDistribution(tfd.Distribution):
         self._n_cached_interval_censored = int(np.sum(is_interval_censored))
         self._n_cached_invalid = int(np.sum(~is_valid))
 
+        base_axis = observation_axis - (rank - len(base_batch_shape))
+        if base_axis >= 0 and base_batch_shape[base_axis] != 1:
+            self._cached_base_observation_axis = base_axis
+            try:
+                self._cached_base_distribution(jnp.zeros((1,), dtype=jnp.int32))
+            except (NotImplementedError, ValueError, TypeError) as err:
+                raise ValueError(
+                    "Caching censoring records needs a base distribution that "
+                    f"supports batch slicing, but {type(self.distribution).__name__} "
+                    "does not. Define _parameter_properties for it, or evaluate "
+                    "the records without the cache."
+                ) from err
+
     def _as_record_value(self, value: Array) -> Array:
         value = jnp.asarray(value, dtype=self.dtype)
         if value.ndim == 0 or value.shape[-1] != 3:
@@ -794,14 +854,6 @@ class CensoredDistribution(tfd.Distribution):
                 "layout [time, lower, upper]."
             )
         return value
-
-    def log_prob_uncensored(self, value: Array) -> Array:
-        """Log probability density/mass of uncensored observations."""
-        return self.base_distribution.log_prob(value)
-
-    def prob_uncensored(self, value: Array) -> Array:
-        """Probability density/mass of uncensored observations."""
-        return jnp.exp(self.log_prob_uncensored(value))
 
     def _prob(self, value: Array) -> Array:
         return jnp.exp(self.log_prob(value))
@@ -843,11 +895,11 @@ class CensoredDistribution(tfd.Distribution):
             upper,
             jnp.where(is_right_censored, inf, nan),
         )
-        uncensored_log_prob = self.base_distribution.log_prob(
+        uncensored_log_prob = self.distribution.log_prob(
             jnp.where(is_uncensored, time, anchor)
         )
         censored_log_prob = _interval_log_prob(
-            self.base_distribution, bound_lower, bound_upper, anchor
+            self.distribution, bound_lower, bound_upper, anchor
         )
         return jnp.where(is_uncensored, uncensored_log_prob, censored_log_prob)
 
@@ -903,76 +955,18 @@ class CensoredDistribution(tfd.Distribution):
             axis=self._cached_observation_axis,
         )
 
-    def _cached_kwarg_batch_shape_and_core_ndims(
-        self, key: str, value_array: Array
-    ) -> tuple[tuple[int, ...], int] | None:
-        if self._cached_result_batch_shape is None:
-            return None
-
-        candidate_core_ndims = (1, 0) if key == "coef" else (0, 1)
-        for core_ndims in candidate_core_ndims:
-            if value_array.ndim < core_ndims:
-                continue
-
-            if core_ndims:
-                batch_shape = tuple(int(dim) for dim in value_array.shape[:-core_ndims])
-            else:
-                batch_shape = tuple(int(dim) for dim in value_array.shape)
-
-            try:
-                broadcast_shape = tuple(
-                    int(dim)
-                    for dim in np.broadcast_shapes(
-                        batch_shape, self._cached_result_batch_shape
-                    )
-                )
-            except ValueError:
-                continue
-
-            if broadcast_shape == self._cached_result_batch_shape:
-                return batch_shape, core_ndims
-
-        return None
-
-    def _subset_cached_distribution_kwarg(
-        self, key: str, value: Any, indices: Array
-    ) -> Any:
-        try:
-            value_array = jnp.asarray(value)
-        except (TypeError, ValueError):
-            return value
-
-        batch_and_core = self._cached_kwarg_batch_shape_and_core_ndims(key, value_array)
-        if batch_and_core is None or self._cached_result_batch_shape is None:
-            return value
-
-        batch_shape, _ = batch_and_core
-        padded_batch_shape = self._left_pad_shape(
-            batch_shape, len(self._cached_result_batch_shape)
-        )
-        if padded_batch_shape[self._cached_observation_axis] != (
-            self._cached_n_observations
-        ):
-            return value
-
-        array_axis = self._cached_observation_axis - (
-            len(self._cached_result_batch_shape) - len(batch_shape)
-        )
-        if array_axis < 0:
-            return value
-
-        return jnp.take(value_array, indices, axis=array_axis)
-
     def _cached_base_distribution(self, indices: Array) -> tfd.Distribution:
-        distribution_kwargs = {
-            key: self._subset_cached_distribution_kwarg(key, value, indices)
-            for key, value in self.distribution_kwargs.items()
-        }
-        return self.distribution(
-            validate_args=self._base_validate_args,
-            allow_nan_stats=self._base_allow_nan_stats,
-            **distribution_kwargs,
-        )
+        """Select the base distribution's rows along the cached observation axis.
+
+        A base without that axis, or with size one along it, broadcasts and is
+        returned unchanged.
+        """
+        axis = self._cached_base_observation_axis
+        if axis is None:
+            return self.distribution
+        rank = len(tuple(self.distribution.batch_shape))
+        slices = (slice(None),) * axis + (indices,) + (slice(None),) * (rank - axis - 1)
+        return self.distribution[slices]
 
     def _scatter_cached_log_prob(
         self, result: Array, indices: Array, branch_log_prob: Array
@@ -1039,21 +1033,51 @@ class CensoredDistribution(tfd.Distribution):
     def _sample_n(
         self, n: int | Array, seed: KeyArray | None = None, **kwargs
     ) -> Array:
-        samples = self.base_distribution.sample(n, seed=seed)
+        samples = self.distribution.sample(n, seed=seed)
         nan = jnp.full_like(samples, jnp.nan)
         return jnp.stack((samples, nan, nan), axis=-1)
 
     def _cdf(self, value: Array) -> Array:
         raise NotImplementedError(
             f"{type(self).__name__}.cdf is not defined for censoring records. "
-            "Use .base_distribution.cdf(...) for uncensored observations."
+            "Use .distribution.cdf(...) for uncensored observations."
         )
 
     def _quantile(self, value: Array, **kwargs) -> Array:
         raise NotImplementedError(
             f"{type(self).__name__}.quantile is not defined for censoring records. "
-            "Use .base_distribution.quantile(...) for uncensored observations."
+            "Use .distribution.quantile(...) for uncensored observations."
         )
+
+
+def _flatten_censored_distribution(
+    dist: CensoredDistribution,
+) -> tuple[tuple[Any, Any], tuple[bool, bool, str]]:
+    return (
+        (dist.distribution, dist.censoring_records),
+        (dist.validate_args, dist.allow_nan_stats, dist.name),
+    )
+
+
+def _unflatten_censored_distribution(
+    aux: tuple[bool, bool, str], children: Sequence[Any]
+) -> CensoredDistribution:
+    distribution, censoring_records = children
+    validate_args, allow_nan_stats, name = aux
+    return CensoredDistribution(
+        distribution,
+        censoring_records=censoring_records,
+        validate_args=validate_args,
+        allow_nan_stats=allow_nan_stats,
+        name=name,
+    )
+
+
+jax.tree_util.register_pytree_node(
+    CensoredDistribution,
+    _flatten_censored_distribution,
+    _unflatten_censored_distribution,
+)
 
 
 class CensoredDist(lsl.Dist):
@@ -1136,9 +1160,7 @@ class CensoredDist(lsl.Dist):
         self._cache = bool(cache)
         self._cached_records: np.ndarray | None = None
         self._cached_status: np.ndarray | None = None
-        super().__init__(
-            partial(CensoredDistribution, distribution=distribution), **kwinputs
-        )
+        super().__init__(partial(_censor, distribution), **kwinputs)
 
     @classmethod
     def from_dist(cls, dist: lsl.Dist, *, cache: bool = False) -> Self:
@@ -1233,7 +1255,19 @@ class CensoredDist(lsl.Dist):
             )
 
 
+def _censor(
+    distribution: Callable[..., Any],
+    censoring_records: ArrayLike | None = None,
+    **kwargs: Any,
+) -> CensoredDistribution:
+    """Build the uncensored distribution and wrap it in censoring."""
+    return CensoredDistribution(
+        distribution(**kwargs), censoring_records=censoring_records
+    )
+
+
 def _is_censored(distribution: Callable[..., Any]) -> bool:
     return distribution is CensoredDistribution or (
-        isinstance(distribution, partial) and distribution.func is CensoredDistribution
+        isinstance(distribution, partial)
+        and distribution.func in (CensoredDistribution, _censor)
     )

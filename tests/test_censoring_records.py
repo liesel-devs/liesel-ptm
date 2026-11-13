@@ -299,9 +299,9 @@ class TestCensoringStatus:
                 [NAN, NAN, NAN],
             ]
         )
-        normal = surv.CensoredDistribution(distribution=tfd.Normal, loc=0.0, scale=1.0)
+        normal = surv.CensoredDistribution(tfd.Normal(loc=0.0, scale=1.0))
         log_prob = np.asarray(normal.log_prob(records))
-        base = normal.base_distribution
+        base = normal.distribution
         expected = {
             "uncensored": base.log_prob(0.5),
             "left_censored": base.log_cdf(0.5),

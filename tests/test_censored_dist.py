@@ -36,7 +36,7 @@ def likelihood_node_of(model) -> surv.CensoredDist:
 @pytest.mark.parametrize("cache", [False, True])
 def test_matches_censored_distribution(cache):
     model = normal_model(RECORDS, cache=cache)
-    expected = surv.CensoredDistribution(tfd.Normal, loc=0.2, scale=1.5)
+    expected = surv.CensoredDistribution(tfd.Normal(loc=0.2, scale=1.5))
     np.testing.assert_allclose(
         model.vars["y"].log_prob, expected.log_prob(RECORDS), rtol=1e-6
     )
@@ -65,7 +65,7 @@ def test_from_dist_matches_manual_recipe_and_leaves_original_unchanged():
     assert censored.cache
     assert censored.kwinputs["loc"] is original.kwinputs["loc"]
     model = lsl.Model([lsl.Var.new_obs(RECORDS, censored, name="y")])
-    expected = surv.CensoredDistribution(tfd.Normal, loc=0.2, scale=1.5)
+    expected = surv.CensoredDistribution(tfd.Normal(loc=0.2, scale=1.5))
     np.testing.assert_allclose(model.log_lik, expected.log_prob(RECORDS).sum())
 
 
@@ -80,11 +80,9 @@ def test_rejects_positional_attached_and_censored_distributions():
     with pytest.raises(ValueError, match="already censored"):
         surv.CensoredDist.from_dist(censored)
     with pytest.raises(ValueError, match="already censored"):
-        surv.CensoredDist(
-            partial(surv.CensoredDistribution, distribution=tfd.Normal),
-            loc=0.0,
-            scale=1.0,
-        )
+        surv.CensoredDist(surv.CensoredDistribution, loc=0.0, scale=1.0)
+    with pytest.raises(ValueError, match="already censored"):
+        surv.CensoredDist(censored.distribution, loc=0.0, scale=1.0)
 
 
 @pytest.mark.parametrize("cache", [False, True])
@@ -145,7 +143,7 @@ def test_cache_follows_values_while_row_types_stay_fixed():
     model = normal_model(RECORDS, cache=True)
     shifted = RECORDS + 0.3
     model.vars["y"].value = shifted
-    expected = surv.CensoredDistribution(tfd.Normal, loc=0.2, scale=1.5)
+    expected = surv.CensoredDistribution(tfd.Normal(loc=0.2, scale=1.5))
     np.testing.assert_allclose(
         model.vars["y"].log_prob, expected.log_prob(shifted), rtol=1e-6
     )

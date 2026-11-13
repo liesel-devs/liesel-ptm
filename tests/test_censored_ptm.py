@@ -70,9 +70,14 @@ def manual_censored_model(records, *, conditional_shape=False, x=X):
     )
     likelihood = likelihood_node(model)
     model.auto_update = False
-    likelihood.distribution = partial(
-        surv.CensoredDistribution, distribution=likelihood.distribution
-    )
+    base = likelihood.distribution
+
+    def censored(**inputs):
+        dist = base(**inputs)
+        assert isinstance(dist, tfd.Distribution)
+        return surv.CensoredDistribution(dist)
+
+    likelihood.distribution = censored
     model.response.value = records
     model.auto_update = True
     model.update()
@@ -121,9 +126,7 @@ class TestConstruction:
         assert isinstance(node, surv.CensoredDist)
         assert not node.cache
         assert node.init_dist().censoring_records is None
-        assert isinstance(node.distribution, partial)
-        assert node.distribution.func is surv.CensoredDistribution
-        assert "censoring_records" not in node.distribution.keywords
+        assert isinstance(node.init_dist(), surv.CensoredDistribution)
         assert np.isfinite(model.log_prob)
 
     def test_supplied_response_and_predictors_are_retained(self):
@@ -151,7 +154,7 @@ class TestConstruction:
         ordinary_dist = likelihood_node(ordinary).init_dist()
         assert isinstance(censored_dist, surv.CensoredDistribution)
         assert isinstance(ordinary_dist, ptm.LocScaleTransformationDist)
-        base = censored_dist.base_distribution
+        base = censored_dist.distribution
         assert isinstance(base, ptm.LocScaleTransformationDist)
         knots = base.bspline.knots
         expected = ordinary_dist.bspline.knots
@@ -167,9 +170,9 @@ class TestConstruction:
         copied = model.copy()
         assert isinstance(copied, ptm.PTM)
         assert copied.response is not model.response
-        distribution = likelihood_node(copied).distribution
-        assert isinstance(distribution, partial)
-        assert distribution.func is surv.CensoredDistribution
+        node = likelihood_node(copied)
+        assert isinstance(node, surv.CensoredDist)
+        assert isinstance(node.init_dist(), surv.CensoredDistribution)
         np.testing.assert_allclose(copied.log_lik, model.log_lik)
 
 
