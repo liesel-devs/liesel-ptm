@@ -51,10 +51,8 @@ def mixed_records(shift, scale):
 def value_and_grad(base, records, loc, scale, *, cache):
     def log_prob(loc):
         dist = surv.CensoredDistribution(
-            base,
+            base(loc=jnp.full(records.shape[:1], loc), scale=scale),
             censoring_records=records if cache else None,
-            loc=jnp.full(records.shape[:1], loc),
-            scale=scale,
         )
         return dist.log_prob(records)
 
@@ -132,7 +130,7 @@ def test_positive_support_base_has_finite_gradients_uncached():
     records = surv.right_censored([1.0, 2.0, 3.0], censored=[False, True, False])
 
     def log_lik(loc):
-        dist = surv.CensoredDistribution(tfd.LogNormal, loc=loc, scale=0.5)
+        dist = surv.CensoredDistribution(tfd.LogNormal(loc=loc, scale=0.5))
         return dist.log_prob(records).sum()
 
     assert np.isfinite(jax.grad(log_lik)(jnp.float32(0.3)))
@@ -140,7 +138,7 @@ def test_positive_support_base_has_finite_gradients_uncached():
 
 def test_rejects_integer_base_distribution():
     with pytest.raises(ValueError, match="floating-point"):
-        surv.CensoredDistribution(tfd.Categorical, logits=jnp.zeros(3))
+        surv.CensoredDistribution(tfd.Categorical(logits=jnp.zeros(3)))
 
 
 @pytest.mark.parametrize(
@@ -151,8 +149,8 @@ def test_rejects_integer_base_distribution():
     ],
 )
 def test_validate_args_rejects_malformed_records(records, match):
-    dist = surv.CensoredDistribution(tfd.Normal, loc=0.0, scale=1.0, validate_args=True)
+    dist = surv.CensoredDistribution(tfd.Normal(loc=0.0, scale=1.0), validate_args=True)
     with pytest.raises(ValueError, match=match):
         dist.log_prob(records)
-    unchecked = surv.CensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
+    unchecked = surv.CensoredDistribution(tfd.Normal(loc=0.0, scale=1.0))
     assert np.isneginf(unchecked.log_prob(records)).all()

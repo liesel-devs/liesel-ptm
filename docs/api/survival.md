@@ -8,6 +8,9 @@ or a dedicated helper, check them with
 [PTM.from_censored][liesel_ptm.PTM.from_censored]. To censor another Liesel
 likelihood, wrap it in a [CensoredDist][liesel_ptm.survival_dist.CensoredDist];
 both can cache the row types for fixed data, which is several times faster.
+Outside Liesel, wrap a built TFP distribution in a
+[CensoredDistribution][liesel_ptm.survival_dist.CensoredDistribution]. The cache
+selects rows with TFP batch slicing, which PTM distributions support.
 See [Fit a censored PTM](../guides/censored.md) for an executable fixed-shape
 example with right censoring and predicted survival curves.
 
