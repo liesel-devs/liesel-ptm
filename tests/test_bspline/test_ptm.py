@@ -21,7 +21,7 @@ def test_inverse_reuses_compilation_without_freezing_inputs(monkeypatch):
     monkeypatch.setattr(spline, "_evaluate_spline", count_traces)
 
     def inverse(value, coef):
-        return spline.inverse_transformation(value, coef)
+        return spline.inverse(value, coef)
 
     value = jnp.linspace(-1.0, 1.0, 5)
     coef = jnp.zeros(6)
@@ -36,7 +36,7 @@ def test_inverse_reuses_compilation_without_freezing_inputs(monkeypatch):
     assert jnp.allclose(first, value, atol=1e-4)
     assert jnp.allclose(second, value + 0.1, atol=1e-4)
     assert not jnp.allclose(third, first)
-    assert jnp.allclose(spline.transformation(third, changed_coef), value, atol=1e-4)
+    assert jnp.allclose(spline.evaluate(third, changed_coef), value, atol=1e-4)
 
 
 def test_algebraic_grid_lookup_matches_binary_search():
@@ -60,7 +60,7 @@ class TestMonotonicityAndInverse:
     def test_increasing_over_core_and_tails(self):
         shared_coef = jnp.squeeze(coef, axis=0)
         x = jnp.linspace(-8.0, 8.0, 10_000)
-        fx, fxd = bs.transformation_and_deriv(x, shared_coef)
+        fx, fxd = bs.evaluate_and_deriv(x, shared_coef)
 
         assert fx.shape == x.shape
         assert fxd.shape == x.shape
@@ -72,9 +72,9 @@ class TestMonotonicityAndInverse:
     def test_inverse_over_core_and_tails(self):
         shared_coef = jnp.squeeze(coef, axis=0)
         x = jnp.linspace(-8.0, 8.0, 300)
-        fx = bs.transformation(x, shared_coef)
+        fx = bs.evaluate(x, shared_coef)
 
-        x2 = bs.inverse_transformation(fx, shared_coef)
+        x2 = bs.inverse(fx, shared_coef)
 
         assert x2.shape == x.shape
         assert not jnp.any(jnp.isnan(x2))
@@ -94,12 +94,12 @@ class TestBatchLayout:
     @classmethod
     def _full_broadcast_forward_reference(cls, value, coef, batch_shape=None):
         value, coef = cls._full_broadcast_args(value, coef, batch_shape)
-        return bs.transformation_and_deriv(value, coef)
+        return bs.evaluate_and_deriv(value, coef)
 
     @classmethod
     def _full_broadcast_inverse_reference(cls, value, coef, batch_shape=None):
         value, coef = cls._full_broadcast_args(value, coef, batch_shape)
-        return bs.inverse_transformation(value, coef)
+        return bs.inverse(value, coef)
 
     def _assert_roundtrip(
         self,
@@ -108,8 +108,8 @@ class TestBatchLayout:
         expected_shape,
         batch_shape=None,
     ):
-        fx, fxd = bs.transformation_and_deriv(value, coef, batch_shape=batch_shape)
-        fx_value = bs.transformation(value, coef, batch_shape=batch_shape)
+        fx, fxd = bs.evaluate_and_deriv(value, coef, batch_shape=batch_shape)
+        fx_value = bs.evaluate(value, coef, batch_shape=batch_shape)
 
         assert fx.shape == expected_shape
         assert fxd.shape == expected_shape
@@ -126,7 +126,7 @@ class TestBatchLayout:
         assert jnp.allclose(fx_value, fx_ref)
         assert jnp.allclose(fxd, fxd_ref)
 
-        x = bs.inverse_transformation(fx, coef, batch_shape=batch_shape)
+        x = bs.inverse(fx, coef, batch_shape=batch_shape)
         x_ref = self._full_broadcast_inverse_reference(
             fx, coef, batch_shape=batch_shape
         )
@@ -200,7 +200,7 @@ class TestBatchLayout:
         coef = jax.random.normal(jax.random.key(7), (2, knots.nparam))
         value = jnp.asarray([-8.0, -4.0, 0.0, 4.0, 8.0]).reshape((5, 1))
 
-        x = bs.inverse_transformation(value, coef, batch_shape=(2,))
+        x = bs.inverse(value, coef, batch_shape=(2,))
         x_ref = self._full_broadcast_inverse_reference(value, coef, batch_shape=(2,))
 
         assert x.shape == (5, 2)
@@ -211,7 +211,7 @@ class TestBatchLayout:
         value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1))
 
         def fn(value):
-            fx, fxd = bs.transformation_and_deriv(value, coef, batch_shape=(2,))
+            fx, fxd = bs.evaluate_and_deriv(value, coef, batch_shape=(2,))
             return jnp.sum(fx + 0.01 * fxd)
 
         primal, tangent = jax.jvp(fn, (value,), (jnp.ones_like(value),))
@@ -224,7 +224,7 @@ class TestBatchLayout:
         value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1))
 
         def fn(value):
-            fx = bs.transformation(value, coef, batch_shape=(2,))
+            fx = bs.evaluate(value, coef, batch_shape=(2,))
             return jnp.sum(fx)
 
         primal, tangent = jax.jvp(fn, (value,), (jnp.ones_like(value),))
@@ -237,7 +237,7 @@ class TestBatchLayout:
         value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1))
 
         def fn(coef):
-            fx, fxd = bs.transformation_and_deriv(value, coef, batch_shape=(2,))
+            fx, fxd = bs.evaluate_and_deriv(value, coef, batch_shape=(2,))
             return jnp.sum(fx + 0.01 * fxd)
 
         grad = jax.grad(fn)(coef)
@@ -250,7 +250,7 @@ class TestBatchLayout:
         value = jnp.linspace(-2.0, 2.0, 5).reshape((5, 1))
 
         def fn(coef):
-            fx = bs.transformation(value, coef, batch_shape=(2,))
+            fx = bs.evaluate(value, coef, batch_shape=(2,))
             return jnp.sum(fx)
 
         grad = jax.grad(fn)(coef)

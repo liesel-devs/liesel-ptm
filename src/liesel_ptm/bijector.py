@@ -211,7 +211,7 @@ def _onion_core_inverse_rows(
 
     def invert_row(row: tuple[Array, Array]) -> Array:
         value_row, coef_row = row
-        ygrid = bspline.transformation(xgrid, coef_row)
+        ygrid = bspline.evaluate(xgrid, coef_row)
         # h maps the core onto itself; pin the ends against rounding.
         ygrid = ygrid.at[0].set(lower).at[-1].set(upper)
         in_core = (value_row > lower) & (value_row < upper)
@@ -371,7 +371,7 @@ class SplineBijector(tfb.AutoCompositeTensorBijector):
 
     def _raw_value(self, y: Array) -> Array:
         y = jnp.asarray(y, dtype=self.dtype)
-        transf = self.bspline.transformation(
+        transf = self.bspline.evaluate(
             y, self.coef, batch_shape=self._coef_batch_shape()
         )
         return jnp.where(jnp.isnan(y), jnp.nan, transf)
@@ -379,7 +379,7 @@ class SplineBijector(tfb.AutoCompositeTensorBijector):
     def _raw_value_and_log_deriv(self, y: Array) -> tuple[Array, Array]:
         y = jnp.asarray(y, dtype=self.dtype)
         nan_mask = jnp.isnan(y)
-        transf, deriv = self.bspline.transformation_and_deriv(
+        transf, deriv = self.bspline.evaluate_and_deriv(
             y, self.coef, batch_shape=self._coef_batch_shape()
         )
         transf = jnp.where(nan_mask, jnp.nan, transf)
@@ -390,9 +390,7 @@ class SplineBijector(tfb.AutoCompositeTensorBijector):
 
     def _raw_inverse_value(self, z: Array) -> Array:
         z = jnp.asarray(z, dtype=self.dtype)
-        return self.bspline.inverse_transformation(
-            z, self.coef, batch_shape=self._coef_batch_shape()
-        )
+        return self.bspline.inverse(z, self.coef, batch_shape=self._coef_batch_shape())
 
     # Centering and scaling.
 

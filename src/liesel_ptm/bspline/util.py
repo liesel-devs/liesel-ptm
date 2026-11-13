@@ -306,20 +306,20 @@ class TransformationSpline:
 
         return inverse_rows[:B, :]
 
-    def transformation_and_deriv(
+    def evaluate_and_deriv(
         self,
         value: Array,
         coef: Array,
         batch_shape: tuple[int, ...] | None = None,
     ) -> tuple[Array, Array]:
         """
-        Evaluate the spline transformation h and its derivative h'.
+        Evaluate the monotone spline f and its derivative, f(x) and f'(x).
 
         Parameters
         ----------
         value
-            Values at which to evaluate. Leading axes are sample axes; trailing
-            axes broadcast against ``batch_shape``.
+            Values x at which to evaluate. Leading axes are sample axes;
+            trailing axes broadcast against ``batch_shape``.
         coef
             Unconstrained spline coefficients with shape
             ``batch_shape + (n_param,)``.
@@ -330,9 +330,9 @@ class TransformationSpline:
         Returns
         -------
         value
-            h at ``value``, with shape ``broadcast(value.shape, batch_shape)``.
+            f(x), with shape ``broadcast(value.shape, batch_shape)``.
         deriv
-            h' at ``value``, with the same shape.
+            f'(x), with the same shape.
         """
         batch_shape = self._resolve_batch_shape(coef, batch_shape)
         value, sample_shape, value_batch_shape, result_batch_shape = self._value_layout(
@@ -349,20 +349,20 @@ class TransformationSpline:
 
         return dot, deriv
 
-    def transformation(
+    def evaluate(
         self,
         value: Array,
         coef: Array,
         batch_shape: tuple[int, ...] | None = None,
     ) -> Array:
         """
-        Evaluate the spline transformation h.
+        Evaluate the monotone spline f at x, giving f(x).
 
         Parameters
         ----------
         value
-            Values at which to evaluate. Leading axes are sample axes; trailing
-            axes broadcast against ``batch_shape``.
+            Values x at which to evaluate. Leading axes are sample axes;
+            trailing axes broadcast against ``batch_shape``.
         coef
             Unconstrained spline coefficients with shape
             ``batch_shape + (n_param,)``.
@@ -373,7 +373,7 @@ class TransformationSpline:
         Returns
         -------
         value
-            h at ``value``, with shape ``broadcast(value.shape, batch_shape)``.
+            f(x), with shape ``broadcast(value.shape, batch_shape)``.
         """
         batch_shape = self._resolve_batch_shape(coef, batch_shape)
         value, sample_shape, value_batch_shape, result_batch_shape = self._value_layout(
@@ -387,23 +387,25 @@ class TransformationSpline:
 
         return self._from_batch_last(dot, result_batch_shape, sample_shape)
 
-    def inverse_transformation(
+    def inverse(
         self,
         value: Array,
         coef: Array,
         batch_shape: tuple[int, ...] | None = None,
     ) -> Array:
         """
-        Evaluate the inverse spline transformation h⁻¹.
+        Evaluate the inverse of the monotone spline f, giving f⁻¹(z).
 
-        The inverse is interpolated on a grid, so ``h(h⁻¹(z))`` matches ``z``
-        up to interpolation error.
+        The inverse is computed numerically: f is evaluated on a grid and
+        interpolated, so ``f(f⁻¹(z))`` matches ``z`` up to interpolation error.
+        [SplineBijector][liesel_ptm.SplineBijector] follows TFP's direction, so
+        the bijector's ``inverse`` evaluates f and its ``forward`` evaluates f⁻¹.
 
         Parameters
         ----------
         value
-            Values z at which to evaluate h⁻¹. Leading axes are sample axes; trailing
-            axes broadcast against ``batch_shape``.
+            Values z at which to evaluate f⁻¹. Leading axes are sample axes;
+            trailing axes broadcast against ``batch_shape``.
         coef
             Unconstrained spline coefficients with shape
             ``batch_shape + (n_param,)``.
@@ -414,7 +416,7 @@ class TransformationSpline:
         Returns
         -------
         value
-            h⁻¹ at ``value``, with shape ``broadcast(value.shape, batch_shape)``.
+            f⁻¹(z), with shape ``broadcast(value.shape, batch_shape)``.
         """
         batch_shape = self._resolve_batch_shape(coef, batch_shape)
         value, sample_shape, value_batch_shape, result_batch_shape = self._value_layout(
