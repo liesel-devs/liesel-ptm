@@ -69,20 +69,17 @@ Draw independent censoring times and observe whichever comes first.
 ``` python
 log_censor_time = rng.normal(loc=1.7, scale=0.65, size=n)
 
-event_observed = log_event_time <= log_censor_time
+censored = log_event_time > log_censor_time
 log_followup = np.minimum(log_event_time, log_censor_time)
 ```
 
 Encode each observation as a censoring record with
 [right_censored](../api/survival.md#liesel_ptm.survival_dist.right_censored).
-Where `event_observed` is true, the follow-up time is the exact log event time;
-elsewhere, it is a lower bound.
+Where `censored` is false, the follow-up time is the log event time; elsewhere,
+it is a lower bound.
 
 ``` python
-records = surv.right_censored(
-    log_followup,
-    event_observed=event_observed,
-)
+records = surv.right_censored(log_followup, censored=censored)
 data = pd.DataFrame({"x": x, "followup": np.exp(log_followup)})
 data["status"] = surv.censoring_status(records)
 ```
@@ -299,6 +296,8 @@ For left or interval censoring, encode the known log-time bounds with
 [interval_censored](../api/survival.md#liesel_ptm.survival_dist.interval_censored).
 To mix types, pass lower and upper bounds to
 [censored](../api/survival.md#liesel_ptm.survival_dist.censored): `-inf` and
-`inf` mark one-sided censoring, and matching bounds mark an exact time.
+`inf` mark one-sided censoring, and matching bounds mark an uncensored time.
 `PTM.from_censored` accepts any mix of record types; see the
-[censoring reference](../api/survival.md) for their layouts.
+[censoring reference](../api/survival.md) for their layouts. If the record types
+stay fixed, pass `cache=True` to evaluate only the contribution each record
+needs, which makes each likelihood evaluation several times faster.

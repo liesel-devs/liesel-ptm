@@ -119,7 +119,8 @@ class TestConstruction:
         assert model.response.value.shape == (6, 3)
         node = likelihood_node(model)
         assert isinstance(node, surv.CensoredDist)
-        assert node.censoring_records is None
+        assert not node.cache
+        assert node.init_dist().censoring_records is None
         assert isinstance(node.distribution, partial)
         assert node.distribution.func is surv.CensoredDistribution
         assert "censoring_records" not in node.distribution.keywords
@@ -285,7 +286,7 @@ class TestRecordValidation:
         with pytest.raises(ValueError, match="positive width"):
             ptm.PTM.from_censored(records, nshape=4)
 
-    def test_collapsed_interval_never_becomes_exact(self):
+    def test_collapsed_interval_never_becomes_uncensored(self):
         records = surv.censored(np.array([0.3, 1.0]), np.array([0.3, 1.0 + 1e-9]))
         assert surv.censoring_status(records).tolist() == [
             "uncensored",
@@ -396,7 +397,9 @@ class TestSummariesAndPlots:
         prediction = censored.predict(
             samples, predict=["loc", "scale", "shape"], newdata=newdata
         )
-        base = surv._uncensored_constructor(likelihood_node(censored).distribution)
+        node = likelihood_node(censored)
+        assert isinstance(node, surv.CensoredDist)
+        base = node.base_distribution
         event_times = tfd.TransformedDistribution(
             base(
                 coef=prediction["shape"][..., None, :],

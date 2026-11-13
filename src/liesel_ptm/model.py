@@ -15,7 +15,7 @@ from jax.typing import ArrayLike
 
 from .bspline import OnionKnots, OnionSpline, PTMSpline
 from .dist import LocScaleTransformationDist
-from .survival_dist import CensoredDist, censoring_status
+from .survival_dist import CensoredDist
 
 
 @dataclass
@@ -62,40 +62,12 @@ def _make_response(y: ArrayLike | Sequence[float] | lsl.Var) -> lsl.Var:
     return response
 
 
-def _check_record_structure(response: lsl.Var) -> None:
+def _check_record_shape(response: lsl.Var) -> None:
     records = np.asarray(response.value)
     if records.ndim != 2 or records.shape[-1] != 3 or not records.shape[0]:
         raise ValueError(
             "Censoring records must be a nonempty array with shape (n, 3) and "
             f"columns [time, lower, upper]; got shape {records.shape}."
-        )
-    invalid = np.flatnonzero(censoring_status(records) == "invalid")
-    if invalid.size:
-        raise ValueError(
-            "Censoring records have invalid missing-value patterns at row "
-            f"indices {', '.join(map(str, invalid[:5]))}"
-            f"{', ...' if invalid.size > 5 else ''}. Encode them with "
-            "liesel_ptm.survival_dist.censored() or a dedicated helper."
-        )
-
-
-def _check_interval_widths(response: lsl.Var) -> None:
-    # The likelihood converts records to the distribution dtype before
-    # evaluating intervals, which can collapse narrow bounds.
-    dist_node = response.dist_node
-    assert dist_node is not None
-    dtype = dist_node.init_dist().dtype
-    records = np.asarray(jnp.asarray(response.value, dtype=dtype))
-    interval = censoring_status(records) == "interval_censored"
-    collapsed = np.flatnonzero(interval & ~(records[:, 2] > records[:, 1]))
-    if collapsed.size:
-        raise ValueError(
-            "Interval-censored records must have positive width (upper > lower) "
-            f"in the likelihood dtype {np.dtype(dtype).name}; check row indices "
-            f"{', '.join(map(str, collapsed[:5]))}"
-            f"{', ...' if collapsed.size > 5 else ''}. Fix the bounds, "
-            "or rescale them or enable 64-bit JAX if a narrow interval lost its "
-            "width through precision."
         )
 
 
@@ -291,12 +263,13 @@ class PTM(lsl.Model):
         scale: gam.AdditivePredictor | None = None,
         shape: gam.MVAdditivePredictor | None = None,
         shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
+        cache: bool = False,
     ) -> Self:
         """Create a PTM for censored observations.
 
-        The likelihood uses densities for exact observations and probabilities
-        for censored ones. Predictors, priors and their defaults are those of
-        [PTM][liesel_ptm.PTM].
+        The likelihood uses densities for uncensored observations and
+        probabilities for censored ones. Predictors, priors and their defaults
+        are those of [PTM][liesel_ptm.PTM].
 
         Parameters
         ----------
@@ -309,6 +282,11 @@ class PTM(lsl.Model):
             such as [right_censored][liesel_ptm.survival_dist.right_censored].
         nshape, bounds, loc, scale, shape, shape_scale
             As in [PTM][liesel_ptm.PTM].
+        cache
+            Whether to cache each row's observation type, as in
+            [CensoredDist][liesel_ptm.survival_dist.CensoredDist]. The cache is
+            several times faster, but the response's row types must then stay
+            fixed.
 
         Returns
         -------
@@ -326,10 +304,12 @@ class PTM(lsl.Model):
 
         Notes
         -----
-        The response distribution is an uncached
-        [CensoredDist][liesel_ptm.survival_dist.CensoredDist]: record types are
-        re-read from the response value whenever it is evaluated, so the records
-        can be updated after construction. Their widths are only validated here.
+        The response distribution is a
+        [CensoredDist][liesel_ptm.survival_dist.CensoredDist]. Without the
+        cache, row types are re-read from the response value whenever it is
+        evaluated, so the records can change after construction. Records are
+        validated whenever the response distribution is updated with concrete
+        values.
 
         Summary and plotting functions accept `model.response` and use the
         uncensored distribution of the modeled response.
@@ -339,7 +319,7 @@ class PTM(lsl.Model):
         >>> import liesel_ptm as ptm
         >>> from liesel_ptm import survival_dist as surv
         >>> records = surv.right_censored(
-        ...     [0.4, -0.2, 1.3], event_observed=[True, False, True]
+        ...     [0.4, -0.2, 1.3], censored=[False, True, False]
         ... )
         >>> model = ptm.PTM.from_censored(records, nshape=4)
         >>> model.response.value.shape
@@ -357,6 +337,7 @@ class PTM(lsl.Model):
             shape=shape,
             shape_scale=shape_scale,
             censored=True,
+            cache=cache,
         )
         return model
 
@@ -371,11 +352,12 @@ class PTM(lsl.Model):
         shape: gam.MVAdditivePredictor | None,
         shape_scale: lsl.Var | gam.VarIGPrior | float | None,
         censored: bool,
+        cache: bool = False,
     ) -> None:
         _validate_geometry(nshape, bounds, minimum=2)
         response = _make_response(y)
         if censored:
-            _check_record_structure(response)
+            _check_record_shape(response)
         self.pred = _make_predictors(
             nshape, loc, scale, shape, shape_scale, legacy=False
         )
@@ -390,13 +372,10 @@ class PTM(lsl.Model):
             scaled=True,
         )
         if censored:
-            # Uncached, so record values and their types can change later.
-            distribution = CensoredDist.from_dist(distribution)
+            distribution = CensoredDist.from_dist(distribution, cache=cache)
         self.response = response
         with _response_distribution(self, response, distribution):
             super().__init__(response)
-            if censored:
-                _check_interval_widths(response)
 
 
 class PTMDist(lsl.Dist):

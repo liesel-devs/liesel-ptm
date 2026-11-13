@@ -14,7 +14,7 @@ from jax.typing import ArrayLike
 from numpy.typing import NDArray
 
 from .dist import LocScaleTransformationDist, TransformationDist
-from .survival_dist import _uncensored_constructor
+from .survival_dist import CensoredDist
 
 type DistInput = Callable[..., TransformationDist] | lsl.Var | lsl.Dist
 type NewData = gs.Position | Mapping[str, ArrayLike] | None
@@ -53,9 +53,10 @@ def _make_dist(
         if constructor.dist_node is None:
             raise TypeError("The supplied variable has no distribution.")
         constructor_fn = constructor.dist_node
-    if isinstance(constructor_fn, lsl.Dist):
+    if isinstance(constructor_fn, CensoredDist):
+        constructor_fn = constructor_fn.base_distribution
+    elif isinstance(constructor_fn, lsl.Dist):
         constructor_fn = constructor_fn.distribution
-    constructor_fn = _uncensored_constructor(constructor_fn)
 
     kwargs = {"coef": coef}
     dist_class = getattr(constructor_fn, "func", constructor_fn)
@@ -214,7 +215,11 @@ def _response_dist(
     if model is None:
         raise ValueError("The supplied response must belong to a built model.")
 
-    constructor = _uncensored_constructor(dist_node.distribution)
+    constructor = (
+        dist_node.base_distribution
+        if isinstance(dist_node, CensoredDist)
+        else dist_node.distribution
+    )
     dist_class = getattr(constructor, "func", constructor)
     if not (
         isinstance(dist_class, type) and issubclass(dist_class, TransformationDist)

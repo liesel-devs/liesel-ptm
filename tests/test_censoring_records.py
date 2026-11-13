@@ -40,21 +40,21 @@ class TestCensored:
             "interval_censored",
         ]
 
-    def test_explicit_event_flag_encodes_exact_observations(self):
-        assert_records(surv.censored(2.0, 2.0, event_observed=True), [2.0, NAN, NAN])
+    def test_explicit_flag_encodes_uncensored_observations(self):
+        assert_records(surv.censored(2.0, 2.0, censored=False), [2.0, NAN, NAN])
 
     @pytest.mark.parametrize("upper", [3.0, INF])
-    def test_event_flag_requires_matching_finite_bounds(self, upper):
+    def test_uncensored_flag_requires_matching_finite_bounds(self, upper):
         with pytest.raises(ValueError, match="matching finite bounds"):
-            surv.censored(2.0, upper, event_observed=True)
+            surv.censored(2.0, upper, censored=False)
         with pytest.raises(ValueError, match="matching finite bounds"):
-            surv.censored(INF, INF, event_observed=True)
+            surv.censored(INF, INF, censored=False)
 
     def test_censoring_flag_never_promotes_equal_bounds(self):
         with pytest.raises(ValueError, match="lower < upper"):
-            surv.censored(2.0, 2.0, event_observed=False)
+            surv.censored(2.0, 2.0, censored=True)
         assert_records(
-            surv.censored([1.0, -INF], [2.0, 3.0], event_observed=False),
+            surv.censored([1.0, -INF], [2.0, 3.0], censored=True),
             [[NAN, 1.0, 2.0], [NAN, NAN, 3.0]],
         )
 
@@ -78,26 +78,26 @@ class TestCensored:
     @pytest.mark.parametrize(
         "mask",
         [
-            np.array([True, False, False]),
-            np.array([1, 0, 0]),
-            np.array([1.0, 0.0, 0.0]),
-            [True, False, False],
+            np.array([False, True, True]),
+            np.array([0, 1, 1]),
+            np.array([0.0, 1.0, 1.0]),
+            [False, True, True],
         ],
     )
     def test_accepts_boolean_and_zero_one_masks(self, mask):
-        records = surv.censored([1.0, 1.0, -INF], [1.0, 2.0, 0.5], event_observed=mask)
+        records = surv.censored([1.0, 1.0, -INF], [1.0, 2.0, 0.5], censored=mask)
         assert_records(records, [[1.0, NAN, NAN], [NAN, 1.0, 2.0], [NAN, NAN, 0.5]])
 
     @pytest.mark.parametrize("mask", [np.array([2, 0]), np.array([0.5, 1.0]), "yes"])
     def test_rejects_non_binary_masks(self, mask):
-        with pytest.raises(ValueError, match="event_observed"):
-            surv.censored([1.0, 1.0], [1.0, 2.0], event_observed=mask)
+        with pytest.raises(ValueError, match="censored must"):
+            surv.censored([1.0, 1.0], [1.0, 2.0], censored=mask)
 
     def test_broadcasts_bounds_and_mask(self):
         records = surv.censored(
             jnp.array([[0.0], [1.0]]),
             jnp.array([1.0, 1.0]),
-            event_observed=np.array([[False], [True]]),
+            censored=np.array([[True], [False]]),
         )
         assert records.shape == (2, 2, 3)
         assert surv.censoring_status(records).tolist() == [
@@ -174,8 +174,8 @@ class TestDedicatedHelpers:
             (surv.left_censored, "left_censored"),
         ],
     )
-    def test_observed_rows_use_value_as_exact_observation(self, helper, censored_label):
-        records = helper(jnp.array([1.0, 2.0, 3.0]), event_observed=[1, 0, 1])
+    def test_uncensored_rows_use_value_as_observation(self, helper, censored_label):
+        records = helper(jnp.array([1.0, 2.0, 3.0]), censored=[0, 1, 0])
         assert_records(records[0], [1.0, NAN, NAN])
         assert_records(records[2], [3.0, NAN, NAN])
         assert surv.censoring_status(records).tolist() == [
@@ -186,12 +186,12 @@ class TestDedicatedHelpers:
 
     def test_scalar_flag_broadcasts_over_values(self):
         assert surv.censoring_status(
-            surv.right_censored([1.0, 2.0], event_observed=True)
+            surv.right_censored([1.0, 2.0], censored=False)
         ).tolist() == ["uncensored", "uncensored"]
 
     def test_mask_broadcasts_with_values(self):
         records = surv.right_censored(
-            jnp.array([1.0, 2.0]), event_observed=np.array([[True], [False]])
+            jnp.array([1.0, 2.0]), censored=np.array([[False], [True]])
         )
         assert surv.censoring_status(records).tolist() == [
             ["uncensored", "uncensored"],
@@ -200,7 +200,7 @@ class TestDedicatedHelpers:
 
     def test_traced_mask_is_supported(self):
         records = jax.jit(surv.right_censored)(
-            jnp.array([1.0, 2.0]), event_observed=jnp.array([True, False])
+            jnp.array([1.0, 2.0]), censored=jnp.array([False, True])
         )
         assert surv.censoring_status(records).tolist() == [
             "uncensored",
@@ -208,17 +208,15 @@ class TestDedicatedHelpers:
         ]
 
     @pytest.mark.parametrize("helper", [surv.right_censored, surv.left_censored])
-    def test_observed_rows_must_be_finite(self, helper):
+    def test_uncensored_rows_must_be_finite(self, helper):
         with pytest.raises(ValueError, match="finite"):
-            helper([1.0, INF], event_observed=[False, True])
+            helper([1.0, INF], censored=[True, False])
 
-    def test_interval_helper_requires_matching_bounds_for_observed_rows(self):
-        records = surv.interval_censored(
-            [1.0, 0.0], [1.0, 2.0], event_observed=[True, False]
-        )
+    def test_interval_helper_requires_matching_bounds_for_uncensored_rows(self):
+        records = surv.interval_censored([1.0, 0.0], [1.0, 2.0], censored=[False, True])
         assert_records(records, [[1.0, NAN, NAN], [NAN, 0.0, 2.0]])
         with pytest.raises(ValueError, match="matching finite bounds"):
-            surv.interval_censored([1.0], [2.0], event_observed=True)
+            surv.interval_censored([1.0], [2.0], censored=False)
 
     @pytest.mark.parametrize("lower,upper", [(1.0, 1.0), (2.0, 1.0), (NAN, 1.0)])
     def test_interval_helper_requires_positive_width(self, lower, upper):
@@ -237,16 +235,16 @@ class TestDedicatedHelpers:
     @pytest.mark.parametrize(
         "call",
         [
-            lambda: surv.right_censored([1.0], event_observed=[2]),
+            lambda: surv.right_censored([1.0], censored=[2]),
             lambda: surv.left_censored(
                 [1.0],
-                event_observed=None,  # ty: ignore[invalid-argument-type]
+                censored=None,  # ty: ignore[invalid-argument-type]
             ),
-            lambda: surv.interval_censored([1.0], [2.0], event_observed=[0.3]),
+            lambda: surv.interval_censored([1.0], [2.0], censored=[0.3]),
         ],
     )
     def test_rejects_invalid_flags(self, call):
-        with pytest.raises(ValueError, match="event_observed"):
+        with pytest.raises(ValueError, match="censored must"):
             call()
 
 

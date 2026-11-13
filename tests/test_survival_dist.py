@@ -10,13 +10,9 @@ from liesel_ptm.bspline.ptm import PTMKnots, PTMSpline
 from liesel_ptm.dist import LocScaleTransformationDist
 from liesel_ptm.survival_dist import (
     CensoredDistribution,
-    IntervalCensoredDistribution,
-    LeftCensoredDistribution,
-    RightCensoredDistribution,
     interval_censored,
     left_censored,
     right_censored,
-    setup_censored_vars,
     uncensored,
 )
 
@@ -226,30 +222,6 @@ class TestCensoredDistributionApi:
                 loc=0.0,
                 scale=1.0,
             )
-
-    def test_specialized_distribution_shapes(self):
-        left = LeftCensoredDistribution(
-            tfd.Normal, loc=jnp.zeros((2,)), scale=jnp.ones((2,))
-        )
-        right = RightCensoredDistribution(
-            tfd.Normal, loc=jnp.zeros((2,)), scale=jnp.ones((2,))
-        )
-        interval = IntervalCensoredDistribution(
-            tfd.Normal, loc=jnp.zeros((2,)), scale=jnp.ones((2,))
-        )
-
-        assert left.event_shape == ()
-        assert right.event_shape == ()
-        assert interval.event_shape == (2,)
-        assert left.batch_shape == (2,)
-        assert right.batch_shape == (2,)
-        assert interval.batch_shape == (2,)
-
-    def test_specialized_sample_is_not_defined_for_bounds(self):
-        dist = RightCensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
-
-        with pytest.raises(NotImplementedError, match="base_distribution"):
-            dist.sample(seed=jax.random.key(1))
 
 
 class TestCensoredDistributionCorrectness:
@@ -629,21 +601,6 @@ class TestCensoredDistributionCorrectness:
             rtol=5e-4,
         )
 
-    def test_specialized_distributions_match_base_formulas(self):
-        base = tfd.Normal(loc=0.0, scale=1.0)
-        left = LeftCensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
-        right = RightCensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
-        interval = IntervalCensoredDistribution(tfd.Normal, loc=0.0, scale=1.0)
-        value = jnp.array([-1.0, 0.0, 1.0])
-        interval_value = jnp.stack((value - 0.5, value + 0.5), axis=-1)
-
-        assert jnp.allclose(left.log_prob(value), base.log_cdf(value))
-        assert jnp.allclose(right.log_prob(value), base.log_survival_function(value))
-        assert jnp.allclose(
-            interval.log_prob(interval_value),
-            jnp.log(base.cdf(value + 0.5) - base.cdf(value - 0.5)),
-        )
-
     def test_cached_mode_skips_unused_branches(self):
         left_records = left_censored(jnp.array([-1.0, 0.0]))
         right_records = right_censored(jnp.array([0.0, 1.0]))
@@ -663,21 +620,12 @@ class TestCensoredDistributionCorrectness:
         assert jnp.all(jnp.isfinite(right.log_prob(right_records)))
         assert jnp.all(jnp.isfinite(uncensored_dist.log_prob(uncensored_records)))
 
-    def test_specialized_distributions_do_not_evaluate_uncensored_branch(self):
-        left = LeftCensoredDistribution(BranchSentinelDistribution)
-        right = RightCensoredDistribution(BranchSentinelDistribution)
-        interval = IntervalCensoredDistribution(BranchSentinelDistribution)
-
-        assert jnp.isfinite(left.log_prob(0.0))
-        assert jnp.isfinite(right.log_prob(0.0))
-        assert jnp.isfinite(interval.log_prob(jnp.array([-1.0, 1.0])))
-
     def test_log_tail_fallbacks_preserve_zero_probability(self):
-        left = LeftCensoredDistribution(ProbabilityFallbackDistribution)
-        right = RightCensoredDistribution(ProbabilityFallbackDistribution)
+        dist = CensoredDistribution(ProbabilityFallbackDistribution)
+        values = jnp.array([-1.0, 1.0])
 
-        left_log_prob = left.log_prob(jnp.array([-1.0, 1.0]))
-        right_log_prob = right.log_prob(jnp.array([-1.0, 1.0]))
+        left_log_prob = dist.log_prob(left_censored(values))
+        right_log_prob = dist.log_prob(right_censored(values))
 
         assert jnp.isneginf(left_log_prob[0])
         assert jnp.allclose(left_log_prob[1], jnp.log(0.25))
@@ -895,17 +843,6 @@ class TestCensoredDistributionJaxCompatibility:
         assert grad.shape == coef.shape
         assert jnp.all(jnp.isfinite(grad))
 
-    def test_jit_and_grad_specialized_right_censoring(self):
-        values = jnp.array([-1.0, 0.0, 1.0])
-
-        def objective(loc):
-            dist = RightCensoredDistribution(tfd.Normal, loc=loc, scale=1.0)
-            return jnp.sum(jax.jit(dist.log_prob)(values))
-
-        grad = jax.grad(objective)(jnp.array(0.0))
-
-        assert jnp.isfinite(grad)
-
 
 class TestCensoredDistributionNumericalStability:
     def test_extreme_one_sided_censoring_has_no_nan(self):
@@ -924,7 +861,7 @@ class TestCensoredDistributionNumericalStability:
         knots = PTMKnots(-4.0, 4.0, nparam=10)
         bspline = PTMSpline(knots.knots)
         coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
-        dist = RightCensoredDistribution(
+        dist = CensoredDistribution(
             LocScaleTransformationDist,
             coef=coef,
             loc=0.0,
@@ -933,7 +870,7 @@ class TestCensoredDistributionNumericalStability:
         )
         values = jnp.array([8.0, 10.0, 20.0])
 
-        log_prob = dist.log_prob(values)
+        log_prob = dist.log_prob(right_censored(values))
 
         assert_no_nan(log_prob)
         assert jnp.all(jnp.isfinite(log_prob))
@@ -991,193 +928,3 @@ class TestCensoredTransformationDistNode:
         assert isinstance(dist, CensoredDistribution)
         assert isinstance(dist.base_distribution, LocScaleTransformationDist)
         assert dist.log_prob(uncensored(0.0)).shape == ()
-
-
-class TestSetupCensoredVars:
-    def test_splits_record_values_and_specializes_likelihoods(self):
-        records = jnp.array(
-            [
-                [0.0, jnp.nan, jnp.nan],
-                [jnp.nan, jnp.nan, -1.0],
-                [jnp.nan, 1.0, jnp.nan],
-                [jnp.nan, -1.0, 1.0],
-            ]
-        )
-        loc = lsl.Var.new_obs(jnp.array([0.0, 1.0, 2.0, 3.0]), name="loc")
-        scale = lsl.Var.new_obs(jnp.ones(4), name="scale")
-        dist = lsl.Dist(
-            partial(CensoredDistribution, distribution=tfd.Normal),
-            loc=loc,
-            scale=scale,
-        )
-        response = lsl.Var.new_obs(records, dist, name="response")
-
-        split = setup_censored_vars(response)
-        assert split.uncensored.dist_node is not None
-        assert split.left_censored.dist_node is not None
-        assert split.right_censored.dist_node is not None
-        assert split.interval_censored.dist_node is not None
-
-        assert jnp.allclose(split.uncensored.value, jnp.array([0.0]))
-        assert jnp.allclose(split.left_censored.value, jnp.array([-1.0]))
-        assert jnp.allclose(split.right_censored.value, jnp.array([1.0]))
-        assert jnp.allclose(split.interval_censored.value, jnp.array([[-1.0, 1.0]]))
-
-        assert isinstance(split.uncensored.dist_node.init_dist(), tfd.Normal)
-        assert isinstance(
-            split.left_censored.dist_node.init_dist(), LeftCensoredDistribution
-        )
-        assert isinstance(
-            split.right_censored.dist_node.init_dist(), RightCensoredDistribution
-        )
-        assert isinstance(
-            split.interval_censored.dist_node.init_dist(),
-            IntervalCensoredDistribution,
-        )
-
-        assert jnp.allclose(
-            split.uncensored.dist_node.kwinputs["loc"].value, jnp.array([0.0])
-        )
-        assert jnp.allclose(
-            split.left_censored.dist_node.kwinputs["loc"].value, jnp.array([1.0])
-        )
-        assert jnp.allclose(
-            split.right_censored.dist_node.kwinputs["loc"].value, jnp.array([2.0])
-        )
-        assert jnp.allclose(
-            split.interval_censored.dist_node.kwinputs["loc"].value, jnp.array([3.0])
-        )
-
-    def test_split_likelihood_matches_mixed_likelihood_sum(self):
-        records = jnp.array(
-            [
-                [0.0, jnp.nan, jnp.nan],
-                [jnp.nan, jnp.nan, -1.0],
-                [jnp.nan, 1.0, jnp.nan],
-                [jnp.nan, -1.0, 1.0],
-            ]
-        )
-        dist = lsl.Dist(
-            partial(CensoredDistribution, distribution=tfd.Normal),
-            loc=0.0,
-            scale=1.0,
-        )
-        response = lsl.Var.new_obs(records, dist, name="response")
-        split = setup_censored_vars(response)
-        assert response.dist_node is not None
-        assert split.uncensored.dist_node is not None
-        assert split.left_censored.dist_node is not None
-        assert split.right_censored.dist_node is not None
-        assert split.interval_censored.dist_node is not None
-
-        mixed_log_prob = response.dist_node.init_dist().log_prob(response.value)
-        split_log_prob = (
-            jnp.sum(
-                split.uncensored.dist_node.init_dist().log_prob(split.uncensored.value)
-            )
-            + jnp.sum(
-                split.left_censored.dist_node.init_dist().log_prob(
-                    split.left_censored.value
-                )
-            )
-            + jnp.sum(
-                split.right_censored.dist_node.init_dist().log_prob(
-                    split.right_censored.value
-                )
-            )
-            + jnp.sum(
-                split.interval_censored.dist_node.init_dist().log_prob(
-                    split.interval_censored.value
-                )
-            )
-        )
-
-        assert jnp.allclose(split_log_prob, jnp.sum(mixed_log_prob))
-
-    def test_splits_censored_ptm_dist_and_preserves_base_kwargs(self):
-        knots = PTMKnots(-4.0, 4.0, nparam=10)
-        coef = jax.random.normal(jax.random.key(1), (knots.nparam,))
-        bspline = PTMSpline(knots.knots)
-        loc = lsl.Var.new_param(0.0, name="loc")
-        scale = lsl.Var.new_param(1.0, name="scale")
-        shape = lsl.Var.new_param(coef, name="shape")
-        bspline_value = lsl.Value(bspline, convert=lambda value: value)
-        records = jnp.array(
-            [
-                [0.0, jnp.nan, jnp.nan],
-                [jnp.nan, jnp.nan, -1.0],
-                [jnp.nan, 1.0, jnp.nan],
-                [jnp.nan, -1.0, 1.0],
-            ]
-        )
-        dist = lsl.Dist(
-            partial(CensoredDistribution, distribution=LocScaleTransformationDist),
-            loc=loc,
-            scale=scale,
-            coef=shape,
-            bspline=bspline_value,
-            gauss_legendre_order=4,
-        )
-        response = lsl.Var.new_obs(records, dist, name="response")
-
-        split = setup_censored_vars(response)
-        assert response.dist_node is not None
-        assert split.uncensored.dist_node is not None
-        assert split.left_censored.dist_node is not None
-        assert split.right_censored.dist_node is not None
-        assert split.interval_censored.dist_node is not None
-
-        assert isinstance(
-            split.uncensored.dist_node.init_dist(), LocScaleTransformationDist
-        )
-        left_dist = split.left_censored.dist_node.init_dist()
-        assert isinstance(left_dist, LeftCensoredDistribution)
-        assert isinstance(left_dist.base_distribution, LocScaleTransformationDist)
-        assert split.uncensored.dist_node.kwinputs["bspline"].value is bspline
-        assert split.left_censored.dist_node.kwinputs["bspline"].value is bspline
-
-        mixed_log_prob = response.dist_node.init_dist().log_prob(response.value)
-        split_log_prob = (
-            jnp.sum(
-                split.uncensored.dist_node.init_dist().log_prob(split.uncensored.value)
-            )
-            + jnp.sum(
-                split.left_censored.dist_node.init_dist().log_prob(
-                    split.left_censored.value
-                )
-            )
-            + jnp.sum(
-                split.right_censored.dist_node.init_dist().log_prob(
-                    split.right_censored.value
-                )
-            )
-            + jnp.sum(
-                split.interval_censored.dist_node.init_dist().log_prob(
-                    split.interval_censored.value
-                )
-            )
-        )
-
-        assert jnp.allclose(split_log_prob, jnp.sum(mixed_log_prob), atol=1e-4)
-
-    def test_empty_censoring_type_returns_none_var(self):
-        records = uncensored(jnp.array([0.0, 1.0]))
-        dist = lsl.Dist(
-            partial(CensoredDistribution, distribution=tfd.Normal),
-            loc=0.0,
-            scale=1.0,
-        )
-        response = lsl.Var.new_obs(records, dist, name="response")
-
-        split = setup_censored_vars(response)
-
-        assert jnp.allclose(split.uncensored.value, jnp.array([0.0, 1.0]))
-        assert split.left_censored.value is None
-        assert split.right_censored.value is None
-        assert split.interval_censored.value is None
-
-    def test_setup_censored_vars_rejects_non_matrix_records(self):
-        response = lsl.Var.new_obs(jnp.ones((2, 2, 3)), name="response")
-
-        with pytest.raises(ValueError, match="shape \\(n, 3\\)"):
-            setup_censored_vars(response)
