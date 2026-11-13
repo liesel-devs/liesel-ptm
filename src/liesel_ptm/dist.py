@@ -348,9 +348,6 @@ class TransformationDist(tfd.Distribution):
         """
         return self._spline_bijector
 
-    def _broadcast_to_batch(self, value: Array) -> Array:
-        return jnp.broadcast_to(jnp.asarray(value), self._batch_shape_tuple())
-
     # The bijector evaluates the spline with the coefficients' own batch shape.
     # With the full batch shape, per-observation parametric parameters would
     # broadcast shared coefficients to one copy per observation, and the inverse
@@ -362,13 +359,6 @@ class TransformationDist(tfd.Distribution):
             value, self._batch_shape_tuple()
         )
         return sample_shape + result_batch_shape
-
-    def _broadcast_tfp_value(self, value: Array) -> Array:
-        value = jnp.asarray(value, dtype=self.dtype)
-        _, sample_shape, _, result_batch_shape = self.bspline._tfp_value_layout(
-            value, self._batch_shape_tuple()
-        )
-        return jnp.broadcast_to(value, sample_shape + result_batch_shape)
 
     def _response_moments(self, order: int | None = None) -> tuple[Array, Array]:
         """Integrate complete response quantiles, separately from spline normalization.

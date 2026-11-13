@@ -69,9 +69,6 @@ def equidistant_knots(
     return knots
 
 
-kn = equidistant_knots
-
-
 @partial(jit, static_argnames="order")
 def _build_basis_vector(x: Array, knots: Array, order: int) -> Array:
     """
@@ -389,14 +386,6 @@ class BSplineApprox:
             )
 
         return jnp.einsum("...nj,...nj->...n", basis, coef)
-
-    def _compute_basis(self, x: Array) -> jax.Array:
-        return bspline_basis(x, self.knots, self.order) @ self.postmultiply_by
-
-    def _compute_basis_and_deriv(self, x: Array) -> tuple[jax.Array, jax.Array]:
-        basis = bspline_basis(x, self.knots, self.order) @ self.postmultiply_by
-        deriv = bspline_basis_deriv(x, self.knots, self.order) @ self.postmultiply_by
-        return basis, deriv
 
     def _compute_basis_and_deriv2(
         self, x: Array
