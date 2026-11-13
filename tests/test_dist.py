@@ -174,24 +174,36 @@ class TestBaseTransformationDist:
         assert dist.mean().shape == (2,)
         assert dist.stddev().shape == (2,)
 
-    def test_spline_only_public_methods_use_tfp_layout(self):
+    def test_spline_bijector_gives_spline_only_distribution(self):
         coef = jax.random.normal(jax.random.key(1), (2, knots.nparam))
         dist = ptm.TransformationDist(coef=coef, bspline=bs)
+        spline_dist = tfd.TransformedDistribution(
+            dist.reference_distribution, dist.spline_bijector
+        )
 
         value = jnp.ones((5, 1))
-        log_prob = dist.log_prob_spline(value)
-        prob = dist.prob_spline(value)
-        cdf = dist.cdf_spline(value)
+        z, logdet = dist.transformation_and_logdet_spline(value)
+        log_prob = spline_dist.log_prob(value)
+        prob = spline_dist.prob(value)
+        cdf = spline_dist.cdf(value)
 
         assert log_prob.shape == (5, 2)
         assert prob.shape == (5, 2)
         assert cdf.shape == (5, 2)
         assert jnp.allclose(prob, jnp.exp(log_prob))
+        assert jnp.allclose(log_prob, dist.reference_distribution.log_prob(z) + logdet)
+        assert jnp.allclose(cdf, dist.reference_distribution.cdf(z))
 
         probs = jnp.linspace(0.1, 0.9, 10).reshape(5, 2)
-        quantiles = dist.quantile_spline(probs)
+        quantiles = spline_dist.quantile(probs)
         assert quantiles.shape == (5, 2)
-        assert jnp.allclose(dist.cdf_spline(quantiles), probs, atol=1e-4)
+        assert jnp.allclose(
+            quantiles,
+            dist.inverse_transformation_spline(
+                dist.reference_distribution.quantile(probs)
+            ),
+        )
+        assert jnp.allclose(spline_dist.cdf(quantiles), probs, atol=1e-4)
 
     def test_coefficient_validation(self):
         coef_list = [0.0] * knots.nparam
@@ -1008,7 +1020,7 @@ class TestSplineCoefBatchShape:
     @pytest.mark.parametrize("method", ["log_prob", "quantile"])
     def test_coef_is_not_broadcast_to_observations(self, spline, method):
         coef = 0.3 * jnp.ones(10)
-        n_coef = spline._compute_tfp_coef_for_eval(coef).shape[-1]
+        n_coef = spline._constrained_coef(coef).shape[-1]
         value = jnp.full(self.n, 0.3)
 
         def fn(coef):
@@ -1030,16 +1042,21 @@ class TestSplineCoefBatchShape:
         y = jnp.linspace(-3.0, 3.0, self.n)
         probs = jnp.linspace(0.05, 0.95, self.n)
 
-        for method, value in [
-            ("log_prob", y),
-            ("cdf", y),
-            ("log_prob_spline", y),
-            ("quantile", probs),
-            ("quantile_spline", probs),
+        def spline_only(dist):
+            return tfd.TransformedDistribution(
+                dist.reference_distribution, dist.spline_bijector
+            )
+
+        for method, fn, value in [
+            ("log_prob", lambda d, v: d.log_prob(v), y),
+            ("cdf", lambda d, v: d.cdf(v), y),
+            ("spline log_prob", lambda d, v: spline_only(d).log_prob(v), y),
+            ("quantile", lambda d, v: d.quantile(v), probs),
+            ("spline quantile", lambda d, v: spline_only(d).quantile(v), probs),
         ]:
             np.testing.assert_allclose(
-                getattr(shared, method)(value),
-                getattr(repeated, method)(value),
+                fn(shared, value),
+                fn(repeated, value),
                 rtol=1e-5,
                 atol=1e-5,
                 err_msg=method,
@@ -1050,7 +1067,5 @@ class TestSplineCoefBatchShape:
 
         z, logdet = dist.transformation_and_logdet_spline(0.5)
         assert z.shape == logdet.shape == (self.n,)
-        for method in ["log_prob_spline", "cdf_spline", "quantile_spline"]:
-            assert getattr(dist, method)(0.5).shape == (self.n,), method
         assert dist.inverse_transformation_spline(0.5).shape == (self.n,)
         assert dist.sample(3, seed=jax.random.key(4)).shape == (3, self.n)

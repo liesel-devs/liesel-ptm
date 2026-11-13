@@ -7,10 +7,12 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from jax.tree_util import Partial as partial
 
 from .approx import BSplineApprox, bspline_basis, equidistant_knots
 from .util import TransformationSpline
+
+# Slope of the identity tails; the tail transitions move towards it.
+_TAIL_SLOPE = 1.0
 
 
 class PTMKnots:
@@ -114,109 +116,45 @@ def normalization_coef_log(shape: Array, dknots: Array) -> Array:
     return corrected_coef
 
 
-class PTMCoef:
-    def __init__(self, knots: Array) -> None:
-        """
-        Initialize PTMCoef functionality with spline knots.
+def get_ptm_coef_fn(knots: Array) -> Callable[[Array], Array]:
+    """
+    Get the function that computes PTM spline coefficients.
 
-        Assumes knots were created for a cubic spline.
+    Assumes knots were created for a cubic spline.
 
-        Parameters
-        ----------
-        knots
-            Spline knot sequence for a cubic spline.
+    Parameters
+    ----------
+    knots
+        Spline knot sequence for a cubic spline.
 
-        Attributes
-        ----------
-        knots
-            Array of spline knots.
-        k1
-            Value of knots[3].
-        B
-            Basis matrix for cumulative sum.
-        B0
-            Basis matrix at zero for cumulative sum.
-        step
-            Step size between knots.
-        """
-        self.knots = knots
-        self.k1 = knots[3]
-        B = bspline_basis(jnp.atleast_1d(knots[3]), knots, 3)
-        B0 = bspline_basis(jnp.zeros(1), knots, 3)
-        S = jnp.tril(jnp.ones((B.shape[-1], B.shape[-1])))  # for cumulative sum
-        self.B = B @ S
-        self.B0 = B0 @ S
+    Returns
+    -------
+    compute_coef
+        Function that maps log increments with shape ``(..., nparam)`` to
+        cumulative-sum spline coefficients with shape ``(..., nparam + 1)``.
+        The spline has average slope one and passes through ``knots[3]`` at
+        ``knots[3]``.
+    """
+    k1 = knots[3]
+    B = bspline_basis(jnp.atleast_1d(knots[3]), knots, 3)
+    S = jnp.tril(jnp.ones((B.shape[-1], B.shape[-1])))  # for cumulative sum
+    B = B @ S
+    step = jnp.diff(knots).mean()
 
-        self.step = jnp.diff(knots).mean()
-
-    def _add_intercept_and_exponentiate(self, log_increments, intercept, log_slope):
-        """
-        Add intercept and exponentiate log increments.
-        """
+    def compute_row(log_increments: Array) -> Array:
+        log_increments = normalization_coef_log(log_increments, step)
         exp_coef = jnp.exp(log_increments)
         prelim_coef = jnp.concatenate((jnp.zeros(1), exp_coef), axis=-1)
-        offset = (self.B @ prelim_coef) - self.k1
+        offset = (B @ prelim_coef) - k1
+        return jnp.concatenate((-offset, exp_coef), axis=-1)
 
-        full_coef = jnp.concatenate((-offset + intercept, exp_coef), axis=-1)
+    def compute_coef(log_increments: Array) -> Array:
+        leading_shape = jnp.shape(log_increments)[:-1]
+        rows = jnp.reshape(log_increments, (-1, jnp.shape(log_increments)[-1]))
+        coef = jax.vmap(compute_row)(rows)
+        return jnp.reshape(coef, leading_shape + coef.shape[-1:])
 
-        fx_at_zero = self.B0 @ full_coef
-
-        coef2 = jnp.exp(log_increments + log_slope)
-        full_coef2 = jnp.concatenate((-offset + intercept, coef2), axis=-1)
-
-        fx_at_zero2 = self.B0 @ full_coef2
-
-        diff_at_zero = (fx_at_zero2 - fx_at_zero).squeeze()
-        coef3 = full_coef2.at[..., 0].set(full_coef2[..., 0] - diff_at_zero)
-
-        return coef3
-
-    def get_ptm_fn(self) -> Callable[[Array, Array, Array], Array]:
-        """
-        Get function to compute PTM spline coefficients.
-        """
-        nparam = len(self.knots) - 4 - 1
-        zeros = jnp.zeros((nparam,))
-
-        add_intercept_and_exponentiate = jax.vmap(self._add_intercept_and_exponentiate)
-
-        def compute_coef(log_increments, intercept, log_slope):
-            log_increments = jnp.atleast_2d(log_increments + zeros)
-            intercept = jnp.expand_dims(jnp.atleast_1d(intercept), -1)
-            log_slope = jnp.expand_dims(jnp.atleast_1d(log_slope), -1)
-
-            log_increments_slope_one = jax.vmap(normalization_coef_log, (0, None))(
-                log_increments, self.step
-            )
-            full_coef = add_intercept_and_exponentiate(
-                log_increments_slope_one, intercept, log_slope
-            )
-            return full_coef
-
-        return compute_coef
-
-    def get_ptm_fn_squeeze(self) -> Callable[[Array, Array, Array], Array]:
-        """
-        Get function to compute PTM spline coefficients preserving leading axes.
-        """
-        fn = self.get_ptm_fn()
-
-        def compute_coef(log_increments, intercept, log_slope):
-            leading_shape = jnp.shape(log_increments)[:-1]
-            nparam = jnp.shape(log_increments)[-1]
-
-            flat_log_increments = jnp.reshape(log_increments, (-1, nparam))
-            flat_intercept = jnp.reshape(
-                jnp.broadcast_to(intercept, leading_shape), (-1,)
-            )
-            flat_log_slope = jnp.reshape(
-                jnp.broadcast_to(log_slope, leading_shape), (-1,)
-            )
-
-            full_coef = fn(flat_log_increments, flat_intercept, flat_log_slope)
-            return jnp.reshape(full_coef, leading_shape + full_coef.shape[-1:])
-
-        return compute_coef
+    return compute_coef
 
 
 class PTMSpline(TransformationSpline):
@@ -264,8 +202,6 @@ class PTMSpline(TransformationSpline):
         if eps < 1e-6:
             raise ValueError(f"{eps=} is < 1e-6; that is numerically unstable.")
 
-        self.n_chunks = 1024
-        self.supports_rowwise_coef = False
         self.knots = knots
         self._knots_np = np.asarray(jax.device_get(knots), dtype=float)
 
@@ -282,9 +218,7 @@ class PTMSpline(TransformationSpline):
             int(self.bspline.knots[-1] - self.bspline.knots[0]) * 100
         )
 
-        self._compute_coef = jax.jit(
-            partial(PTMCoef(knots).get_ptm_fn_squeeze(), intercept=0.0, log_slope=0.0)
-        )
+        self._compute_coef = jax.jit(get_ptm_coef_fn(knots))
 
         if continue_linearly:
             eps = 100000.0
@@ -292,12 +226,6 @@ class PTMSpline(TransformationSpline):
         self.transition_width = eps * (self.max_knot - self.min_knot)
         self.min_eps = self.min_knot - self.transition_width
         self.max_eps = self.max_knot + self.transition_width
-
-        def target_slope(coef):
-            return 1.0
-
-        self._target_slope_left = target_slope
-        self._target_slope_right = target_slope
 
         self._boundaries = jnp.array([self.min_knot, self.max_knot])
 
@@ -336,128 +264,115 @@ class PTMSpline(TransformationSpline):
         knots = PTMKnots(a, b, nparam=nparam).knots
         return cls(knots, eps=eps, continue_linearly=continue_linearly)
 
-    def _left_transition_and_deriv(self, x, coef, value_left, deriv_left):
+    def _left_transition_and_deriv(self, x, value_left, deriv_left):
         """
         Compute left transition value and derivative.
         """
         poly = x * self.min_knot - 0.5 * x * x
 
-        target_slope_left = self._target_slope_left(coef)
-
-        unsh = (target_slope_left / self.transition_width) * poly + deriv_left * (
+        unsh = (_TAIL_SLOPE / self.transition_width) * poly + deriv_left * (
             x - poly / self.transition_width
         )
         x0 = self.min_knot
         poly0 = x0 * self.min_knot - 0.5 * x0 * x0
         const = value_left - (
-            (target_slope_left / self.transition_width) * poly0
+            (_TAIL_SLOPE / self.transition_width) * poly0
             + deriv_left * (x0 - poly0 / self.transition_width)
         )
 
         value = unsh + const
 
         dist = (self.min_knot - x) / self.transition_width
-        deriv = (1.0 - dist) * deriv_left + target_slope_left * dist
+        deriv = (1.0 - dist) * deriv_left + _TAIL_SLOPE * dist
         return value, deriv
 
-    def _left_transition_value(self, x, coef, value_left, deriv_left):
+    def _left_transition_value(self, x, value_left, deriv_left):
         """
         Compute left transition value.
         """
         poly = x * self.min_knot - 0.5 * x * x
 
-        target_slope_left = self._target_slope_left(coef)
-
-        unsh = (target_slope_left / self.transition_width) * poly + deriv_left * (
+        unsh = (_TAIL_SLOPE / self.transition_width) * poly + deriv_left * (
             x - poly / self.transition_width
         )
         x0 = self.min_knot
         poly0 = x0 * self.min_knot - 0.5 * x0 * x0
         const = value_left - (
-            (target_slope_left / self.transition_width) * poly0
+            (_TAIL_SLOPE / self.transition_width) * poly0
             + deriv_left * (x0 - poly0 / self.transition_width)
         )
 
         return unsh + const
 
-    def _right_transition_and_deriv(self, x, coef, value_right, deriv_right):
+    def _right_transition_and_deriv(self, x, value_right, deriv_right):
         """
         Compute right transition value and derivative.
         """
         poly = 0.5 * x * x - x * self.max_knot
 
-        target_slope_right = self._target_slope_right(coef)
-
-        unsh = (target_slope_right / self.transition_width) * poly + deriv_right * (
+        unsh = (_TAIL_SLOPE / self.transition_width) * poly + deriv_right * (
             x - poly / self.transition_width
         )
         x0 = self.max_knot
         poly0 = 0.5 * x0 * x0 - x0 * self.max_knot
         const = value_right - (
-            (target_slope_right / self.transition_width) * poly0
+            (_TAIL_SLOPE / self.transition_width) * poly0
             + deriv_right * (x0 - poly0 / self.transition_width)
         )
         value = unsh + const
         dist = (x - self.max_knot) / self.transition_width
-        der = (1.0 - dist) * deriv_right + target_slope_right * dist
+        der = (1.0 - dist) * deriv_right + _TAIL_SLOPE * dist
 
         return value, der
 
-    def _right_transition_value(self, x, coef, value_right, deriv_right):
+    def _right_transition_value(self, x, value_right, deriv_right):
         """
         Compute right transition value.
         """
         poly = 0.5 * x * x - x * self.max_knot
 
-        target_slope_right = self._target_slope_right(coef)
-
-        unsh = (target_slope_right / self.transition_width) * poly + deriv_right * (
+        unsh = (_TAIL_SLOPE / self.transition_width) * poly + deriv_right * (
             x - poly / self.transition_width
         )
         x0 = self.max_knot
         poly0 = 0.5 * x0 * x0 - x0 * self.max_knot
         const = value_right - (
-            (target_slope_right / self.transition_width) * poly0
+            (_TAIL_SLOPE / self.transition_width) * poly0
             + deriv_right * (x0 - poly0 / self.transition_width)
         )
         return unsh + const
 
-    def _left_tail_and_deriv(self, x, coef, fx_at_linear_start):
+    def _left_tail_and_deriv(self, x, fx_at_linear_start):
         """
         Compute left tail value and derivative.
         """
-        target_slope_left = self._target_slope_left(coef)
-        val = fx_at_linear_start - target_slope_left * (self.min_eps - x)
-        return val, target_slope_left
+        val = fx_at_linear_start - _TAIL_SLOPE * (self.min_eps - x)
+        return val, _TAIL_SLOPE
 
-    def _left_tail_value(self, x, coef, fx_at_linear_start):
+    def _left_tail_value(self, x, fx_at_linear_start):
         """
         Compute left tail value.
         """
-        target_slope_left = self._target_slope_left(coef)
-        return fx_at_linear_start - target_slope_left * (self.min_eps - x)
+        return fx_at_linear_start - _TAIL_SLOPE * (self.min_eps - x)
 
-    def _right_tail_and_deriv(self, x, coef, fx_at_linear_start):
+    def _right_tail_and_deriv(self, x, fx_at_linear_start):
         """
         Compute right tail value and derivative.
         """
-        target_slope_right = self._target_slope_right(coef)
-        val = fx_at_linear_start + target_slope_right * (x - self.max_eps)
-        return val, target_slope_right
+        val = fx_at_linear_start + _TAIL_SLOPE * (x - self.max_eps)
+        return val, _TAIL_SLOPE
 
-    def _right_tail_value(self, x, coef, fx_at_linear_start):
+    def _right_tail_value(self, x, fx_at_linear_start):
         """
         Compute right tail value.
         """
-        target_slope_right = self._target_slope_right(coef)
-        return fx_at_linear_start + target_slope_right * (x - self.max_eps)
+        return fx_at_linear_start + _TAIL_SLOPE * (x - self.max_eps)
 
     def _evaluate_spline(self, value: Array, coef: Array) -> tuple[Array, Array]:
         """
         Compute dot product and derivative for broadcasted values and coefficients.
         """
         x = value
-        coef = self._coef_for_eval(x, coef)
         fx_n, deriv_n = self.bspline.dot_and_deriv_n(x, coef)
         boundary_values, boundary_derivs = self.bspline.dot_and_deriv_n(
             self._boundaries, coef
@@ -469,24 +384,24 @@ class PTMSpline(TransformationSpline):
         deriv_right = jnp.expand_dims(boundary_derivs[..., 1], -1)
 
         left_transition, left_transition_deriv = self._left_transition_and_deriv(
-            x, coef, value_left=value_left, deriv_left=deriv_left
+            x, value_left=value_left, deriv_left=deriv_left
         )
         right_transition, right_transition_deriv = self._right_transition_and_deriv(
-            x, coef, value_right=value_right, deriv_right=deriv_right
+            x, value_right=value_right, deriv_right=deriv_right
         )
 
         fx_left_start = self._left_transition_and_deriv(
-            self.min_eps, coef, value_left=value_left, deriv_left=deriv_left
+            self.min_eps, value_left=value_left, deriv_left=deriv_left
         )[0]
         fx_right_start = self._right_transition_and_deriv(
-            self.max_eps, coef, value_right=value_right, deriv_right=deriv_right
+            self.max_eps, value_right=value_right, deriv_right=deriv_right
         )[0]
 
         left_tail, left_tail_deriv = self._left_tail_and_deriv(
-            x, coef, fx_at_linear_start=fx_left_start
+            x, fx_at_linear_start=fx_left_start
         )
         right_tail, right_tail_deriv = self._right_tail_and_deriv(
-            x, coef, fx_at_linear_start=fx_right_start
+            x, fx_at_linear_start=fx_right_start
         )
 
         in_core = (x >= self.min_knot) & (x <= self.max_knot)
@@ -525,7 +440,6 @@ class PTMSpline(TransformationSpline):
         Compute dot product for broadcasted values and coefficients.
         """
         x = value
-        coef = self._coef_for_eval(x, coef)
         fx_n = self.bspline.dot_n(x, coef)
         boundary_values, boundary_derivs = self.bspline.dot_and_deriv_n(
             self._boundaries, coef
@@ -537,21 +451,21 @@ class PTMSpline(TransformationSpline):
         deriv_right = jnp.expand_dims(boundary_derivs[..., 1], -1)
 
         left_transition = self._left_transition_value(
-            x, coef, value_left=value_left, deriv_left=deriv_left
+            x, value_left=value_left, deriv_left=deriv_left
         )
         right_transition = self._right_transition_value(
-            x, coef, value_right=value_right, deriv_right=deriv_right
+            x, value_right=value_right, deriv_right=deriv_right
         )
 
         fx_left_start = self._left_transition_value(
-            self.min_eps, coef, value_left=value_left, deriv_left=deriv_left
+            self.min_eps, value_left=value_left, deriv_left=deriv_left
         )
         fx_right_start = self._right_transition_value(
-            self.max_eps, coef, value_right=value_right, deriv_right=deriv_right
+            self.max_eps, value_right=value_right, deriv_right=deriv_right
         )
 
-        left_tail = self._left_tail_value(x, coef, fx_at_linear_start=fx_left_start)
-        right_tail = self._right_tail_value(x, coef, fx_at_linear_start=fx_right_start)
+        left_tail = self._left_tail_value(x, fx_at_linear_start=fx_left_start)
+        right_tail = self._right_tail_value(x, fx_at_linear_start=fx_right_start)
 
         in_core = (x >= self.min_knot) & (x <= self.max_knot)
         return jnp.where(

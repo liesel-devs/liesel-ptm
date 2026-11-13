@@ -202,7 +202,7 @@ class TransformationDist(tfd.Distribution):
 
         self.bspline = bspline
         self.knots = self.bspline.knots
-        self.bspline._check_tfp_coef_core_shape(coef)
+        self.bspline._check_coef_shape(coef)
         self.gauss_legendre_order = gauss_legendre_order
         self.response_moment_order = _validate_gauss_legendre_order(
             response_moment_order, "response_moment_order"
@@ -348,9 +348,6 @@ class TransformationDist(tfd.Distribution):
         """
         return self._spline_bijector
 
-    def _broadcast_to_batch(self, value: Array) -> Array:
-        return jnp.broadcast_to(jnp.asarray(value), self._batch_shape_tuple())
-
     # The bijector evaluates the spline with the coefficients' own batch shape.
     # With the full batch shape, per-observation parametric parameters would
     # broadcast shared coefficients to one copy per observation, and the inverse
@@ -358,17 +355,10 @@ class TransformationDist(tfd.Distribution):
     # to the shape that the full batch shape gives.
 
     def _spline_output_shape(self, value: Array) -> tuple[int, ...]:
-        _, sample_shape, _, result_batch_shape = self.bspline._tfp_value_layout(
+        _, sample_shape, _, result_batch_shape = self.bspline._value_layout(
             value, self._batch_shape_tuple()
         )
         return sample_shape + result_batch_shape
-
-    def _broadcast_tfp_value(self, value: Array) -> Array:
-        value = jnp.asarray(value, dtype=self.dtype)
-        _, sample_shape, _, result_batch_shape = self.bspline._tfp_value_layout(
-            value, self._batch_shape_tuple()
-        )
-        return jnp.broadcast_to(value, sample_shape + result_batch_shape)
 
     def _response_moments(self, order: int | None = None) -> tuple[Array, Array]:
         """Integrate complete response quantiles, separately from spline normalization.
@@ -465,22 +455,6 @@ class TransformationDist(tfd.Distribution):
         z = self.reference_distribution.quantile(value)
         return self.inverse_transformation(z)
 
-    def quantile_spline(self, value: Array) -> Array:
-        """
-        Quantile function using only the spline transformation.
-
-        Parameters
-        ----------
-        value
-            Quantile levels in (0, 1).
-
-        Returns
-        -------
-            Values under the spline-only model at the requested quantiles.
-        """
-        z = self.reference_distribution.quantile(value)
-        return self.inverse_transformation_spline(z)
-
     def _event_shape(self):
         return tf.TensorShape([])
 
@@ -488,7 +462,7 @@ class TransformationDist(tfd.Distribution):
         return jnp.array([], dtype=jnp.int32)
 
     def _batch_shape(self):
-        coef_shape = tf.TensorShape(self.bspline._tfp_coef_batch_shape(self.coef))
+        coef_shape = tf.TensorShape(self.bspline._coef_batch_shape(self.coef))
 
         if self.parametric_distribution is None:
             parametric_shape = tf.TensorShape([])
@@ -499,7 +473,7 @@ class TransformationDist(tfd.Distribution):
 
     def _batch_shape_tensor(self, **kwargs):
         coef_shape = jnp.asarray(
-            self.bspline._tfp_coef_batch_shape(self.coef), dtype=jnp.int32
+            self.bspline._coef_batch_shape(self.coef), dtype=jnp.int32
         )
 
         if self.parametric_distribution is None:
@@ -508,53 +482,6 @@ class TransformationDist(tfd.Distribution):
             parametric_shape = self.parametric_distribution.batch_shape_tensor()
 
         return tf.broadcast_dynamic_shape(coef_shape, parametric_shape)
-
-    def log_prob_spline(self, value: Array):
-        """
-        Log probability under the spline-only transformation.
-
-        Parameters
-        ----------
-        value
-            Values at which to evaluate the log density.
-
-        Returns
-        -------
-            Log probability evaluated using the spline transform.
-        """
-        z, logdet = self.transformation_and_logdet_spline(value)
-        return self.reference_distribution.log_prob(z) + logdet
-
-    def prob_spline(self, value: Array):
-        """
-        Probability under the spline-only transformation.
-
-        Parameters
-        ----------
-        value
-            Values at which to evaluate the density.
-
-        Returns
-        -------
-            Probability density evaluated using the spline transform.
-        """
-        return jnp.exp(self.log_prob_spline(value))
-
-    def cdf_spline(self, value: Array):
-        """
-        CDF under the spline-only transformation.
-
-        Parameters
-        ----------
-        value
-            Values at which to evaluate the CDF.
-
-        Returns
-        -------
-            Cumulative distribution evaluated using the spline transform.
-        """
-        z = self._transformation_spline(value)
-        return self.reference_distribution.cdf(z)
 
     def transformation_and_logdet_parametric(self, value: Array) -> tuple[Array, Array]:
         """
