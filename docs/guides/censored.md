@@ -5,10 +5,6 @@ Fit a fixed-shape PTM to positive event times with right censoring. Model log ti
 with the same predictors as in the [fixed-shape walkthrough](fixed-shape.md),
 then use a censoring likelihood and predict survival probabilities in time units.
 
-Run the cells in a fresh session with the
-[checkout environment](../contributing.md#build-the-documentation).
-Graphviz is needed for the model graph.
-
 ## Generate censored observations
 
 Let $T$ be the event time and $C$ the censoring time. Observe
@@ -35,20 +31,44 @@ import pandas as pd
 import plotnine as p9
 import tensorflow_probability.substrates.jax.bijectors as tfb
 import tensorflow_probability.substrates.jax.distributions as tfd
-from IPython.display import Markdown
 
 import liesel_ptm as ptm
 from liesel_ptm import survival_dist as surv
 ```
 
+Define the location and scale of log event time, and the error distribution
+before standardization.
+
+``` python
+def true_loc(x):
+    return 1.0 + 0.8 * np.sin(np.pi * x)
+
+
+def true_scale(x):
+    return 0.6 * np.exp(0.25 * x)
+
+
+error_dist = tfd.TwoPieceNormal(loc=0.0, scale=1.0, skewness=2.0)
+```
+
+Draw covariates and standardized errors, then the log event times.
+
 ``` python
 rng = np.random.default_rng(42)
-x = rng.uniform(-1.0, 1.0, 500)
-error_dist = tfd.TwoPieceNormal(loc=0.0, scale=1.0, skewness=2.0)
-errors = error_dist.sample(x.size, seed=jax.random.key(43))
-residual = np.asarray((errors - error_dist.mean()) / error_dist.stddev())
-log_event_time = 1.0 + 0.8 * np.sin(np.pi * x) + 0.6 * np.exp(0.25 * x) * residual
-log_censor_time = rng.normal(loc=1.7, scale=0.65, size=x.size)
+n = 500
+x = rng.uniform(-1.0, 1.0, n)
+
+raw_error = error_dist.sample(n, seed=jax.random.key(43))
+error = np.asarray((raw_error - error_dist.mean()) / error_dist.stddev())
+
+log_event_time = true_loc(x) + true_scale(x) * error
+```
+
+Draw independent censoring times and observe whichever comes first.
+
+``` python
+log_censor_time = rng.normal(loc=1.7, scale=0.65, size=n)
+
 event_observed = log_event_time <= log_censor_time
 log_followup = np.minimum(log_event_time, log_censor_time)
 ```
@@ -65,7 +85,6 @@ records = surv.right_censored(
 )
 data = pd.DataFrame({"x": x, "followup": np.exp(log_followup)})
 data["status"] = surv.censoring_status(records)
-registry = gam.PandasRegistry(data)
 ```
 
 Each record has three columns, `[time, lower, upper]`. Events become
@@ -76,15 +95,13 @@ contribution to use; they are not missing parameters to impute.
 reads that type back from the records.
 
 ``` python
-Markdown(
-    data["status"].value_counts().rename_axis("record").to_frame("n").to_markdown()
-)
+data["status"].value_counts()
 ```
 
-| record         |   n |
-|:---------------|----:|
-| uncensored     | 357 |
-| right_censored | 143 |
+    status
+    uncensored        357
+    right_censored    143
+    Name: count, dtype: int64
 
 ``` python
 (
@@ -100,7 +117,7 @@ Markdown(
 )
 ```
 
-<img src="censored_files/figure-commonmark/cell-6-output-1.png" width="420" height="300" alt="Observed event times and right-censoring times across x on a log axis." />
+<img src="censored_files/figure-commonmark/cell-8-output-1.png" width="420" height="300" alt="Observed event times and right-censoring times across x on a log axis." />
 
 For a censored record, the event lies after the plotted follow-up time. The
 unobserved event times are used only to generate the example, not to fit it.
@@ -121,12 +138,11 @@ model = ptm.PTM.from_censored(
     lsl.Var.new_obs(records, name="log_time"),
     nshape=8,
 )
-tb_loc = gam.TermBuilder(registry, prefix_names_by="m.")
-tb_scale = gam.TermBuilder(registry, prefix_names_by="s.")
+tb = gam.TermBuilder.from_df(data)
 loc_smooth_scale = gam.scale_wb(value=1.0, scale=1.0, name="loc_smooth_scale")
 
-model.pred.loc += tb_loc.ps("x", k=8, scale=loc_smooth_scale)
-model.pred.scale += tb_scale.lin("x", name="s.x")
+model.pred.loc += tb.ps("x", k=8, scale=loc_smooth_scale, prefix="m.")
+model.pred.scale += tb.lin("x", prefix="s.", name="x")
 ```
 
 The response `log_time` holds the `(500, 3)` record array. Naming it keeps the
@@ -136,7 +152,7 @@ graph readable; passing `records` directly would create a response named `y`.
 model.plot(width=20, height=10)
 ```
 
-![Censored PTM with location, scale, and shared shape predictors.](censored_files/figure-commonmark/cell-8-output-1.png)
+![Censored PTM with location, scale, and shared shape predictors.](censored_files/figure-commonmark/cell-10-output-1.png)
 
 ## Fit with variational inference
 
@@ -197,7 +213,7 @@ uncensored log time, not the record likelihood.
 ptm.plot_intercept_dist(model.response, model.pred.shape.intercept, samples)
 ```
 
-<img src="censored_files/figure-commonmark/cell-13-output-1.png" width="420" height="300" alt="Fitted shared standardized log-time shape and a standard normal reference." />
+<img src="censored_files/figure-commonmark/cell-15-output-1.png" width="420" height="300" alt="Fitted shared standardized log-time shape and a standard normal reference." />
 
 Look for the long right tail relative to the dotted normal reference. This shape
 is shared across `x` after removing the location and scale of log time. For
@@ -246,12 +262,9 @@ Compare $S(t \mid x) = P(T > t \mid x)$ with the generating distribution, undoin
 the standardization of its two-piece normal errors.
 
 ``` python
-mu = 1.0 + 0.8 * np.sin(np.pi * survival["x"].to_numpy())
-sigma = 0.6 * np.exp(0.25 * survival["x"].to_numpy())
-raw_error = (
-    error_dist.mean()
-    + error_dist.stddev() * (np.log(survival["time"].to_numpy()) - mu) / sigma
-)
+x_grid = survival["x"].to_numpy()
+z = (np.log(survival["time"].to_numpy()) - true_loc(x_grid)) / true_scale(x_grid)
+raw_error = error_dist.mean() + error_dist.stddev() * z
 survival["truth"] = np.asarray(error_dist.survival_function(raw_error))
 ```
 
@@ -273,7 +286,7 @@ survival["truth"] = np.asarray(error_dist.survival_function(raw_error))
 )
 ```
 
-<img src="censored_files/figure-commonmark/cell-17-output-1.png" width="480" height="210" alt="Fitted and generating survival curves at three x values." />
+<img src="censored_files/figure-commonmark/cell-19-output-1.png" width="480" height="210" alt="Fitted and generating survival curves at three x values." />
 
 Solid curves average survival probabilities over draws, with pointwise 90%
 credible bands. Compare when the curves drop and how slowly their tails decay.
