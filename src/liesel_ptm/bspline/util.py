@@ -9,7 +9,9 @@ import numpy as np
 from interpax import interp1d
 from jax import Array
 from jax.typing import ArrayLike
+from tensorflow_probability.substrates.jax import distributions as tfd
 
+from ..bijector import SplineBijector
 from ..util.inverse_interpax import inv1d
 from .approx import BSplineApprox
 
@@ -90,6 +92,56 @@ class TransformationSpline:
             raise NotImplementedError
 
         self._compute_coef = _compute_coef_default
+
+    def bijector(
+        self,
+        coef: Array,
+        centered: bool = False,
+        scaled: bool = False,
+        gauss_legendre_order: int = 8,
+        integration_bounds: tuple[float, float] | None = None,
+        reference_distribution: tfd.Distribution | None = None,
+        validate_args: bool = False,
+    ) -> SplineBijector:
+        """
+        Return the spline transformation as a TFP bijector.
+
+        Parameters
+        ----------
+        coef
+            Unconstrained spline coefficients with shape
+            ``batch_shape + (n_param,)``.
+        centered
+            If True, center the spline input by its finite-bound raw mean.
+        scaled
+            If True, scale the spline input by its finite-bound raw standard
+            deviation.
+        gauss_legendre_order
+            Number of Gauss-Legendre nodes per knot interval for the raw moments.
+        integration_bounds
+            Lower and upper bounds for the raw moments. Defaults to the first and
+            last spline knot.
+        reference_distribution
+            Distribution of the reference scale, used for centering, scaling and
+            the raw moments. Defaults to ``Normal(0, 1)``.
+        validate_args
+            Whether to validate input arguments.
+
+        Returns
+        -------
+        bijector
+            A [SplineBijector][liesel_ptm.SplineBijector] that uses this spline.
+        """
+        return SplineBijector(
+            coef,
+            bspline=self,
+            centered=centered,
+            scaled=scaled,
+            gauss_legendre_order=gauss_legendre_order,
+            integration_bounds=integration_bounds,
+            reference_distribution=reference_distribution,
+            validate_args=validate_args,
+        )
 
     def compute_coef(self, raw_coef: Array) -> Array:
         """

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import operator
 from collections.abc import Callable, Sequence
-from functools import cache, partial
+from functools import partial
 from typing import Any, Literal, Self, cast
 
 import jax
@@ -17,125 +16,19 @@ from tensorflow_probability.substrates.jax.internal import (
 )
 from tensorflow_probability.substrates.jax.internal import slicing as tfp_slicing
 
+from .bijector import (
+    SplineBijector,
+    _gauss_legendre_nodes_and_weights,
+    _moment_diagnostic,
+    _validate_gauss_legendre_order,
+)
+from .bijector import (
+    integrate_piecewise_gauss_legendre as integrate_piecewise_gauss_legendre,
+)
 from .bspline import OnionKnots, OnionSpline, PTMSpline
 
 KeyArray = Any
 Array = Any
-
-
-def _validate_gauss_legendre_order(
-    order: int, name: str = "gauss_legendre_order"
-) -> int:
-    try:
-        order = operator.index(order)
-    except TypeError as err:
-        raise TypeError(f"{name} must be a positive integer.") from err
-
-    if order <= 0:
-        raise ValueError(f"{name} must be a positive integer.")
-
-    return order
-
-
-def _as_scalar_float(value: float | Array, name: str) -> float:
-    value_array = np.asarray(value)
-    if value_array.ndim != 0:
-        raise ValueError(f"{name} must be a scalar.")
-
-    value = float(value_array)
-    if not np.isfinite(value):
-        raise ValueError(f"{name} must be finite.")
-
-    return value
-
-
-def _validate_integration_bounds(
-    bounds: tuple[float, float] | None,
-    default_bounds: tuple[float, float],
-) -> tuple[float, float]:
-    if bounds is None:
-        lower = _as_scalar_float(default_bounds[0], "integration lower bound")
-        upper = _as_scalar_float(default_bounds[1], "integration upper bound")
-    else:
-        if len(bounds) != 2:
-            raise ValueError("integration_bounds must contain exactly two values.")
-        lower = _as_scalar_float(bounds[0], "integration lower bound")
-        upper = _as_scalar_float(bounds[1], "integration upper bound")
-
-    if not lower < upper:
-        raise ValueError("integration_bounds must satisfy lower < upper.")
-
-    return lower, upper
-
-
-def _integration_breaks_from_knots(
-    knots: Array,
-    bounds: tuple[float, float],
-    dtype: Any,
-) -> Array:
-    lower, upper = bounds
-    knots_np = np.asarray(knots, dtype=float)
-    internal = knots_np[(knots_np > lower) & (knots_np < upper)]
-    breaks_np = np.concatenate((np.asarray([lower]), internal, np.asarray([upper])))
-    breaks_np = np.unique(breaks_np)
-    breaks_np.sort()
-
-    return jnp.asarray(breaks_np, dtype=dtype)
-
-
-@cache
-def _numpy_gauss_legendre_nodes_and_weights(
-    order: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    # Cache host arrays only: caching JAX arrays can retain tracers across jit calls.
-    return np.polynomial.legendre.leggauss(order)
-
-
-def _gauss_legendre_nodes_and_weights(order: int, dtype: Any) -> tuple[Array, Array]:
-    order = _validate_gauss_legendre_order(order)
-    nodes, weights = _numpy_gauss_legendre_nodes_and_weights(order)
-    return jnp.asarray(nodes, dtype=dtype), jnp.asarray(weights, dtype=dtype)
-
-
-def integrate_piecewise_gauss_legendre(
-    f: Callable[[Array], Array],
-    breaks: Array,
-    nodes: Array,
-    weights: Array,
-    batch_ndims: int = 0,
-) -> Array:
-    """
-    Integrate ``f`` with fixed Gauss-Legendre quadrature over piecewise intervals.
-
-    The first axis of ``f`` is the quadrature/sample axis. Additional batch axes
-    are broadcast by expanding the evaluation points with trailing singleton
-    dimensions.
-    """
-    breaks = jnp.asarray(breaks)
-    nodes = jnp.asarray(nodes)
-    weights = jnp.asarray(weights)
-    batch_ndims = operator.index(batch_ndims)
-    if batch_ndims < 0:
-        raise ValueError("batch_ndims must be nonnegative.")
-
-    lower = breaks[:-1]
-    upper = breaks[1:]
-    half_width = 0.5 * (upper - lower)
-    midpoint = 0.5 * (upper + lower)
-    points = midpoint[:, None] + half_width[:, None] * nodes[None, :]
-    flat_points = jnp.reshape(points, (-1,))
-
-    if batch_ndims:
-        flat_points = jnp.reshape(flat_points, flat_points.shape + (1,) * batch_ndims)
-
-    y = f(flat_points)
-    y = jnp.reshape(y, points.shape + jnp.shape(y)[1:])
-    integration_weights = half_width[:, None] * weights[None, :]
-    integration_weights = jnp.reshape(
-        integration_weights, integration_weights.shape + (1,) * (jnp.ndim(y) - 2)
-    )
-
-    return jnp.sum(y * integration_weights, axis=(0, 1))
 
 
 @jax.jit
@@ -314,28 +207,22 @@ class TransformationDist(tfd.Distribution):
         self.response_moment_order = _validate_gauss_legendre_order(
             response_moment_order, "response_moment_order"
         )
-        default_integration_bounds = (
-            self.bspline._outer_knot_left,
-            self.bspline._outer_knot_right,
-        )
-        self.integration_bounds = _validate_integration_bounds(
-            integration_bounds, default_integration_bounds
-        )
-        if hasattr(self.bspline, "_knots_np"):
-            knots_np = self.bspline._knots_np
-        else:
-            knots_np = jax.device_get(self.knots)
-        self.integration_breaks = _integration_breaks_from_knots(
-            knots_np, self.integration_bounds, coef.dtype
-        )
-        self._gl_nodes, self._gl_weights = _gauss_legendre_nodes_and_weights(
-            gauss_legendre_order, coef.dtype
-        )
-
         if reference_distribution is None:
             self.reference_distribution = tfd.Normal(loc=0.0, scale=1.0)
         else:
             self.reference_distribution = reference_distribution
+
+        self._spline_bijector = self.bspline.bijector(
+            coef,
+            centered=centered,
+            scaled=scaled,
+            gauss_legendre_order=gauss_legendre_order,
+            integration_bounds=integration_bounds,
+            reference_distribution=self.reference_distribution,
+            validate_args=validate_args,
+        )
+        self.integration_bounds = self._spline_bijector.integration_bounds
+        self.integration_breaks = self._spline_bijector.integration_breaks
 
         if parametric_distribution is None and parametric_distribution_kwargs:
             raise ValueError(
@@ -448,52 +335,33 @@ class TransformationDist(tfd.Distribution):
     def _batch_shape_tuple(self) -> tuple[int, ...]:
         return tuple(int(dim) for dim in tuple(self.batch_shape))
 
-    def _spline_coef_batch_shape_tuple(self) -> tuple[int, ...]:
-        return self.bspline._tfp_coef_batch_shape(self.coef)
+    @property
+    def spline_bijector(self) -> SplineBijector:
+        """
+        The spline transformation as a TFP bijector.
+
+        The bijector comes from ``bspline.bijector(...)``, with this distribution's
+        coefficients, centering, scaling, quadrature settings and reference
+        distribution. Its ``inverse`` is the spline transformation and its
+        ``forward`` is the inverse spline transformation. The parametric part is
+        not included.
+        """
+        return self._spline_bijector
 
     def _broadcast_to_batch(self, value: Array) -> Array:
         return jnp.broadcast_to(jnp.asarray(value), self._batch_shape_tuple())
 
-    # The spline evaluators below evaluate with the coefficients' own batch shape.
+    # The bijector evaluates the spline with the coefficients' own batch shape.
     # With the full batch shape, per-observation parametric parameters would
     # broadcast shared coefficients to one copy per observation, and the inverse
     # would build one grid per observation. The cheap outputs are then broadcast
     # to the shape that the full batch shape gives.
 
-    def _spline_output_shape(
-        self, value: Array, batch_shape: tuple[int, ...] | None
-    ) -> tuple[int, ...]:
-        if batch_shape is None:
-            batch_shape = self._batch_shape_tuple()
+    def _spline_output_shape(self, value: Array) -> tuple[int, ...]:
         _, sample_shape, _, result_batch_shape = self.bspline._tfp_value_layout(
-            value, batch_shape
+            value, self._batch_shape_tuple()
         )
         return sample_shape + result_batch_shape
-
-    def _spline_forward_tfp(
-        self, value: Array, batch_shape: tuple[int, ...] | None = None
-    ) -> tuple[Array, Array]:
-        shape = self._spline_output_shape(value, batch_shape)
-        transf, deriv = self.bspline.dot_and_deriv_tfp(
-            value, self.coef, batch_shape=self._spline_coef_batch_shape_tuple()
-        )
-        return jnp.broadcast_to(transf, shape), jnp.broadcast_to(deriv, shape)
-
-    def _spline_value_tfp(
-        self, value: Array, batch_shape: tuple[int, ...] | None = None
-    ) -> Array:
-        shape = self._spline_output_shape(value, batch_shape)
-        transf = self.bspline.dot_tfp(
-            value, self.coef, batch_shape=self._spline_coef_batch_shape_tuple()
-        )
-        return jnp.broadcast_to(transf, shape)
-
-    def _spline_inverse_tfp(self, value: Array) -> Array:
-        shape = self._spline_output_shape(value, None)
-        inverse = self.bspline.dot_inverse_tfp(
-            value, self.coef, batch_shape=self._spline_coef_batch_shape_tuple()
-        )
-        return jnp.broadcast_to(inverse, shape)
 
     def _broadcast_tfp_value(self, value: Array) -> Array:
         value = jnp.asarray(value, dtype=self.dtype)
@@ -743,40 +611,6 @@ class TransformationDist(tfd.Distribution):
 
         return Fz.quantile(u)
 
-    def _transformation_and_logdet_spline(
-        self, value: Array, batch_shape: tuple[int, ...] | None = None
-    ) -> tuple[Array, Array]:
-        value = jnp.asarray(value, dtype=self.dtype)
-        nan_mask = jnp.isnan(value)
-        transf, deriv = self._spline_forward_tfp(value, batch_shape=batch_shape)
-        transf = jnp.where(nan_mask, jnp.nan, transf)
-        deriv = jnp.where(nan_mask, jnp.nan, deriv)
-        tiny = jnp.finfo(value.dtype).tiny
-        deriv = jnp.clip(deriv, min=tiny)  # safeguard against numerical issues
-        return transf, jnp.log(deriv)
-
-    def _transformation_spline_value(
-        self, value: Array, batch_shape: tuple[int, ...] | None = None
-    ) -> Array:
-        value = jnp.asarray(value, dtype=self.dtype)
-        nan_mask = jnp.isnan(value)
-        transf = self._spline_value_tfp(value, batch_shape=batch_shape)
-        return jnp.where(nan_mask, jnp.nan, transf)
-
-    def _spline_center_scale(self) -> tuple[Array, Array]:
-        if self.centered:
-            ymean = self.transformation_spline_mean()
-        else:
-            ymean = jnp.array(0.0, dtype=self.dtype)
-
-        if self.scaled:
-            mean_for_variance = ymean if self.centered else None
-            ystd = jnp.sqrt(self.transformation_spline_variance(mean_for_variance))
-        else:
-            ystd = jnp.array(1.0, dtype=self.dtype)
-
-        return ymean, ystd
-
     def transformation_and_logdet_spline(self, value: Array) -> tuple[Array, Array]:
         """
         Apply spline transformation with centering/scaling and compute logdet.
@@ -790,21 +624,15 @@ class TransformationDist(tfd.Distribution):
         -------
             A pair of transformed values and the corresponding log determinant.
         """
-        ymean, ystd = self._spline_center_scale()
-
-        value = value * ystd + ymean
-        logdet = jnp.log(ystd)
-
-        z, transf_logdet = self._transformation_and_logdet_spline(value)
-
-        z_logdet = transf_logdet + logdet
-
-        return z, z_logdet
+        value = jnp.asarray(value, dtype=self.dtype)
+        z, logdet = self.spline_bijector._inverse_and_log_det_jacobian(value)
+        shape = self._spline_output_shape(value)
+        return jnp.broadcast_to(z, shape), jnp.broadcast_to(logdet, shape)
 
     def _transformation_spline(self, value: Array) -> Array:
-        ymean, ystd = self._spline_center_scale()
-        value = value * ystd + ymean
-        return self._transformation_spline_value(value)
+        value = jnp.asarray(value, dtype=self.dtype)
+        z = self.spline_bijector._inverse(value)
+        return jnp.broadcast_to(z, self._spline_output_shape(value))
 
     def _transformation(self, value: Array) -> Array:
         """Apply parametric then spline transforms without log determinants."""
@@ -824,67 +652,11 @@ class TransformationDist(tfd.Distribution):
 
     def transformation_spline_mean(self) -> Array:
         """Finite-bound raw spline mean used for normalization, not a response mean."""
-        return self._transformation_spline_mean_gl()
-
-    def _integrate_piecewise_gauss_legendre(
-        self,
-        fn: Callable[[Array], Array],
-        order: int | None = None,
-        batch_shape: tuple[int, ...] | None = None,
-    ) -> Array:
-        if order is None:
-            nodes = self._gl_nodes
-            weights = self._gl_weights
-        else:
-            nodes, weights = _gauss_legendre_nodes_and_weights(order, self.dtype)
-
-        if batch_shape is None:
-            batch_shape = self._batch_shape_tuple()
-
-        return integrate_piecewise_gauss_legendre(
-            fn,
-            breaks=self.integration_breaks,
-            nodes=nodes,
-            weights=weights,
-            batch_ndims=len(batch_shape),
-        )
-
-    def _transformation_spline_mean_gl(self, order: int | None = None) -> Array:
-        batch_shape = self._spline_coef_batch_shape_tuple()
-
-        def fn(x):
-            z, logdet = self._transformation_and_logdet_spline(
-                x, batch_shape=batch_shape
-            )
-            return x * self.reference_distribution.prob(z) * jnp.exp(logdet)
-
-        return self._integrate_piecewise_gauss_legendre(
-            fn, order=order, batch_shape=batch_shape
-        )
+        return self.spline_bijector.mean_raw()
 
     def transformation_spline_variance(self, mean: Array | None = None) -> Array:
         """Finite-bound raw spline variance used for normalization."""
-        return self._transformation_spline_variance_gl(mean=mean)
-
-    def _transformation_spline_variance_gl(
-        self, mean: Array | None = None, order: int | None = None
-    ) -> Array:
-        batch_shape = self._spline_coef_batch_shape_tuple()
-
-        if mean is None:
-            mean = self._transformation_spline_mean_gl(order=order)
-
-        def fn(x):
-            z, logdet = self._transformation_and_logdet_spline(
-                x, batch_shape=batch_shape
-            )
-            return (
-                (x - mean) ** 2 * self.reference_distribution.prob(z) * jnp.exp(logdet)
-            )
-
-        return self._integrate_piecewise_gauss_legendre(
-            fn, order=order, batch_shape=batch_shape
-        )
+        return self.spline_bijector.variance_raw(mean)
 
     def moment_quadrature_diagnostic(
         self,
@@ -908,15 +680,14 @@ class TransformationDist(tfd.Distribution):
         """
         if target not in ("spline", "response"):
             raise ValueError("target must be 'spline' or 'response'.")
-        order = (
-            self.response_moment_order
-            if target == "response"
-            else self.gauss_legendre_order
-        )
-        if reference_order is None:
-            reference_order = (
-                2 * order if target == "response" else max(2 * order, order + 8)
+        if target == "spline":
+            return self.spline_bijector.moment_quadrature_diagnostic(
+                reference_order, rtol=rtol, atol=atol
             )
+
+        order = self.response_moment_order
+        if reference_order is None:
+            reference_order = 2 * order
         reference_order = _validate_gauss_legendre_order(
             reference_order, "reference_order"
         )
@@ -925,49 +696,13 @@ class TransformationDist(tfd.Distribution):
                 "reference_order must exceed the configured quadrature order."
             )
 
-        if target == "response":
-            mean, variance = self._response_moments(order=order)
-            mean_reference, variance_reference = self._response_moments(
-                order=reference_order
-            )
-        else:
-            mean = self._transformation_spline_mean_gl(order=order)
-            mean_reference = self._transformation_spline_mean_gl(order=reference_order)
-            variance = self._transformation_spline_variance_gl(mean=mean, order=order)
-            variance_reference = self._transformation_spline_variance_gl(
-                mean=mean_reference, order=reference_order
-            )
-
-        mean_abs_error = jnp.abs(mean - mean_reference)
-        variance_abs_error = jnp.abs(variance - variance_reference)
-        mean_rel_error = mean_abs_error / jnp.maximum(
-            jnp.abs(mean_reference), jnp.asarray(atol, dtype=self.dtype)
+        return _moment_diagnostic(
+            self._response_moments(order=order),
+            self._response_moments(order=reference_order),
+            rtol=rtol,
+            atol=atol,
+            dtype=self.dtype,
         )
-        variance_rel_error = variance_abs_error / jnp.maximum(
-            jnp.abs(variance_reference), jnp.asarray(atol, dtype=self.dtype)
-        )
-        mean_ok = (
-            jnp.isfinite(mean)
-            & jnp.isfinite(mean_reference)
-            & (mean_abs_error <= atol + rtol * jnp.abs(mean_reference))
-        )
-        variance_ok = (
-            jnp.isfinite(variance)
-            & jnp.isfinite(variance_reference)
-            & (variance_abs_error <= atol + rtol * jnp.abs(variance_reference))
-        )
-
-        return {
-            "mean": mean,
-            "variance": variance,
-            "mean_reference": mean_reference,
-            "variance_reference": variance_reference,
-            "mean_abs_error": mean_abs_error,
-            "variance_abs_error": variance_abs_error,
-            "mean_rel_error": mean_rel_error,
-            "variance_rel_error": variance_rel_error,
-            "ok": jnp.all(mean_ok & variance_ok),
-        }
 
     def inverse_transformation_spline(self, value: Array) -> Array:
         """
@@ -982,9 +717,9 @@ class TransformationDist(tfd.Distribution):
         -------
             Values on the original scale using the spline inverse.
         """
-        ymean, ystd = self._spline_center_scale()
-
-        return (self._spline_inverse_tfp(value) - ymean) / ystd
+        value = jnp.asarray(value, dtype=self.dtype)
+        y = self.spline_bijector._forward(value)
+        return jnp.broadcast_to(y, self._spline_output_shape(value))
 
     def inverse_transformation_parametric(self, value: Array) -> Array:
         """

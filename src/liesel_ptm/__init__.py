@@ -1,6 +1,9 @@
+from .bijector import OnionSplineBijector as OnionSplineBijector
+from .bijector import SplineBijector as SplineBijector
 from .bspline import OnionKnots as OnionKnots
 from .bspline import OnionSpline as OnionSpline
 from .bspline import PTMKnots as PTMKnots
+from .bspline import PTMSpline as PTMSpline
 from .dist import LocScaleTransformationDist as LocScaleTransformationDist
 from .dist import TransformationDist as TransformationDist
 from .dist import onion_dist as onion_dist
