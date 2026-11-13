@@ -27,6 +27,8 @@ intercepts, and MCMC workflow.
 
 ::: liesel_ptm.PTMKnots
 
+::: liesel_ptm.PTMSpline
+
 ::: liesel_ptm.OnionKnots
 
 ::: liesel_ptm.OnionSpline
@@ -36,6 +38,10 @@ intercepts, and MCMC workflow.
 ::: liesel_ptm.TransformationDist
 
 ::: liesel_ptm.LocScaleTransformationDist
+
+::: liesel_ptm.SplineBijector
+
+::: liesel_ptm.OnionSplineBijector
 
 ::: liesel_ptm.LocationIntercept
 

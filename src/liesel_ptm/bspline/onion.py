@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal
+from typing import Literal, Self
 
 import jax
 import jax.numpy as jnp
 from jax import Array
+from tensorflow_probability.substrates.jax import distributions as tfd
 
+from ..bijector import OnionSplineBijector
 from .approx import equidistant_knots
 from .util import TransformationSpline
 
@@ -143,6 +145,79 @@ class OnionSpline(TransformationSpline):
         super().__init__(knots, subscripts=subscripts)
         self.supports_rowwise_coef = True
         self._compute_coef = jax.jit(get_onion_fn(knots))
+
+    @classmethod
+    def from_bounds(cls, a: float, b: float, nparam: int, order: int = 3) -> Self:
+        """
+        Create an onion spline from the bounds of its flexible interval.
+
+        Parameters
+        ----------
+        a
+            Left boundary of the flexible interval.
+        b
+            Right boundary of the flexible interval.
+        nparam
+            Number of flexible parameters.
+        order
+            Spline order.
+
+        Returns
+        -------
+        spline
+            An onion spline with [OnionKnots][liesel_ptm.OnionKnots].
+        """
+        return cls(OnionKnots(a, b, nparam=nparam, order=order).knots)
+
+    def bijector(
+        self,
+        coef: Array,
+        centered: bool = False,
+        scaled: bool = False,
+        gauss_legendre_order: int = 8,
+        integration_bounds: tuple[float, float] | None = None,
+        reference_distribution: tfd.Distribution | None = None,
+        validate_args: bool = False,
+    ) -> OnionSplineBijector:
+        """
+        Return the onion spline transformation as a TFP bijector.
+
+        Parameters
+        ----------
+        coef
+            Spline log increments with shape ``batch_shape + (n_param,)``.
+        centered
+            If True, center the spline input by its finite-bound raw mean.
+        scaled
+            If True, scale the spline input by its finite-bound raw standard
+            deviation.
+        gauss_legendre_order
+            Number of Gauss-Legendre nodes per knot interval for the raw moments.
+        integration_bounds
+            Lower and upper bounds for the raw moments. Defaults to the first and
+            last spline knot.
+        reference_distribution
+            Distribution of the reference scale, used for centering, scaling and
+            the raw moments. Defaults to ``Normal(0, 1)``.
+        validate_args
+            Whether to validate input arguments.
+
+        Returns
+        -------
+        bijector
+            An [OnionSplineBijector][liesel_ptm.OnionSplineBijector] that uses
+            this spline.
+        """
+        return OnionSplineBijector(
+            coef,
+            bspline=self,
+            centered=centered,
+            scaled=scaled,
+            gauss_legendre_order=gauss_legendre_order,
+            integration_bounds=integration_bounds,
+            reference_distribution=reference_distribution,
+            validate_args=validate_args,
+        )
 
     def _evaluate_spline(self, value: Array, coef: Array) -> tuple[Array, Array]:
         """

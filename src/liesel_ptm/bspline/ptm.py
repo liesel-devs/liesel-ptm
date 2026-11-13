@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Self
 
 import jax
 import jax.numpy as jnp
@@ -299,6 +300,41 @@ class PTMSpline(TransformationSpline):
         self._target_slope_right = target_slope
 
         self._boundaries = jnp.array([self.min_knot, self.max_knot])
+
+    @classmethod
+    def from_bounds(
+        cls,
+        a: float,
+        b: float,
+        nparam: int,
+        eps: float = 0.1,
+        continue_linearly: bool = False,
+    ) -> Self:
+        """
+        Create a PTM spline from the bounds of its core interval.
+
+        Parameters
+        ----------
+        a
+            Left boundary of the core interval.
+        b
+            Right boundary of the core interval.
+        nparam
+            Number of parameters for the spline.
+        eps
+            Parameter controlling the sharpness of the transition to tail \
+            extrapolation. See [PTMSpline][liesel_ptm.PTMSpline].
+        continue_linearly
+            If True, continue linearly in the tails instead of transitioning to \
+            the identity function.
+
+        Returns
+        -------
+        spline
+            A PTM spline with [PTMKnots][liesel_ptm.PTMKnots].
+        """
+        knots = PTMKnots(a, b, nparam=nparam).knots
+        return cls(knots, eps=eps, continue_linearly=continue_linearly)
 
     def _left_transition_and_deriv(self, x, coef, value_left, deriv_left):
         """
