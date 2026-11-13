@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-
 import jax
 import jax.numpy as jnp
 from jax import Array, jit, lax, vmap
@@ -273,6 +271,7 @@ def bspline_basis_deriv2(x, knots, order):
     return jnp.where(mask, 0.0, basis_grad)
 
 
+@jax.tree_util.register_pytree_node_class
 class BSplineApprox:
     """
     Approximate B-spline evaluations on a fixed grid.
@@ -331,7 +330,7 @@ class BSplineApprox:
         self.knots = jnp.asarray(knots)
         self.dknots = jnp.mean(jnp.diff(knots))
         self.order = order
-        self.nparam = jnp.shape(knots)[0] - order - 1
+        self.nparam = int(jnp.shape(knots)[0]) - order - 1
 
         self.min_knot = self.knots[order]
         self.max_knot = self.knots[-(order + 1)]
@@ -340,7 +339,7 @@ class BSplineApprox:
         self.step = (self.max_knot - self.min_knot) / (ngrid - 1)
         prepend = jnp.array([self.min_knot - self.step])
         append = jnp.array([self.max_knot + self.step])
-        self.ngrid = ngrid
+        self.ngrid = int(ngrid)
         self.grid = jnp.concatenate((prepend, grid, append))
 
         Z = jnp.eye(self.nparam) if postmultiply_by is None else postmultiply_by
@@ -351,22 +350,42 @@ class BSplineApprox:
         self.basis_deriv_grid = basis_grids[1]
         self.basis_deriv2_grid = basis_grids[2]
 
-        self._dot_fn = self._get_dot_fn()
-        self._dot_and_deriv_fn = self._get_dot_and_deriv_fn()
+    # Splines are pytrees: arrays are leaves and the integer settings are static
+    # aux data. JAX's caches then hold no spline objects, and splines with equal
+    # settings share compiled kernels.
+    _array_fields = (
+        "knots",
+        "dknots",
+        "min_knot",
+        "max_knot",
+        "step",
+        "grid",
+        "postmultiply_by",
+        "basis_grid",
+        "basis_deriv_grid",
+        "basis_deriv2_grid",
+    )
+    _static_fields = ("order", "nparam", "ngrid")
 
-    def _grid_index(self, x: Array) -> Array:
-        i = jnp.floor((x - self.grid[0]) / self.step).astype(jnp.int32)
-        i = jnp.clip(i, 0, self.ngrid)
-        i += (x >= self.grid[i + 1]).astype(i.dtype)
-        i -= (x < self.grid[i]).astype(i.dtype)
-        return jnp.clip(i, 0, self.ngrid)
+    def tree_flatten(self) -> tuple[tuple[Array, ...], tuple[object, ...]]:
+        children = tuple(getattr(self, name) for name in self._array_fields)
+        aux = tuple(getattr(self, name) for name in self._static_fields)
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(
+        cls, aux: tuple[object, ...], children: tuple[Array, ...]
+    ) -> BSplineApprox:
+        obj = object.__new__(cls)
+        for name, value in zip(cls._static_fields, aux, strict=True):
+            setattr(obj, name, value)
+        for name, value in zip(cls._array_fields, children, strict=True):
+            setattr(obj, name, value)
+        return obj
 
     @staticmethod
     def _contract_basis_coef(basis: Array, coef: Array) -> Array:
-        if jnp.ndim(coef) < 2 or jnp.shape(coef)[-2] != 1:
-            raise ValueError("Spline coefficients must have shape (..., 1, n_param).")
-
-        return jnp.einsum("...nj,...j->...n", basis, coef[..., 0, :])
+        return _contract_basis_coef(basis, coef)
 
     def _compute_basis_and_deriv2(
         self, x: Array
@@ -375,122 +394,6 @@ class BSplineApprox:
         deriv = bspline_basis_deriv(x, self.knots, self.order) @ self.postmultiply_by
         deriv2 = bspline_basis_deriv2(x, self.knots, self.order) @ self.postmultiply_by
         return basis, deriv, deriv2
-
-    @partial(jax.jit, static_argnums=0)
-    def _approx_basis(self, x: Array) -> Array:
-        i = self._grid_index(x)
-        lo = self.grid[i]
-        k = jnp.expand_dims((x - lo) / (self.grid[i + 1] - lo), -1)
-
-        basis = (1.0 - k) * self.basis_grid[i, :] + (k * self.basis_grid[i + 1, :])
-        return basis
-
-    @partial(jax.jit, static_argnums=0)
-    def _approx_basis_and_deriv(self, x: Array) -> tuple[Array, Array]:
-        """
-        Returns the basis matrix approximation and its gradient with
-        respect to the data.
-        """
-
-        i = self._grid_index(x)
-        lo = self.grid[i]
-        k = jnp.expand_dims((x - lo) / (self.grid[i + 1] - lo), -1)
-
-        basis = (1.0 - k) * self.basis_grid[i, :] + (k * self.basis_grid[i + 1, :])
-        basis_deriv = (1.0 - k) * self.basis_deriv_grid[i, :] + (
-            k * self.basis_deriv_grid[i + 1, :]
-        )
-        return basis, basis_deriv
-
-    @partial(jax.jit, static_argnums=0)
-    def _approx_basis_deriv_and_deriv2(self, x: Array) -> tuple[Array, Array, Array]:
-        """
-        Returns the basis matrix approximation and its first and second
-        derivative with respect to the data.
-        """
-        i = self._grid_index(x)
-        lo = self.grid[i]
-        k = jnp.expand_dims((x - lo) / (self.grid[i + 1] - lo), -1)
-
-        basis = (1.0 - k) * self.basis_grid[i, :] + (k * self.basis_grid[i + 1, :])
-        basis_deriv = (1.0 - k) * self.basis_deriv_grid[i, :] + (
-            k * self.basis_deriv_grid[i + 1, :]
-        )
-        basis_deriv2 = (1.0 - k) * self.basis_deriv2_grid[i, :] + (
-            k * self.basis_deriv2_grid[i + 1, :]
-        )
-        return basis, basis_deriv, basis_deriv2
-
-    def _get_dot_fn(self) -> Callable[[Array, Array], Array]:
-        @jax.custom_jvp
-        def _dot(
-            x: Array,
-            coef: Array,
-        ) -> Array:
-            basis = self.get_basis(x)
-            smooth = self._contract_basis_coef(basis, coef)
-            return smooth
-
-        @_dot.defjvp
-        def _dot_jvp(primals, tangents):
-            x, coef = primals
-            x_dot, coef_dot = tangents
-
-            basis, basis_deriv = self.get_basis_and_deriv(x)
-            smooth = self._contract_basis_coef(basis, coef)
-            smooth_deriv = self._contract_basis_coef(basis_deriv, coef)
-
-            tangent_x = smooth_deriv * x_dot
-            tangent_coef = self._contract_basis_coef(basis, coef_dot)
-
-            tangent = tangent_x + tangent_coef
-
-            return smooth, tangent
-
-        return jax.jit(_dot)
-
-    def _get_dot_and_deriv_fn(
-        self,
-    ) -> Callable[[Array, Array], tuple[Array, Array]]:
-        @jax.custom_jvp
-        def _dot_and_deriv(
-            x: Array,
-            coef: Array,
-        ) -> tuple[Array, Array]:
-            """
-            Assumes x has shape ``(..., n)`` and coef has shape
-            ``(..., 1, p)``.
-            """
-            basis, basis_deriv = self.get_basis_and_deriv(x)
-            smooth = self._contract_basis_coef(basis, coef)
-            smooth_deriv = self._contract_basis_coef(basis_deriv, coef)
-            return smooth, smooth_deriv
-
-        @_dot_and_deriv.defjvp
-        def _dot_and_deriv_jvp(primals, tangents):
-            x, coef = primals
-            x_dot, coef_dot = tangents
-
-            basis, basis_deriv, basis_deriv2 = self.get_basis_and_deriv2(x)
-            smooth = self._contract_basis_coef(basis, coef)
-            smooth_deriv = self._contract_basis_coef(basis_deriv, coef)
-            smooth_deriv2 = self._contract_basis_coef(basis_deriv2, coef)
-
-            primal_out = (smooth, smooth_deriv)
-
-            tangent_bdot_x = smooth_deriv * x_dot
-            tangent_bdot_coef = self._contract_basis_coef(basis, coef_dot)
-            tangent_bdot = tangent_bdot_x + tangent_bdot_coef
-
-            tangent_deriv_x = smooth_deriv2 * x_dot
-            tangent_deriv_coef = self._contract_basis_coef(basis_deriv, coef_dot)
-            tangent_deriv = tangent_deriv_x + tangent_deriv_coef
-
-            tangent_out = (tangent_bdot, tangent_deriv)
-
-            return primal_out, tangent_out
-
-        return jax.jit(_dot_and_deriv)
 
     def get_basis(self, x: Array) -> Array:
         """
@@ -505,7 +408,7 @@ class BSplineApprox:
         -------
         Basis matrix.
         """
-        return self._approx_basis(x)
+        return _approx_basis(self, x)
 
     def get_basis_and_deriv(self, x: Array) -> tuple[Array, Array]:
         """
@@ -523,7 +426,7 @@ class BSplineApprox:
         deriv
             First derivative.
         """
-        return self._approx_basis_and_deriv(x)
+        return _approx_basis_and_deriv(self, x)
 
     def get_basis_and_deriv2(self, x: Array) -> tuple[Array, Array, Array]:
         """
@@ -543,7 +446,7 @@ class BSplineApprox:
         deriv2 : Array
             Second derivative.
         """
-        return self._approx_basis_deriv_and_deriv2(x)
+        return _approx_basis_deriv_and_deriv2(self, x)
 
     def dot_n(self, x: Array, coef: Array) -> Array:
         """
@@ -560,7 +463,7 @@ class BSplineApprox:
         -------
         Evaluated spline values.
         """
-        return self._dot_fn(x, coef)
+        return _dot(self, x, coef)
 
     def dot_and_deriv_n(self, x: Array, coef: Array) -> tuple[Array, Array]:
         """
@@ -580,4 +483,110 @@ class BSplineApprox:
         deriv : Array
             Spline derivatives.
         """
-        return self._dot_and_deriv_fn(x, coef)
+        return _dot_and_deriv(self, x, coef)
+
+
+def _grid_index(approx: BSplineApprox, x: Array) -> Array:
+    i = jnp.floor((x - approx.grid[0]) / approx.step).astype(jnp.int32)
+    i = jnp.clip(i, 0, approx.ngrid)
+    i += (x >= approx.grid[i + 1]).astype(i.dtype)
+    i -= (x < approx.grid[i]).astype(i.dtype)
+    return jnp.clip(i, 0, approx.ngrid)
+
+
+def _interpolation_weights(approx: BSplineApprox, x: Array) -> tuple[Array, Array]:
+    i = _grid_index(approx, x)
+    lo = approx.grid[i]
+    k = jnp.expand_dims((x - lo) / (approx.grid[i + 1] - lo), -1)
+    return i, k
+
+
+@jax.jit
+def _approx_basis(approx: BSplineApprox, x: Array) -> Array:
+    i, k = _interpolation_weights(approx, x)
+    return (1.0 - k) * approx.basis_grid[i, :] + (k * approx.basis_grid[i + 1, :])
+
+
+@jax.jit
+def _approx_basis_and_deriv(approx: BSplineApprox, x: Array) -> tuple[Array, Array]:
+    """Basis matrix approximation and its derivative with respect to the data."""
+    i, k = _interpolation_weights(approx, x)
+    basis = (1.0 - k) * approx.basis_grid[i, :] + (k * approx.basis_grid[i + 1, :])
+    basis_deriv = (1.0 - k) * approx.basis_deriv_grid[i, :] + (
+        k * approx.basis_deriv_grid[i + 1, :]
+    )
+    return basis, basis_deriv
+
+
+@jax.jit
+def _approx_basis_deriv_and_deriv2(
+    approx: BSplineApprox, x: Array
+) -> tuple[Array, Array, Array]:
+    """Basis matrix approximation and its first two derivatives in the data."""
+    i, k = _interpolation_weights(approx, x)
+    basis = (1.0 - k) * approx.basis_grid[i, :] + (k * approx.basis_grid[i + 1, :])
+    basis_deriv = (1.0 - k) * approx.basis_deriv_grid[i, :] + (
+        k * approx.basis_deriv_grid[i + 1, :]
+    )
+    basis_deriv2 = (1.0 - k) * approx.basis_deriv2_grid[i, :] + (
+        k * approx.basis_deriv2_grid[i + 1, :]
+    )
+    return basis, basis_deriv, basis_deriv2
+
+
+def _contract_basis_coef(basis: Array, coef: Array) -> Array:
+    if jnp.ndim(coef) < 2 or jnp.shape(coef)[-2] != 1:
+        raise ValueError("Spline coefficients must have shape (..., 1, n_param).")
+
+    return jnp.einsum("...nj,...j->...n", basis, coef[..., 0, :])
+
+
+# The custom JVPs give derivatives in the data from the precomputed derivative
+# grids. The spline's own arrays are fixed geometry: their tangents are ignored.
+
+
+@jax.custom_jvp
+def _dot_impl(approx: BSplineApprox, x: Array, coef: Array) -> Array:
+    return _contract_basis_coef(_approx_basis(approx, x), coef)
+
+
+@_dot_impl.defjvp
+def _dot_jvp(primals, tangents):
+    approx, x, coef = primals
+    _, x_dot, coef_dot = tangents
+
+    basis, basis_deriv = _approx_basis_and_deriv(approx, x)
+    smooth = _contract_basis_coef(basis, coef)
+    smooth_deriv = _contract_basis_coef(basis_deriv, coef)
+
+    tangent = smooth_deriv * x_dot + _contract_basis_coef(basis, coef_dot)
+    return smooth, tangent
+
+
+@jax.custom_jvp
+def _dot_and_deriv_impl(
+    approx: BSplineApprox, x: Array, coef: Array
+) -> tuple[Array, Array]:
+    """``x`` has shape ``(..., n)`` and ``coef`` has shape ``(..., 1, p)``."""
+    basis, basis_deriv = _approx_basis_and_deriv(approx, x)
+    return _contract_basis_coef(basis, coef), _contract_basis_coef(basis_deriv, coef)
+
+
+@_dot_and_deriv_impl.defjvp
+def _dot_and_deriv_jvp(primals, tangents):
+    approx, x, coef = primals
+    _, x_dot, coef_dot = tangents
+
+    basis, basis_deriv, basis_deriv2 = _approx_basis_deriv_and_deriv2(approx, x)
+    smooth = _contract_basis_coef(basis, coef)
+    smooth_deriv = _contract_basis_coef(basis_deriv, coef)
+    smooth_deriv2 = _contract_basis_coef(basis_deriv2, coef)
+
+    tangent_bdot = smooth_deriv * x_dot + _contract_basis_coef(basis, coef_dot)
+    tangent_deriv = smooth_deriv2 * x_dot + _contract_basis_coef(basis_deriv, coef_dot)
+
+    return (smooth, smooth_deriv), (tangent_bdot, tangent_deriv)
+
+
+_dot = jax.jit(_dot_impl)
+_dot_and_deriv = jax.jit(_dot_and_deriv_impl)

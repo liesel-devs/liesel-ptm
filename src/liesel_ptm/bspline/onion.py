@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Self
 
 import jax
@@ -61,57 +60,43 @@ class OnionKnots:
         )
 
 
-def get_onion_fn(knots) -> Callable[[Array], Array]:
-    """
-    Create a function to compute onion spline coefficients from log increments.
-
-    Parameters
-    ----------
-    knots
-        Spline knot sequence.
-
-    Returns
-    -------
-    compute_coef
-        Function that computes coefficients from log increments.
-    """
+def _onion_coef_constants(knots: Array) -> tuple[Array, Array, Array, Array]:
+    """Arrays that the onion coefficient map needs."""
     m = len(knots) - 6
     dk = jnp.diff(knots).mean()
 
-    dk_array = jnp.full((3,), fill_value=dk)
-    dk_array = jnp.log(dk_array)
-    latent_correction_denominator = jnp.log((m - 5) * dk)
+    log_dk = jnp.log(jnp.full((3,), fill_value=dk))
+    log_correction_denominator = jnp.log((m - 5) * dk)
 
     nparam = len(knots) - 11
     zeros = jnp.zeros((nparam,))
+    return log_dk, log_correction_denominator, zeros, knots[2]
 
-    def onion_correction(latent_coef):
-        """
-        Apply onion correction to latent coefficients.
-        """
-        latent_correction_numerator = jax.nn.logsumexp(latent_coef)
-        latent_correction = latent_correction_numerator - latent_correction_denominator
 
-        latent_coef = latent_coef - latent_correction
-        full_latent_coef = jnp.concatenate((dk_array, latent_coef, dk_array))
-        return full_latent_coef
+@jax.jit
+def _onion_coef(
+    log_increments: Array,
+    log_dk: Array,
+    log_correction_denominator: Array,
+    zeros: Array,
+    first_coef: Array,
+) -> Array:
+    """
+    Compute full onion spline coefficients from log increments.
+
+    The onion correction rescales the increments so that the spline maps its core
+    onto itself.
+    """
 
     def compute_coef(log_increments):
-        """
-        Compute full spline coefficients from log increments.
-        """
         log_increments = log_increments + zeros
+        correction = jax.nn.logsumexp(log_increments) - log_correction_denominator
+        full_latent_coef = jnp.concatenate(
+            (log_dk, log_increments - correction, log_dk)
+        )
+        return jnp.r_[(first_coef, jnp.exp(full_latent_coef))]
 
-        log_increments_slope_one = onion_correction(log_increments)
-        exp_coef = jnp.exp(log_increments_slope_one)
-
-        full_coef = jnp.r_[(knots[2], exp_coef)]
-
-        return full_coef
-
-    return jnp.vectorize(compute_coef, signature="(k)->(d)")
-
-    # return compute_coef
+    return jnp.vectorize(compute_coef, signature="(k)->(d)")(log_increments)
 
 
 class OnionSpline(TransformationSpline):
@@ -130,14 +115,35 @@ class OnionSpline(TransformationSpline):
 
     Notes
     -----
-    Set geometry and numerical settings before first evaluation; JIT kernels
-    capture them. Reuse the spline across parameter draws. Changing settings
-    requires a new spline, which creates a separate compilation-cache entry.
+    Splines are JAX pytrees. Splines with the same settings share compiled
+    kernels. Treat a spline as immutable: create a new one to change its knots
+    or settings.
     """
 
     def __init__(self, knots: Array) -> None:
         super().__init__(knots)
-        self._compute_coef = jax.jit(get_onion_fn(knots))
+        (
+            self._coef_log_dk,
+            self._coef_log_denominator,
+            self._coef_zeros,
+            self._coef_first,
+        ) = _onion_coef_constants(self.knots)
+
+    _array_fields = TransformationSpline._array_fields + (
+        "_coef_log_dk",
+        "_coef_log_denominator",
+        "_coef_zeros",
+        "_coef_first",
+    )
+
+    def _compute_coef(self, raw_coef: Array) -> Array:
+        return _onion_coef(
+            raw_coef,
+            self._coef_log_dk,
+            self._coef_log_denominator,
+            self._coef_zeros,
+            self._coef_first,
+        )
 
     @classmethod
     def from_bounds(cls, a: float, b: float, nparam: int, order: int = 3) -> Self:
