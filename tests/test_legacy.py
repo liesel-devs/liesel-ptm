@@ -187,7 +187,7 @@ def test_legacy_transformation_has_gaussian_identity_and_unit_tail_slopes():
     spline = transformation.bspline
     tail = jnp.array([-20.0, 20.0])
     coef = jnp.linspace(-0.4, 0.4, 6)
-    _, derivative = spline.dot_and_deriv_tfp(tail, coef)
+    _, derivative = spline.transformation_and_deriv(tail, coef)
     np.testing.assert_allclose(derivative, 1.0, atol=1e-6)
     dist = ptm.LocScaleTransformationDist(
         coef=jnp.zeros(6),

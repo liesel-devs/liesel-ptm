@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 
 Array = Any
 
+# Coefficient rows per block when a spline is inverted on a grid.
+INVERSE_BLOCK_ROWS = 256
+
 
 def _validate_gauss_legendre_order(
     order: int, name: str = "gauss_legendre_order"
@@ -208,7 +211,7 @@ def _onion_core_inverse_rows(
 
     def invert_row(row: tuple[Array, Array]) -> Array:
         value_row, coef_row = row
-        ygrid = bspline.dot_tfp(xgrid, coef_row)
+        ygrid = bspline.transformation(xgrid, coef_row)
         # h maps the core onto itself; pin the ends against rounding.
         ygrid = ygrid.at[0].set(lower).at[-1].set(upper)
         in_core = (value_row > lower) & (value_row < upper)
@@ -217,7 +220,7 @@ def _onion_core_inverse_rows(
         return jnp.where(in_core, inverse, value_row)
 
     n_rows = value_rows.shape[0]
-    batch_size = min(int(bspline.n_chunks), 256, n_rows)
+    batch_size = min(INVERSE_BLOCK_ROWS, n_rows)
     return jax.lax.map(invert_row, (value_rows, coef_rows), batch_size=batch_size)
 
 
@@ -318,7 +321,7 @@ class SplineBijector(tfb.AutoCompositeTensorBijector):
         parameters = dict(locals())
         if not jnp.issubdtype(coef.dtype, jnp.floating):
             raise TypeError("Spline coefficients must have a floating-point dtype.")
-        bspline._check_tfp_coef_core_shape(coef)
+        bspline._check_coef_shape(coef)
 
         self.coef = coef
         self.bspline = bspline
@@ -362,13 +365,13 @@ class SplineBijector(tfb.AutoCompositeTensorBijector):
             )
 
     def _coef_batch_shape(self) -> tuple[int, ...]:
-        return self.bspline._tfp_coef_batch_shape(self.coef)
+        return self.bspline._coef_batch_shape(self.coef)
 
     # Raw spline h, without centering and scaling.
 
     def _raw_value(self, y: Array) -> Array:
         y = jnp.asarray(y, dtype=self.dtype)
-        transf = self.bspline.dot_tfp(
+        transf = self.bspline.transformation(
             y, self.coef, batch_shape=self._coef_batch_shape()
         )
         return jnp.where(jnp.isnan(y), jnp.nan, transf)
@@ -376,7 +379,7 @@ class SplineBijector(tfb.AutoCompositeTensorBijector):
     def _raw_value_and_log_deriv(self, y: Array) -> tuple[Array, Array]:
         y = jnp.asarray(y, dtype=self.dtype)
         nan_mask = jnp.isnan(y)
-        transf, deriv = self.bspline.dot_and_deriv_tfp(
+        transf, deriv = self.bspline.transformation_and_deriv(
             y, self.coef, batch_shape=self._coef_batch_shape()
         )
         transf = jnp.where(nan_mask, jnp.nan, transf)
@@ -387,7 +390,7 @@ class SplineBijector(tfb.AutoCompositeTensorBijector):
 
     def _raw_inverse_value(self, z: Array) -> Array:
         z = jnp.asarray(z, dtype=self.dtype)
-        return self.bspline.dot_inverse_tfp(
+        return self.bspline.inverse_transformation(
             z, self.coef, batch_shape=self._coef_batch_shape()
         )
 
@@ -597,12 +600,10 @@ class OnionSplineBijector(SplineBijector):
         batch_shape = self._coef_batch_shape()
 
         value, sample_shape, value_batch_shape, result_batch_shape = (
-            bspline._tfp_value_layout(z, batch_shape)
+            bspline._value_layout(z, batch_shape)
         )
         sample_size = int(np.prod(sample_shape)) if sample_shape else 1
-        value = bspline._compact_tfp_to_legacy_batch_last(
-            value, value_batch_shape, sample_shape
-        )
+        value = bspline._to_batch_last(value, value_batch_shape, sample_shape)
         # The layout pads value_batch_shape to the length of the coefficient batch
         # shape, so both broadcast to result_batch_shape directly.
         n_param = self.coef.shape[-1]
@@ -613,6 +614,4 @@ class OnionSplineBijector(SplineBijector):
 
         inverse_rows = _onion_core_inverse_rows(bspline, value_rows, coef_rows)
         inverse = jnp.reshape(inverse_rows, result_batch_shape + (sample_size,))
-        return bspline._legacy_batch_last_to_tfp(
-            inverse, result_batch_shape, sample_shape
-        )
+        return bspline._from_batch_last(inverse, result_batch_shape, sample_shape)

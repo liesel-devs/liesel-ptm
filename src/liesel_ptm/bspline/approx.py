@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -328,9 +327,6 @@ class BSplineApprox:
         order: int,
         ngrid: int = 1000,
         postmultiply_by: Array | None = None,
-        subscripts: Literal[
-            "...nj,...j->...n", "...nj,...nj->...n"
-        ] = "...nj,...j->...n",
     ) -> None:
         self.knots = jnp.asarray(knots)
         self.dknots = jnp.mean(jnp.diff(knots))
@@ -367,25 +363,10 @@ class BSplineApprox:
 
     @staticmethod
     def _contract_basis_coef(basis: Array, coef: Array) -> Array:
-        if jnp.ndim(coef) < 2:
-            raise ValueError(
-                "Spline coefficients must have shape (..., n_coef, n_param). "
-                "Use shape (1, n_param) for shared coefficients."
-            )
+        if jnp.ndim(coef) < 2 or jnp.shape(coef)[-2] != 1:
+            raise ValueError("Spline coefficients must have shape (..., 1, n_param).")
 
-        n_eval = jnp.shape(basis)[-2]
-        n_coef = jnp.shape(coef)[-2]
-
-        if n_coef == 1:
-            return jnp.einsum("...nj,...j->...n", basis, coef[..., 0, :])
-
-        if n_coef != n_eval:
-            raise ValueError(
-                "Spline coefficients with n_coef > 1 must match the evaluation "
-                f"axis length. Got {n_coef=} and {n_eval=}."
-            )
-
-        return jnp.einsum("...nj,...nj->...n", basis, coef)
+        return jnp.einsum("...nj,...j->...n", basis, coef[..., 0, :])
 
     def _compute_basis_and_deriv2(
         self, x: Array
@@ -478,7 +459,7 @@ class BSplineApprox:
         ) -> tuple[Array, Array]:
             """
             Assumes x has shape ``(..., n)`` and coef has shape
-            ``(..., n_coef, p)``.
+            ``(..., 1, p)``.
             """
             basis, basis_deriv = self.get_basis_and_deriv(x)
             smooth = self._contract_basis_coef(basis, coef)

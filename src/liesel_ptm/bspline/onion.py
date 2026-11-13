@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Literal, Self
+from typing import Self
 
 import jax
 import jax.numpy as jnp
@@ -135,15 +135,8 @@ class OnionSpline(TransformationSpline):
     requires a new spline, which creates a separate compilation-cache entry.
     """
 
-    def __init__(
-        self,
-        knots: Array,
-        subscripts: Literal[
-            "...nj,...j->...n", "...nj,...nj->...n"
-        ] = "...nj,...j->...n",
-    ) -> None:
-        super().__init__(knots, subscripts=subscripts)
-        self.supports_rowwise_coef = True
+    def __init__(self, knots: Array) -> None:
+        super().__init__(knots)
         self._compute_coef = jax.jit(get_onion_fn(knots))
 
     @classmethod
@@ -224,7 +217,6 @@ class OnionSpline(TransformationSpline):
         Compute dot product and derivative for broadcasted values and coefficients.
         """
         x = value
-        coef = self._coef_for_eval(x, coef)
         fx_n, deriv_n = self.bspline.dot_and_deriv_n(x, coef)
         in_core = (x >= self.min_knot) & (x <= self.max_knot)
         fx_n = jnp.where(in_core, fx_n, x)
@@ -236,7 +228,6 @@ class OnionSpline(TransformationSpline):
         Compute dot product for broadcasted values and coefficients.
         """
         x = value
-        coef = self._coef_for_eval(x, coef)
         fx_n = self.bspline.dot_n(x, coef)
         in_core = (x >= self.min_knot) & (x <= self.max_knot)
         return jnp.where(in_core, fx_n, x)
