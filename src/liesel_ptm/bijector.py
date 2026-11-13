@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Callable
-from functools import cache, partial
+from functools import cache
 from typing import TYPE_CHECKING, Any
 
 import jax
@@ -193,7 +193,7 @@ def _validate_reference_order(reference_order: int | None, order: int) -> int:
     return reference_order
 
 
-@partial(jax.jit, static_argnums=0)
+@jax.jit
 def _onion_core_inverse_rows(
     bspline: OnionSpline, value_rows: Array, coef_rows: Array
 ) -> Array:

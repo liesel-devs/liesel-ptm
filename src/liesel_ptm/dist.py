@@ -263,7 +263,9 @@ class TransformationDist(tfd.Distribution):
             for key, value in self.parametric_distribution_kwargs.items()
             if _is_array_parameter(value)
         )
-        return ("coef",) + parametric
+        # The spline is a pytree too, so a jitted function that takes the
+        # distribution doesn't keep the spline alive or compile per instance.
+        return ("coef", "bspline") + parametric
 
     def __getitem__(self, slices: Any) -> Self:
         """Slice the batch dimensions, like other TFP distributions.

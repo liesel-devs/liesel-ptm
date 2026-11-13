@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from functools import partial
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -49,31 +47,70 @@ class TransformationSpline:
 
         Notes
         -----
-        Treat geometry and numerical settings as immutable after first evaluation:
-        JIT kernels capture them. Create a new spline to change these settings.
-        Reuse one spline across parameter draws; JAX's compilation cache retains
-        static spline instances and compiles separately for each new instance.
+        Splines are JAX pytrees, so they can be passed into jitted functions.
+        Splines with the same settings share compiled kernels, and a discarded
+        spline is freed. Treat a spline as immutable: create a new one to change
+        its knots or settings.
         """
+        knots = jnp.asarray(knots)
         self.knots = knots
-        self._knots_np = np.asarray(jax.device_get(knots), dtype=float)
+        self._knots_tuple = tuple(
+            float(k) for k in np.asarray(jax.device_get(knots), dtype=float)
+        )
 
-        self._nparam = knots.size - 4  # len(knots) - order - 1; order is fixed to 3
+        self._nparam = int(knots.size) - 4  # len(knots) - order - 1; order is 3
         S = jnp.tril(jnp.ones((self._nparam, self._nparam)))
         self.bspline = BSplineApprox(knots, order=3, ngrid=1000, postmultiply_by=S)
 
         self.min_knot = self.bspline.min_knot
         self.max_knot = self.bspline.max_knot
 
-        self._outer_knot_left = float(self.bspline.knots[0])
-        self._outer_knot_right = float(self.bspline.knots[-1])
+        self._outer_knot_left = self._knots_tuple[0]
+        self._outer_knot_right = self._knots_tuple[-1]
         self._ngrid_inverse = int(
             int(self.bspline.knots[-1] - self.bspline.knots[0]) * 100
         )
 
-        def _compute_coef_default(x):
-            raise NotImplementedError
+    # Splines are pytrees: arrays are leaves and hashable host-side settings are
+    # static aux data. JAX's caches then hold no spline objects, splines with
+    # equal settings share compiled kernels, and coefficients stay dynamic.
+    # Subclasses extend both tuples with their own fields.
+    _array_fields: tuple[str, ...] = ("knots", "bspline", "min_knot", "max_knot")
+    _static_fields: tuple[str, ...] = (
+        "_knots_tuple",
+        "_nparam",
+        "_outer_knot_left",
+        "_outer_knot_right",
+        "_ngrid_inverse",
+    )
 
-        self._compute_coef = _compute_coef_default
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        jax.tree_util.register_pytree_node_class(cls)
+
+    def tree_flatten(self) -> tuple[tuple[object, ...], tuple[object, ...]]:
+        children = tuple(getattr(self, name) for name in self._array_fields)
+        aux = tuple(getattr(self, name) for name in self._static_fields)
+        return children, aux
+
+    @classmethod
+    def tree_unflatten(
+        cls, aux: tuple[object, ...], children: tuple[object, ...]
+    ) -> TransformationSpline:
+        obj = object.__new__(cls)
+        for name, value in zip(cls._static_fields, aux, strict=True):
+            setattr(obj, name, value)
+        for name, value in zip(cls._array_fields, children, strict=True):
+            setattr(obj, name, value)
+        return obj
+
+    @property
+    def _knots_np(self) -> np.ndarray:
+        return np.asarray(self._knots_tuple)
+
+    def _compute_coef(self, raw_coef: Array) -> Array:
+        """Map raw coefficients with shape ``(..., n_param)`` to spline coefficients."""
+        raise NotImplementedError
 
     def bijector(
         self,
@@ -223,89 +260,6 @@ class TransformationSpline:
         """
         return self.bspline.dot_n(value, coef)
 
-    def _inverse_rows_with_shared_grid(
-        self, value_rows: Array, coef_rows: Array
-    ) -> Array:
-        value_min = jnp.min(value_rows, axis=-1)
-        value_max = jnp.max(value_rows, axis=-1)
-        dtype = jnp.asarray(value_rows).dtype
-
-        def fn(x: Array) -> Array:
-            return self._evaluate_spline(jnp.atleast_1d(x), coef_rows)[0]
-
-        xlo_start = jnp.asarray(self._outer_knot_left, dtype=dtype)
-        left_shift = jnp.asarray(0.1, dtype=dtype)
-        min_grid = jnp.min(fn(xlo_start - left_shift), axis=-1)
-
-        def left_cond(val):
-            _, min_grid = val
-            return jnp.any(min_grid >= value_min)
-
-        def left_body(val):
-            left_shift, _ = val
-            left_shift = left_shift + jnp.asarray(0.5, dtype=dtype)
-            min_grid = jnp.min(fn(xlo_start - left_shift), axis=-1)
-            return left_shift, min_grid
-
-        left_shift, _ = jax.lax.while_loop(left_cond, left_body, (left_shift, min_grid))
-        xlo = xlo_start - left_shift
-
-        xhi_start = jnp.asarray(self._outer_knot_right, dtype=dtype)
-        right_shift = jnp.asarray(0.1, dtype=dtype)
-        max_grid = jnp.max(fn(xhi_start + right_shift), axis=-1)
-
-        def right_cond(val):
-            _, max_grid = val
-            return jnp.any(max_grid <= value_max)
-
-        def right_body(val):
-            right_shift, _ = val
-            right_shift = right_shift + jnp.asarray(0.5, dtype=dtype)
-            max_grid = jnp.max(fn(xhi_start + right_shift), axis=-1)
-            return right_shift, max_grid
-
-        right_shift, _ = jax.lax.while_loop(
-            right_cond, right_body, (right_shift, max_grid)
-        )
-        xhi = xhi_start + right_shift
-
-        xgrid = jnp.linspace(xlo, xhi, self._ngrid_inverse)
-        ygrid = fn(xgrid)
-
-        return jax.vmap(
-            lambda value_row, ygrid_row: interp1d(
-                value_row, ygrid_row, xgrid, method="monotonic"
-            )
-        )(value_rows, ygrid)
-
-    @partial(jax.jit, static_argnums=0)
-    def _inverse_rows_chunked(self, value_rows: Array, coef_rows: Array) -> Array:
-        B, n = value_rows.shape
-        p = coef_rows.shape[-1]
-
-        chunk_size = min(INVERSE_BLOCK_ROWS, B)
-        pad = (-B) % chunk_size
-
-        if pad:
-            value_pad = jnp.broadcast_to(value_rows[:1, :], (pad, n))
-            coef_pad = jnp.broadcast_to(coef_rows[:1, :, :], (pad, 1, p))
-            value_rows = jnp.concatenate((value_rows, value_pad), axis=0)
-            coef_rows = jnp.concatenate((coef_rows, coef_pad), axis=0)
-
-        n_blocks = value_rows.shape[0] // chunk_size
-        value_blocks = jnp.reshape(value_rows, (n_blocks, chunk_size, n))
-        coef_blocks = jnp.reshape(coef_rows, (n_blocks, chunk_size, 1, p))
-
-        def body(carry, inputs):
-            value_block, coef_block = inputs
-            inverse_block = self._inverse_rows_with_shared_grid(value_block, coef_block)
-            return carry, inverse_block
-
-        _, inverse_blocks = jax.lax.scan(body, None, (value_blocks, coef_blocks))
-        inverse_rows = jnp.reshape(inverse_blocks, (n_blocks * chunk_size, n))
-
-        return inverse_rows[:B, :]
-
     def evaluate_and_deriv(
         self,
         value: Array,
@@ -432,7 +386,92 @@ class TransformationSpline:
         coef = _broadcast_leading_core(coef, result_batch_shape, core_ndims=2)
         _, p = jnp.shape(coef)[-2:]
         coef_rows = jnp.reshape(coef, (-1, 1, p))
-        inverse_rows = self._inverse_rows_chunked(value_rows, coef_rows)
+        inverse_rows = _inverse_rows_chunked(self, value_rows, coef_rows)
         inverse = jnp.reshape(inverse_rows, result_batch_shape + (sample_size,))
 
         return self._from_batch_last(inverse, result_batch_shape, sample_shape)
+
+
+def _inverse_rows_with_shared_grid(
+    spline: TransformationSpline, value_rows: Array, coef_rows: Array
+) -> Array:
+    value_min = jnp.min(value_rows, axis=-1)
+    value_max = jnp.max(value_rows, axis=-1)
+    dtype = jnp.asarray(value_rows).dtype
+
+    def fn(x: Array) -> Array:
+        return spline._evaluate_spline(jnp.atleast_1d(x), coef_rows)[0]
+
+    xlo_start = jnp.asarray(spline._outer_knot_left, dtype=dtype)
+    left_shift = jnp.asarray(0.1, dtype=dtype)
+    min_grid = jnp.min(fn(xlo_start - left_shift), axis=-1)
+
+    def left_cond(val):
+        _, min_grid = val
+        return jnp.any(min_grid >= value_min)
+
+    def left_body(val):
+        left_shift, _ = val
+        left_shift = left_shift + jnp.asarray(0.5, dtype=dtype)
+        min_grid = jnp.min(fn(xlo_start - left_shift), axis=-1)
+        return left_shift, min_grid
+
+    left_shift, _ = jax.lax.while_loop(left_cond, left_body, (left_shift, min_grid))
+    xlo = xlo_start - left_shift
+
+    xhi_start = jnp.asarray(spline._outer_knot_right, dtype=dtype)
+    right_shift = jnp.asarray(0.1, dtype=dtype)
+    max_grid = jnp.max(fn(xhi_start + right_shift), axis=-1)
+
+    def right_cond(val):
+        _, max_grid = val
+        return jnp.any(max_grid <= value_max)
+
+    def right_body(val):
+        right_shift, _ = val
+        right_shift = right_shift + jnp.asarray(0.5, dtype=dtype)
+        max_grid = jnp.max(fn(xhi_start + right_shift), axis=-1)
+        return right_shift, max_grid
+
+    right_shift, _ = jax.lax.while_loop(right_cond, right_body, (right_shift, max_grid))
+    xhi = xhi_start + right_shift
+
+    xgrid = jnp.linspace(xlo, xhi, spline._ngrid_inverse)
+    ygrid = fn(xgrid)
+
+    return jax.vmap(
+        lambda value_row, ygrid_row: interp1d(
+            value_row, ygrid_row, xgrid, method="monotonic"
+        )
+    )(value_rows, ygrid)
+
+
+@jax.jit
+def _inverse_rows_chunked(
+    spline: TransformationSpline, value_rows: Array, coef_rows: Array
+) -> Array:
+    B, n = value_rows.shape
+    p = coef_rows.shape[-1]
+
+    chunk_size = min(INVERSE_BLOCK_ROWS, B)
+    pad = (-B) % chunk_size
+
+    if pad:
+        value_pad = jnp.broadcast_to(value_rows[:1, :], (pad, n))
+        coef_pad = jnp.broadcast_to(coef_rows[:1, :, :], (pad, 1, p))
+        value_rows = jnp.concatenate((value_rows, value_pad), axis=0)
+        coef_rows = jnp.concatenate((coef_rows, coef_pad), axis=0)
+
+    n_blocks = value_rows.shape[0] // chunk_size
+    value_blocks = jnp.reshape(value_rows, (n_blocks, chunk_size, n))
+    coef_blocks = jnp.reshape(coef_rows, (n_blocks, chunk_size, 1, p))
+
+    def body(carry, inputs):
+        value_block, coef_block = inputs
+        inverse_block = _inverse_rows_with_shared_grid(spline, value_block, coef_block)
+        return carry, inverse_block
+
+    _, inverse_blocks = jax.lax.scan(body, None, (value_blocks, coef_blocks))
+    inverse_rows = jnp.reshape(inverse_blocks, (n_blocks * chunk_size, n))
+
+    return inverse_rows[:B, :]

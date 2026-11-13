@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Self
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jax import Array
 
-from .approx import BSplineApprox, bspline_basis, equidistant_knots
+from .approx import bspline_basis, equidistant_knots
 from .util import TransformationSpline
 
 # Slope of the identity tails; the tail transitions move towards it.
@@ -116,30 +114,25 @@ def normalization_coef_log(shape: Array, dknots: Array) -> Array:
     return corrected_coef
 
 
-def get_ptm_coef_fn(knots: Array) -> Callable[[Array], Array]:
-    """
-    Get the function that computes PTM spline coefficients.
-
-    Assumes knots were created for a cubic spline.
-
-    Parameters
-    ----------
-    knots
-        Spline knot sequence for a cubic spline.
-
-    Returns
-    -------
-    compute_coef
-        Function that maps log increments with shape ``(..., nparam)`` to
-        cumulative-sum spline coefficients with shape ``(..., nparam + 1)``.
-        The spline has average slope one and passes through ``knots[3]`` at
-        ``knots[3]``.
-    """
+def _ptm_coef_constants(knots: Array) -> tuple[Array, Array, Array]:
+    """Arrays that the PTM coefficient map needs, for a cubic spline's knots."""
     k1 = knots[3]
     B = bspline_basis(jnp.atleast_1d(knots[3]), knots, 3)
     S = jnp.tril(jnp.ones((B.shape[-1], B.shape[-1])))  # for cumulative sum
     B = B @ S
     step = jnp.diff(knots).mean()
+    return B, k1, step
+
+
+@jax.jit
+def _ptm_coef(log_increments: Array, B: Array, k1: Array, step: Array) -> Array:
+    """
+    Map log increments with shape ``(..., nparam)`` to cumulative-sum spline
+    coefficients with shape ``(..., nparam + 1)``.
+
+    The spline has average slope one and passes through ``knots[3]`` at
+    ``knots[3]``.
+    """
 
     def compute_row(log_increments: Array) -> Array:
         log_increments = normalization_coef_log(log_increments, step)
@@ -148,13 +141,10 @@ def get_ptm_coef_fn(knots: Array) -> Callable[[Array], Array]:
         offset = (B @ prelim_coef) - k1
         return jnp.concatenate((-offset, exp_coef), axis=-1)
 
-    def compute_coef(log_increments: Array) -> Array:
-        leading_shape = jnp.shape(log_increments)[:-1]
-        rows = jnp.reshape(log_increments, (-1, jnp.shape(log_increments)[-1]))
-        coef = jax.vmap(compute_row)(rows)
-        return jnp.reshape(coef, leading_shape + coef.shape[-1:])
-
-    return compute_coef
+    leading_shape = jnp.shape(log_increments)[:-1]
+    rows = jnp.reshape(log_increments, (-1, jnp.shape(log_increments)[-1]))
+    coef = jax.vmap(compute_row)(rows)
+    return jnp.reshape(coef, leading_shape + coef.shape[-1:])
 
 
 class PTMSpline(TransformationSpline):
@@ -188,9 +178,9 @@ class PTMSpline(TransformationSpline):
 
     Notes
     -----
-    Set geometry and numerical settings before first evaluation; JIT kernels
-    capture them. Reuse the spline across parameter draws. Changing settings
-    requires a new spline, which creates a separate compilation-cache entry.
+    Splines are JAX pytrees. Splines with the same settings share compiled
+    kernels. Treat a spline as immutable: create a new one to change its knots
+    or settings.
     """
 
     def __init__(
@@ -202,23 +192,10 @@ class PTMSpline(TransformationSpline):
         if eps < 1e-6:
             raise ValueError(f"{eps=} is < 1e-6; that is numerically unstable.")
 
-        self.knots = knots
-        self._knots_np = np.asarray(jax.device_get(knots), dtype=float)
-
-        self._nparam = knots.size - 4  # len(knots) - order - 1; order is fixed to 3
-        S = jnp.tril(jnp.ones((self._nparam, self._nparam)))
-        self.bspline = BSplineApprox(knots, order=3, ngrid=1000, postmultiply_by=S)
-
-        self.min_knot = self.bspline.min_knot
-        self.max_knot = self.bspline.max_knot
-
-        self._outer_knot_left = float(self.bspline.knots[0])
-        self._outer_knot_right = float(self.bspline.knots[-1])
-        self._ngrid_inverse = int(
-            int(self.bspline.knots[-1] - self.bspline.knots[0]) * 100
+        super().__init__(knots)
+        self._coef_basis, self._coef_k1, self._coef_step = _ptm_coef_constants(
+            self.knots
         )
-
-        self._compute_coef = jax.jit(get_ptm_coef_fn(knots))
 
         if continue_linearly:
             eps = 100000.0
@@ -228,6 +205,19 @@ class PTMSpline(TransformationSpline):
         self.max_eps = self.max_knot + self.transition_width
 
         self._boundaries = jnp.array([self.min_knot, self.max_knot])
+
+    _array_fields = TransformationSpline._array_fields + (
+        "_coef_basis",
+        "_coef_k1",
+        "_coef_step",
+        "transition_width",
+        "min_eps",
+        "max_eps",
+        "_boundaries",
+    )
+
+    def _compute_coef(self, raw_coef: Array) -> Array:
+        return _ptm_coef(raw_coef, self._coef_basis, self._coef_k1, self._coef_step)
 
     @classmethod
     def from_bounds(
