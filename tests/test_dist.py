@@ -972,3 +972,85 @@ class TestResponseMoments:
         assert 32 not in orders and 64 not in orders
         assert np.isfinite(low.mean())
         assert 32 in orders
+
+
+def _jaxpr_shapes(jaxpr) -> set[tuple[int, ...]]:
+    """Collect the shapes of all intermediate arrays, including nested jaxprs."""
+    shapes = set()
+    for eqn in jaxpr.eqns:
+        shapes.update(tuple(var.aval.shape) for var in eqn.outvars)
+        for param in eqn.params.values():
+            for sub in param if isinstance(param, (list, tuple)) else [param]:
+                sub = getattr(sub, "jaxpr", sub)
+                if hasattr(sub, "eqns"):
+                    shapes |= _jaxpr_shapes(sub)
+    return shapes
+
+
+class TestSplineCoefBatchShape:
+    """Shared spline coefficients stay shared under per-observation loc and scale."""
+
+    n = 37  # distinct from the coefficient and grid sizes used below
+
+    @pytest.fixture(params=["onion", "ptm"])
+    def spline(self, request):
+        if request.param == "onion":
+            return OnionSpline(OnionKnots(-4.0, 4.0, nparam=10).knots)
+        return PTMSpline(PTMKnots(-4.0, 4.0, nparam=10).knots)
+
+    def dist(self, spline, coef, **kwargs):
+        loc = jnp.linspace(-1.0, 1.0, self.n)
+        scale = jnp.linspace(0.5, 2.0, self.n)
+        return ptm.LocScaleTransformationDist(
+            coef=coef, loc=loc, scale=scale, bspline=spline, **kwargs
+        )
+
+    @pytest.mark.parametrize("method", ["log_prob", "quantile"])
+    def test_coef_is_not_broadcast_to_observations(self, spline, method):
+        coef = 0.3 * jnp.ones(10)
+        n_coef = spline._compute_tfp_coef_for_eval(coef).shape[-1]
+        value = jnp.full(self.n, 0.3)
+
+        def fn(coef):
+            return getattr(self.dist(spline, coef), method)(value)
+
+        shapes = _jaxpr_shapes(jax.make_jaxpr(fn)(coef).jaxpr)
+        assert (self.n, 1, n_coef) not in shapes
+
+    @pytest.mark.parametrize("centered", [False, True])
+    def test_shared_coef_matches_repeated_coef(self, spline, centered):
+        coef = random_walk_coef(jax.random.key(2), (), 10)
+        shared = self.dist(spline, coef, centered=centered, scaled=centered)
+        repeated = self.dist(
+            spline,
+            jnp.broadcast_to(coef, (self.n, 10)),
+            centered=centered,
+            scaled=centered,
+        )
+        y = jnp.linspace(-3.0, 3.0, self.n)
+        probs = jnp.linspace(0.05, 0.95, self.n)
+
+        for method, value in [
+            ("log_prob", y),
+            ("cdf", y),
+            ("log_prob_spline", y),
+            ("quantile", probs),
+            ("quantile_spline", probs),
+        ]:
+            np.testing.assert_allclose(
+                getattr(shared, method)(value),
+                getattr(repeated, method)(value),
+                rtol=1e-5,
+                atol=1e-5,
+                err_msg=method,
+            )
+
+    def test_spline_methods_keep_full_batch_shape(self, spline):
+        dist = self.dist(spline, random_walk_coef(jax.random.key(3), (), 10))
+
+        z, logdet = dist.transformation_and_logdet_spline(0.5)
+        assert z.shape == logdet.shape == (self.n,)
+        for method in ["log_prob_spline", "cdf_spline", "quantile_spline"]:
+            assert getattr(dist, method)(0.5).shape == (self.n,), method
+        assert dist.inverse_transformation_spline(0.5).shape == (self.n,)
+        assert dist.sample(3, seed=jax.random.key(4)).shape == (3, self.n)

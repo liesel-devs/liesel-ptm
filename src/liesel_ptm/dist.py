@@ -454,24 +454,46 @@ class TransformationDist(tfd.Distribution):
     def _broadcast_to_batch(self, value: Array) -> Array:
         return jnp.broadcast_to(jnp.asarray(value), self._batch_shape_tuple())
 
+    # The spline evaluators below evaluate with the coefficients' own batch shape.
+    # With the full batch shape, per-observation parametric parameters would
+    # broadcast shared coefficients to one copy per observation, and the inverse
+    # would build one grid per observation. The cheap outputs are then broadcast
+    # to the shape that the full batch shape gives.
+
+    def _spline_output_shape(
+        self, value: Array, batch_shape: tuple[int, ...] | None
+    ) -> tuple[int, ...]:
+        if batch_shape is None:
+            batch_shape = self._batch_shape_tuple()
+        _, sample_shape, _, result_batch_shape = self.bspline._tfp_value_layout(
+            value, batch_shape
+        )
+        return sample_shape + result_batch_shape
+
     def _spline_forward_tfp(
         self, value: Array, batch_shape: tuple[int, ...] | None = None
     ) -> tuple[Array, Array]:
-        if batch_shape is None:
-            batch_shape = self._batch_shape_tuple()
-        return self.bspline.dot_and_deriv_tfp(value, self.coef, batch_shape=batch_shape)
+        shape = self._spline_output_shape(value, batch_shape)
+        transf, deriv = self.bspline.dot_and_deriv_tfp(
+            value, self.coef, batch_shape=self._spline_coef_batch_shape_tuple()
+        )
+        return jnp.broadcast_to(transf, shape), jnp.broadcast_to(deriv, shape)
 
     def _spline_value_tfp(
         self, value: Array, batch_shape: tuple[int, ...] | None = None
     ) -> Array:
-        if batch_shape is None:
-            batch_shape = self._batch_shape_tuple()
-        return self.bspline.dot_tfp(value, self.coef, batch_shape=batch_shape)
+        shape = self._spline_output_shape(value, batch_shape)
+        transf = self.bspline.dot_tfp(
+            value, self.coef, batch_shape=self._spline_coef_batch_shape_tuple()
+        )
+        return jnp.broadcast_to(transf, shape)
 
     def _spline_inverse_tfp(self, value: Array) -> Array:
-        return self.bspline.dot_inverse_tfp(
-            value, self.coef, batch_shape=self._batch_shape_tuple()
+        shape = self._spline_output_shape(value, None)
+        inverse = self.bspline.dot_inverse_tfp(
+            value, self.coef, batch_shape=self._spline_coef_batch_shape_tuple()
         )
+        return jnp.broadcast_to(inverse, shape)
 
     def _broadcast_tfp_value(self, value: Array) -> Array:
         value = jnp.asarray(value, dtype=self.dtype)
