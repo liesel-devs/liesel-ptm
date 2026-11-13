@@ -46,6 +46,23 @@ class TestMonotonicityAndInverse:
         assert not jnp.any(jnp.isnan(x2))
         assert jnp.allclose(x2, x, atol=1e-4)
 
+    def test_batched_inverse_over_core_and_tails(self):
+        # 300 clearly different coefficient rows: more than one inversion block,
+        # so blocks are padded and rows in a block share one grid.
+        batch_shape = (2, 150)
+        steps = 0.4 * jax.random.normal(
+            jax.random.key(11), batch_shape + (knots.nparam,)
+        )
+        batched_coef = jnp.cumsum(steps, axis=-1)
+        x = jnp.linspace(-8.0, 8.0, 200).reshape((200, 1, 1))
+        fx = bs.evaluate(x, batched_coef)
+
+        x2 = bs.inverse(fx, batched_coef)
+
+        assert x2.shape == (200,) + batch_shape
+        assert not jnp.any(jnp.isnan(x2))
+        assert jnp.allclose(x2, jnp.broadcast_to(x, x2.shape), atol=1e-4)
+
 
 class TestBatchLayout:
     @staticmethod
