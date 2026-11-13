@@ -22,6 +22,7 @@ nav = [
   { "Getting started" = "index.md" },
   { "Guides" = [
     { "Fit a fixed-shape PTM" = "guides/fixed-shape.md" },
+    { "Fit a censored PTM" = "guides/censored.md" },
     { "Fit a conditional-shape PTM" = "guides/conditional-shape.md" },
     { "Fit a legacy PTM" = "guides/legacy.md" },
     { "Inspect distribution effects" = "guides/term-distributions.md" },

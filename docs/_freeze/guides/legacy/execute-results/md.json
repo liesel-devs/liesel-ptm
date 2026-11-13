@@ -6,6 +6,7 @@
     "supporting": [
       "legacy_files"
     ],
-    "filters": []
+    "filters": [],
+    "includes": {}
   }
 }

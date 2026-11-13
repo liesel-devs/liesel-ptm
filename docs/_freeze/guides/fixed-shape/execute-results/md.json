@@ -6,6 +6,7 @@
     "supporting": [
       "fixed-shape_files"
     ],
-    "filters": []
+    "filters": [],
+    "includes": {}
   }
 }

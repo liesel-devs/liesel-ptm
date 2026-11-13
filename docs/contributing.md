@@ -3,7 +3,7 @@
 ## Build the documentation
 
 Use Python 3.13, [uv](https://docs.astral.sh/uv/),
-[Quarto](https://quarto.org/docs/get-started/) 1.8.27, and Graphviz (`dot`).
+[Quarto](https://quarto.org/docs/get-started/) 1.11.9, and Graphviz (`dot`).
 CI uses the same Quarto version. On macOS, install Quarto and Graphviz with
 `brew install --cask quarto` and `brew install graphviz`; the Quarto download page
 also provides versioned installers. On Ubuntu, install Graphviz with

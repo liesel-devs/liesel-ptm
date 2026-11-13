@@ -4,6 +4,10 @@ These functions return plotnine plots. See [distribution effects](../guides/term
 for examples of term-induced standardized distributions and full conditional
 response distributions.
 
+For a model from [PTM.from_censored][liesel_ptm.PTM.from_censored], pass
+`model.response` as usual; the functions use the uncensored response
+distribution, not the censoring-record likelihood.
+
 Discrete color and fill scales use the Okabe-Ito palette for up to eight levels,
 then discrete viridis. Replace them with ordinary plotnine scales when needed.
 

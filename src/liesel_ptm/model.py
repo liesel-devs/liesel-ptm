@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from numbers import Integral, Real
-from typing import Literal
+from typing import Literal, Self
 
 import jax.numpy as jnp
 import liesel.model as lsl
@@ -15,6 +15,7 @@ from jax.typing import ArrayLike
 
 from .bspline import OnionKnots, OnionSpline, PTMSpline
 from .dist import LocScaleTransformationDist
+from .survival_dist import CensoredDist
 
 
 @dataclass
@@ -59,6 +60,15 @@ def _make_response(y: ArrayLike | Sequence[float] | lsl.Var) -> lsl.Var:
             "y must be an unowned observed variable without a distribution."
         )
     return response
+
+
+def _check_record_shape(response: lsl.Var) -> None:
+    records = np.asarray(response.value)
+    if records.ndim != 2 or records.shape[-1] != 3 or not records.shape[0]:
+        raise ValueError(
+            "Censoring records must be a nonempty array with shape (n, 3) and "
+            f"columns [time, lower, upper]; got shape {records.shape}."
+        )
 
 
 @contextmanager
@@ -231,13 +241,128 @@ class PTM(lsl.Model):
         shape: gam.MVAdditivePredictor | None = None,
         shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
     ) -> None:
+        self._initialize(
+            y,
+            nshape=nshape,
+            bounds=bounds,
+            loc=loc,
+            scale=scale,
+            shape=shape,
+            shape_scale=shape_scale,
+            censored=False,
+        )
+
+    @classmethod
+    def from_censored(
+        cls,
+        y: ArrayLike | lsl.Var,
+        *,
+        nshape: int,
+        bounds: tuple[float, float] = (-4.0, 4.0),
+        loc: gam.AdditivePredictor | None = None,
+        scale: gam.AdditivePredictor | None = None,
+        shape: gam.MVAdditivePredictor | None = None,
+        shape_scale: lsl.Var | gam.VarIGPrior | float | None = None,
+        cache: bool = False,
+    ) -> Self:
+        """Create a PTM for censored observations.
+
+        The likelihood uses densities for uncensored observations and
+        probabilities for censored ones. Predictors, priors and their defaults
+        are those of [PTM][liesel_ptm.PTM].
+
+        Parameters
+        ----------
+        y
+            Nonempty censoring records with shape `(n, 3)` and columns
+            `[time, lower, upper]`, or an observed `liesel.model.Var` without a
+            distribution containing them. An array becomes a response variable
+            named `y`. Create records with
+            [censored][liesel_ptm.survival_dist.censored] or a dedicated helper,
+            such as [right_censored][liesel_ptm.survival_dist.right_censored].
+        nshape, bounds, loc, scale, shape, shape_scale
+            As in [PTM][liesel_ptm.PTM].
+        cache
+            Whether to cache each row's observation type, as in
+            [CensoredDist][liesel_ptm.survival_dist.CensoredDist]. The cache is
+            several times faster, but the response's row types must then stay
+            fixed.
+
+        Returns
+        -------
+        PTM
+            An ordinary PTM whose response distribution evaluates censoring
+            records.
+
+        Raises
+        ------
+        ValueError
+            If records do not have shape `(n, 3)`, contain invalid
+            missing-value patterns, or contain an interval without positive
+            width in the likelihood dtype, or for the reasons listed under
+            [PTM][liesel_ptm.PTM].
+
+        Notes
+        -----
+        The response distribution is a
+        [CensoredDist][liesel_ptm.survival_dist.CensoredDist]. Without the
+        cache, row types are re-read from the response value whenever it is
+        evaluated, so the records can change after construction. Records are
+        validated whenever the response distribution is updated with concrete
+        values.
+
+        Summary and plotting functions accept `model.response` and use the
+        uncensored distribution of the modeled response.
+
+        Examples
+        --------
+        >>> import liesel_ptm as ptm
+        >>> from liesel_ptm import survival_dist as surv
+        >>> records = surv.right_censored(
+        ...     [0.4, -0.2, 1.3], censored=[False, True, False]
+        ... )
+        >>> model = ptm.PTM.from_censored(records, nshape=4)
+        >>> model.response.value.shape
+        (3, 3)
+        >>> surv.censoring_status(model.response.value).tolist()
+        ['uncensored', 'right_censored', 'uncensored']
+        """
+        model = cls.__new__(cls)
+        model._initialize(
+            y,
+            nshape=nshape,
+            bounds=bounds,
+            loc=loc,
+            scale=scale,
+            shape=shape,
+            shape_scale=shape_scale,
+            censored=True,
+            cache=cache,
+        )
+        return model
+
+    def _initialize(
+        self,
+        y: ArrayLike | Sequence[float] | lsl.Var,
+        *,
+        nshape: int,
+        bounds: tuple[float, float],
+        loc: gam.AdditivePredictor | None,
+        scale: gam.AdditivePredictor | None,
+        shape: gam.MVAdditivePredictor | None,
+        shape_scale: lsl.Var | gam.VarIGPrior | float | None,
+        censored: bool,
+        cache: bool = False,
+    ) -> None:
         _validate_geometry(nshape, bounds, minimum=2)
         response = _make_response(y)
+        if censored:
+            _check_record_shape(response)
         self.pred = _make_predictors(
             nshape, loc, scale, shape, shape_scale, legacy=False
         )
         knots = OnionKnots(*bounds, nparam=nshape)
-        distribution = PTMDist(
+        distribution: lsl.Dist = PTMDist(
             knots.knots,
             loc=self.pred.loc,
             scale=self.pred.scale,
@@ -246,6 +371,8 @@ class PTM(lsl.Model):
             centered=True,
             scaled=True,
         )
+        if censored:
+            distribution = CensoredDist.from_dist(distribution, cache=cache)
         self.response = response
         with _response_distribution(self, response, distribution):
             super().__init__(response)
