@@ -18,8 +18,8 @@ uv run --locked --group docs zensical build --clean --strict
 ```
 
 The first command installs the package and the locked development/documentation
-tools. The second checks output freshness and renders Quarto sources to
-GitHub-flavored Markdown using stored execution results. The third builds the site
+tools. The second renders Quarto sources to GitHub-flavored Markdown, reusing
+stored execution results for guides you have not edited. The third builds the site
 in `site/`, failing on warnings. You can also run `uv run zensical build --clean --strict`
 after syncing the documentation group.
 
@@ -54,34 +54,32 @@ Add new executable guides to the render list in `docs/_quarto.yml` as well.
 
 ## Refresh stored results
 
-Quarto's `freeze: auto` reuses results during a project render. It does not detect
-all changes to library code, included fragments, data, or dependencies. After any
-such change, or after editing a guide, force fresh execution:
+Quarto's `freeze: auto` stores each guide's execution results with a hash of its
+source and re-executes only guides whose source changed. After editing a guide,
+re-render and check:
 
 ```bash
-uv run --locked --group docs python scripts/docs.py render --fresh
+uv run --locked --group docs python scripts/docs.py render
 uv run --locked --group docs python scripts/docs.py check
 uv run --locked --group docs zensical build --clean --strict
 ```
 
-The fresh render removes the guides' previous frozen results and generated asset
-directories, runs all executable guides in the current environment, and records a manifest
-only after the render succeeds. The renderer allows ten minutes for all guides,
-stops its Quarto and kernel processes on timeout or interruption, and fails on
-execution errors. Kernels shut down after rendering. CI also bounds the whole job.
-
 Commit the `.qmd` sources together with their rendered `.md` files, figure
-directories, `docs/_freeze/`, and `docs/guide-outputs.json`. Do not edit the manifest
-or frozen results by hand. The check compares hashes of the library, reference
-scripts, all Quarto sources (including shared fragments), bundled example data,
-Quarto configuration, render script, figure filters, environment files, and
-generated artifacts. It catches missing or edited outputs too. If you add an
-external data file to a guide, include it in
-`snapshot()` in `scripts/docs.py` so data changes also require a refresh.
+directories and `docs/_freeze/`. Do not edit frozen results by hand.
+
+The check fails only when a guide's source no longer matches its stored results.
+Changes to library code, dependencies, data or tooling don't fail it:
+they rarely change guide results, and every refresh rewrites the figures, which
+grows the repository. When such a change does affect a guide, refresh all guides
+with `render --fresh`. It removes the previous frozen results and figure
+directories and re-executes every guide. The renderer allows ten minutes for all
+guides, stops its Quarto and kernel processes on timeout or interruption, and
+fails on execution errors. Kernels shut down after rendering. CI also bounds the
+whole job, and a manual run of the docs workflow executes all guides fresh.
 
 For a quick iteration, `quarto render docs/guides/conditional-shape.qmd` always executes that
-document, even with freezing enabled. Use the fresh-render command above before
-committing so all stored results and the manifest agree. See Quarto's
+document, even with freezing enabled. Run the project render above before
+committing so the stored results match the source. See Quarto's
 [execution and freeze documentation](https://quarto.org/docs/projects/code-execution.html)
 for the distinction between project and single-document renders.
 
