@@ -51,11 +51,10 @@ uv run --locked --group docs python scripts/docs.py render
 uv run --locked --group docs zensical build --clean --strict
 ```
 
-Preview with `uv run --locked --group docs zensical serve`. After changing a guide,
-library code, a shared guide fragment, or dependencies, force fresh execution with
-`uv run --locked --group docs python scripts/docs.py render --fresh`. Commit the
-Quarto sources, generated Markdown and figures, `_freeze` results, and output
-manifest together. See the [contributor instructions](docs/contributing.md) for
+Preview with `uv run --locked --group docs zensical serve`. After editing a guide,
+re-render it with `uv run --locked --group docs python scripts/docs.py render` and
+commit the Quarto source, generated Markdown and figures, and `_freeze` results
+together. Code changes alone don't require a refresh. See the [contributor instructions](docs/contributing.md) for
 setup, validation, and GitHub Pages deployment.
 
 

@@ -1,4 +1,4 @@
-"""Render Quarto guides and reject stale stored outputs before site builds."""
+"""Render Quarto guides and reject stored results of edited guides."""
 
 import argparse
 import contextlib
@@ -13,41 +13,34 @@ from pathlib import Path
 import psutil
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = "docs/guide-outputs.json"
 
 
-def snapshot(root: Path) -> dict[str, str]:
-    """Hash execution inputs and artifacts, including shared guide fragments."""
-    paths = {
-        root / "uv.lock",
-        root / "pyproject.toml",
-        root / "docs/_quarto.yml",
-        root / "scripts/docs.py",
-        root / "demo/data/README.md",
-        *root.glob("src/liesel_ptm/**/*.py"),
-        *root.glob("demo/reference_*.py"),
-        *root.glob("demo/data/*.csv"),
-        *root.glob("docs/**/*.qmd"),
-        *root.glob("docs/filters/*.lua"),
-        *root.glob("docs/_freeze/**/*"),
-    }
-    for source in root.glob("docs/guides/*.qmd"):
-        paths.add(source.with_suffix(".md"))
-        paths.update(source.with_name(source.stem + "_files").rglob("*"))
-    return {
-        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(paths)
-        if path.is_file() and ".quarto" not in path.parts
-    }
+def stale_guides(root: Path) -> list[str]:
+    """Return guides whose source changed since their stored results were rendered.
+
+    Quarto records an MD5 hash of each guide source in its frozen results. Only a
+    mismatch, or missing results, counts as stale. Library, dependency and tooling
+    changes do not: they rarely change guide results, and a spurious refresh
+    rewrites every figure, which grows the repository.
+    """
+    stale = []
+    for source in sorted(root.glob("docs/guides/*.qmd")):
+        frozen = root / "docs/_freeze/guides" / source.stem / "execute-results/md.json"
+        digest = hashlib.md5(source.read_bytes()).hexdigest()
+        if not frozen.exists() or json.loads(frozen.read_text())["hash"] != digest:
+            stale.append(source.relative_to(root).as_posix())
+    return stale
 
 
 def check(root: Path) -> None:
-    """Require exactly the inputs and outputs from the last successful fresh render."""
-    path = root / MANIFEST
-    if not path.exists() or json.loads(path.read_text()) != snapshot(root):
+    """Require stored results for the current version of every guide."""
+    stale = stale_guides(root)
+    if stale:
         raise SystemExit(
-            "Guide inputs or outputs changed. Refresh them with:\n"
-            "uv run --locked --group docs python scripts/docs.py render --fresh"
+            "Stored results are out of date for: "
+            + ", ".join(stale)
+            + "\nRe-render the changed guides with:\n"
+            "uv run --locked --group docs python scripts/docs.py render"
         )
 
 
@@ -83,26 +76,25 @@ def run_quarto(env: dict[str, str], *, timeout: float = 600) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("check", "render"))
-    parser.add_argument("--fresh", action="store_true")
+    parser.add_argument(
+        "--fresh", action="store_true", help="re-execute all guides, not only edited"
+    )
     args = parser.parse_args()
-    if not args.fresh:
-        check(ROOT)
     if args.action == "check":
         if args.fresh:
             parser.error("--fresh requires render")
+        check(ROOT)
         return
     if args.fresh:
-        (ROOT / MANIFEST).unlink(missing_ok=True)
         shutil.rmtree(ROOT / "docs/_freeze", ignore_errors=True)
         for path in (ROOT / "docs/guides").glob("*_files"):
             shutil.rmtree(path)
     env = os.environ | {"QUARTO_PYTHON": sys.executable, "MPLBACKEND": "Agg"}
+    # freeze: auto re-executes only guides whose source changed.
     run_quarto(env)
-    # Match the repository's text-file hooks before hashing generated JSON.
+    # Match the repository's text-file hooks before committing generated JSON.
     for path in (ROOT / "docs/_freeze").rglob("*.json"):
         path.write_text(path.read_text().rstrip() + "\n")
-    if args.fresh:
-        (ROOT / MANIFEST).write_text(json.dumps(snapshot(ROOT), indent=2) + "\n")
 
 
 if __name__ == "__main__":
