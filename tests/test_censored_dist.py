@@ -136,8 +136,9 @@ def test_cache_matches_uncached_ptm_at_nonzero_coefficients(conditional_shape):
     np.testing.assert_allclose(cached.log_prior, uncached.log_prior, rtol=1e-6)
     actual = jit_log_prob_grad(cached, position)
     expected = jit_log_prob_grad(uncached, position)
+    # The paths sum different float32 terms, so near-zero entries need atol.
     for name in position:
-        np.testing.assert_allclose(actual[name], expected[name], rtol=1e-5)
+        np.testing.assert_allclose(actual[name], expected[name], rtol=1e-5, atol=1e-6)
 
 
 def test_cache_follows_values_while_row_types_stay_fixed():
