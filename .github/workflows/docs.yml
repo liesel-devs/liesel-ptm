@@ -40,7 +40,7 @@ jobs:
       - name: Render guides using stored results
         if: github.event_name != 'workflow_dispatch'
         run: uv run --locked --group docs python scripts/docs.py render
-      - name: Check freshness guard
+      - name: Test the docs script
         run: uv run --locked pytest tests/test_docs.py
       - name: Build documentation
         run: uv run --locked --group docs zensical build --clean --strict
