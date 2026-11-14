@@ -519,6 +519,9 @@ class TestDistOneCoef:
         probabilities = jnp.array([0.1, 0.5, 0.9])
         changed_probabilities = jnp.array([0.2, 0.6, 0.8])
 
+        # Equal splines share compiled code, so an earlier test may have
+        # compiled this already; start cold so the first call must compile.
+        jax.clear_caches()
         with jax.log_compiles(True):
             first_values = getattr(first, method)(probabilities).block_until_ready()
             assert _compiled(caplog)
@@ -829,6 +832,7 @@ class TestResponseMoments:
         )
         probabilities = jnp.array([0.1, 0.5, 0.9])
         changed_probabilities = jnp.array([0.2, 0.6, 0.8])
+        jax.clear_caches()  # start cold so the first call must compile
         with jax.log_compiles(True):
             values = first.quantile(probabilities).block_until_ready()
             assert _compiled(caplog)
