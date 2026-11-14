@@ -1,0 +1,773 @@
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, cast, overload
+
+import jax.numpy as jnp
+import liesel.goose as gs
+import liesel.model as lsl
+import liesel_gam as gam
+import numpy as np
+import pandas as pd
+import tensorflow_probability.substrates.jax.bijectors as tfb
+import tensorflow_probability.substrates.jax.distributions as tfd
+from jax import Array
+from jax.typing import ArrayLike
+from numpy.typing import NDArray
+
+from .dist import LocScaleTransformationDist, TransformationDist
+from .survival_dist import CensoredDist
+
+type DistInput = Callable[..., TransformationDist] | lsl.Var | lsl.Dist
+type NewData = gs.Position | Mapping[str, ArrayLike] | None
+type ConditionalNewData = (
+    Mapping[str, ArrayLike | Sequence[Any]] | Sequence[Mapping[str, Any]]
+)
+type ClusterNewData = (
+    gs.Position | Mapping[str, ArrayLike | Sequence[int] | Sequence[str]] | None
+)
+type Intercept = gam.MultivariateIntercept | lsl.Var | None
+type Labels = gam.CategoryMapping | Sequence[str] | None
+type MarginalTerm = (
+    gam.MultivariateStrctTerm
+    | gam.MultivariateStrctInteractionTerm
+    | gam.MultivariateTPTerm
+)
+
+
+def _normalise_sample_dims(a: ArrayLike, value_ndim: int) -> Array:
+    a = jnp.asarray(a)
+    sample_ndim = a.ndim - value_ndim
+    if sample_ndim == 0:
+        return a[None, None, ...]
+    if sample_ndim == 1:
+        return a[None, ...]
+    if sample_ndim == 2:
+        return a
+    raise ValueError("Expected zero, one, or two leading sample dimensions.")
+
+
+def _make_dist(
+    constructor: DistInput, coef: ArrayLike, *, raw: bool = False
+) -> TransformationDist:
+    constructor_fn: Any = constructor
+    if isinstance(constructor, lsl.Var):
+        if constructor.dist_node is None:
+            raise TypeError("The supplied variable has no distribution.")
+        constructor_fn = constructor.dist_node
+    if isinstance(constructor_fn, CensoredDist):
+        constructor_fn = constructor_fn.base_distribution
+    elif isinstance(constructor_fn, lsl.Dist):
+        constructor_fn = constructor_fn.distribution
+
+    kwargs = {"coef": coef}
+    dist_class = getattr(constructor_fn, "func", constructor_fn)
+    if not (
+        isinstance(dist_class, type) and issubclass(dist_class, TransformationDist)
+    ):
+        raise TypeError("dist must construct a PTM transformation distribution.")
+    if issubclass(dist_class, LocScaleTransformationDist):
+        kwargs.update(loc=0.0, scale=1.0)
+    if raw:
+        kwargs.update(centered=False, scaled=False)
+    return cast(TransformationDist, constructor_fn(**kwargs))
+
+
+def _summarise_array(
+    values: ArrayLike,
+    *,
+    quantity: str,
+    rgrid: Array,
+    quantiles: Sequence[float],
+    hdi_prob: float,
+) -> pd.DataFrame:
+    summary = (
+        gs.SamplesSummary.from_array(
+            jnp.asarray(values),
+            name=quantity,
+            quantiles=quantiles,
+            hdi_prob=hdi_prob,
+            which=["mean", "sd", "var", "hdi", "quantiles"],
+        )
+        .to_dataframe()
+        .reset_index()
+    )
+    summary["r"] = np.tile(np.asarray(rgrid), len(summary) // len(rgrid))
+    summary = summary.drop(columns=["variable", "var_fqn", "var_index"])
+    summary.insert(0, "quantity", quantity)
+    return summary
+
+
+def _summarise_coef(
+    dist: DistInput,
+    coef: Array,
+    *,
+    rgrid: int | ArrayLike,
+    quantiles: Sequence[float],
+    hdi_prob: float,
+    covariates: Mapping[str, ArrayLike | Sequence[Any]] | None = None,
+) -> pd.DataFrame:
+    return _summarise_dist(
+        _make_dist(dist, coef),
+        _make_dist(dist, coef, raw=True),
+        rgrid=rgrid,
+        quantiles=quantiles,
+        hdi_prob=hdi_prob,
+        covariates=covariates,
+    )
+
+
+def _summarise_dist(
+    fitted: TransformationDist,
+    raw: TransformationDist,
+    *,
+    rgrid: int | ArrayLike,
+    quantiles: Sequence[float],
+    hdi_prob: float,
+    covariates: Mapping[str, ArrayLike | Sequence[Any]] | None = None,
+    response_bijector: tfb.Bijector | None = None,
+) -> pd.DataFrame:
+    if isinstance(rgrid, int):
+        if rgrid <= 0:
+            raise ValueError("Integer rgrid must be positive.")
+        r = jnp.linspace(-5.0, 5.0, rgrid)
+    else:
+        r = jnp.asarray(rgrid)
+        if r.ndim != 1 or not len(r):
+            raise ValueError("Array rgrid must be a nonempty one-dimensional vector.")
+    r_batched = r.reshape((-1,) + (1,) * len(fitted.batch_shape))
+    model_r_batched = (
+        r_batched if response_bijector is None else response_bijector.inverse(r_batched)
+    )
+    reported = (
+        fitted
+        if response_bijector is None
+        else tfd.TransformedDistribution(
+            distribution=fitted, bijector=response_bijector
+        )
+    )
+    quantities = {
+        "density": reported.prob(r_batched),
+        "cdf": reported.cdf(r_batched),
+        "transformation": fitted.transformation_and_logdet(model_r_batched)[0],
+        "transformation_raw": raw.transformation_and_logdet_spline(model_r_batched)[0],
+    }
+    summary = pd.concat(
+        [
+            _summarise_array(
+                jnp.moveaxis(values, 0, -1),
+                quantity=quantity,
+                rgrid=r,
+                quantiles=quantiles,
+                hdi_prob=hdi_prob,
+            )
+            for quantity, values in quantities.items()
+        ],
+        ignore_index=True,
+    )
+    for name, values in (covariates or {}).items():
+        summary[name] = np.tile(np.repeat(np.asarray(values), len(r)), len(quantities))
+    return summary
+
+
+def _unique_newdata(newdata: ConditionalNewData) -> pd.DataFrame:
+    if not newdata:
+        raise ValueError("newdata must contain at least one covariate.")
+    if not isinstance(newdata, Mapping):
+        rows = list(newdata)
+        if not all(isinstance(row, Mapping) for row in rows):
+            raise TypeError("newdata rows must be dictionaries.")
+        names = list(rows[0])
+        if not names or any(set(row) != set(names) for row in rows):
+            raise ValueError("All newdata rows must contain the same covariates.")
+        if any(np.ndim(value) != 0 for row in rows for value in row.values()):
+            raise ValueError("All values in newdata rows must be scalar.")
+        combinations = pd.DataFrame(rows, columns=pd.Index(names))
+    else:
+        columns = {}
+        for name, values in newdata.items():
+            array = np.asarray(values)
+            if array.ndim != 1 or not len(array):
+                raise ValueError(
+                    "All newdata values must be nonempty one-dimensional arrays."
+                )
+            columns[name] = array
+        lengths = {len(values) for values in columns.values()}
+        if len(lengths) != 1:
+            raise ValueError("All newdata arrays must have the same length.")
+        combinations = pd.DataFrame(columns)
+
+    if combinations.duplicated().any():
+        raise ValueError("newdata contains duplicate condition rows.")
+    return combinations
+
+
+def _response_dist(
+    response: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    newdata: pd.DataFrame,
+    *,
+    include_loc: bool,
+    include_scale: bool,
+) -> tuple[TransformationDist, TransformationDist]:
+    dist_node = response.dist_node
+    if dist_node is None:
+        raise TypeError("The supplied response has no distribution.")
+    model = response.model
+    if model is None:
+        raise ValueError("The supplied response must belong to a built model.")
+
+    constructor = (
+        dist_node.base_distribution
+        if isinstance(dist_node, CensoredDist)
+        else dist_node.distribution
+    )
+    dist_class = getattr(constructor, "func", constructor)
+    if not (
+        isinstance(dist_class, type) and issubclass(dist_class, TransformationDist)
+    ):
+        raise TypeError("response must have a PTM transformation distribution.")
+    loc_scale = issubclass(dist_class, LocScaleTransformationDist)
+    if (include_loc or include_scale) and not loc_scale:
+        raise ValueError("Location and scale can only be included for a loc-scale PTM.")
+
+    kwinputs = {
+        name: node
+        for name, node in dist_node.kwinputs.items()
+        if name not in {"loc", "scale"}
+        or (name == "loc" and include_loc)
+        or (name == "scale" and include_scale)
+    }
+    nodes = list(dist_node.inputs) + list(kwinputs.values())
+    targets = {
+        target.name: target
+        for node in nodes
+        if not isinstance(
+            target := node.var if node.var is not None else node, lsl.Value
+        )
+    }
+    predictions = (
+        model.predict(
+            gs.Position(dict(samples)),
+            predict=list(targets),
+            newdata=gs.Position(
+                {str(name): newdata[name].to_numpy() for name in newdata.columns}
+            ),
+        )
+        if targets
+        else {}
+    )
+
+    def value_for(node: Any, name: str | None = None) -> Any:
+        if name == "loc" and not include_loc:
+            return 0.0
+        if name == "scale" and not include_scale:
+            return 1.0
+        target = node.var if node.var is not None else node
+        if isinstance(target, lsl.Value):
+            return target.value
+        return predictions[target.name]
+
+    args = [value_for(node) for node in dist_node.inputs]
+    kwargs = {name: value_for(node, name) for name, node in dist_node.kwinputs.items()}
+    required = {"coef", "loc", "scale"} if loc_scale else {"coef"}
+    if missing := required.difference(kwargs):
+        names = ", ".join(repr(name) for name in sorted(missing))
+        raise TypeError(f"The response distribution must define keyword input {names}.")
+
+    prepared = {}
+    parameter_names = ["coef"]
+    if include_loc:
+        parameter_names.append("loc")
+    if include_scale:
+        parameter_names.append("scale")
+    for name in parameter_names:
+        node = dist_node.kwinputs[name]
+        target = node.var if node.var is not None else node
+        value_ndim = jnp.ndim(target.value)
+        value = _normalise_sample_dims(kwargs[name], value_ndim)
+        if name == "coef":
+            if value_ndim not in (1, 2):
+                raise ValueError("coef must be shared or row-specific.")
+            prepared[name] = value[..., None, :] if value_ndim == 1 else value
+        else:
+            if value_ndim not in (0, 1):
+                raise ValueError(f"{name} must be shared or row-specific.")
+            prepared[name] = value[..., None] if value_ndim == 0 else value
+
+    used = [prepared["coef"]]
+    if include_loc:
+        used.append(prepared["loc"])
+    if include_scale:
+        used.append(prepared["scale"])
+    sample_shape = np.broadcast_shapes(*(value.shape[:2] for value in used))
+    nconditions = len(newdata)
+    kwargs["coef"] = jnp.broadcast_to(
+        prepared["coef"], sample_shape + (nconditions, prepared["coef"].shape[-1])
+    )
+    if loc_scale:
+        kwargs["loc"] = (
+            jnp.broadcast_to(prepared["loc"], sample_shape + (nconditions,))
+            if include_loc
+            else jnp.zeros(sample_shape + (nconditions,))
+        )
+        kwargs["scale"] = (
+            jnp.broadcast_to(prepared["scale"], sample_shape + (nconditions,))
+            if include_scale
+            else jnp.ones(sample_shape + (nconditions,))
+        )
+    fitted = constructor(*args, **kwargs)
+    raw = constructor(*args, **(kwargs | {"centered": False, "scaled": False}))
+    return cast(TransformationDist, fitted), cast(TransformationDist, raw)
+
+
+def summarise_conditional_dist(
+    response: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    newdata: ConditionalNewData,
+    rgrid: int | ArrayLike = 150,
+    response_bijector: tfb.Bijector | None = None,
+    include_loc: bool = False,
+    include_scale: bool = False,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame:
+    """Summarise conditional PTM distributions at condition rows in newdata.
+
+    Parameters
+    ----------
+    newdata
+        Equal-length covariate arrays or scalar-valued condition records.
+        Rows are evaluated in their supplied order; no Cartesian grid is formed.
+        Supply every covariate needed by the predictors being evaluated.
+    include_loc, include_scale
+        Include the fitted location or scale; otherwise use zero or one,
+        respectively. Including either requires an explicit ``rgrid``.
+    response_bijector
+        Map modeled responses to the reported scale. Requires an explicit
+        ``rgrid`` in reported-scale units.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Pointwise summaries with condition columns and response grid ``r``.
+
+    Raises
+    ------
+    ValueError
+        If condition rows are duplicated or covariate arrays have unequal lengths.
+    """
+    if response_bijector is not None:
+        if not isinstance(response_bijector, tfb.Bijector):
+            raise TypeError("response_bijector must be a JAX TFP bijector or None.")
+        if (
+            response_bijector.forward_min_event_ndims != 0
+            or response_bijector.inverse_min_event_ndims != 0
+        ):
+            raise ValueError("response_bijector must be a scalar-event bijector.")
+        if isinstance(rgrid, int):
+            raise ValueError(
+                "rgrid must be an explicit array when response_bijector is supplied."
+            )
+    if isinstance(rgrid, int) and (include_loc or include_scale):
+        raise ValueError(
+            "rgrid must be an explicit array when location or scale is included."
+        )
+    combinations = _unique_newdata(newdata)
+    fitted, raw = _response_dist(
+        response,
+        samples,
+        combinations,
+        include_loc=include_loc,
+        include_scale=include_scale,
+    )
+    return _summarise_dist(
+        fitted,
+        raw,
+        rgrid=rgrid,
+        quantiles=quantiles,
+        hdi_prob=hdi_prob,
+        covariates={
+            str(name): combinations[name].to_numpy() for name in combinations.columns
+        },
+        response_bijector=response_bijector,
+    )
+
+
+def _predict(
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    newdata: NewData = None,
+) -> Array:
+    newdata_position = None if newdata is None else gs.Position(dict(newdata))
+    return term.predict(gs.Position(dict(samples)), newdata=newdata_position)
+
+
+def _category_mapping(term: lsl.Var, input_name: str) -> gam.CategoryMapping | None:
+    if isinstance(term, gam.MultivariateStrctLinTerm) and input_name in term.mappings:
+        return term.mappings[input_name]
+    for marginal in getattr(term, "marginal_terms", ()):
+        mapping = getattr(marginal, "mapping", None)
+        basis = getattr(marginal, "basis", None)
+        if mapping is not None and getattr(basis, "input_name", None) == input_name:
+            return mapping
+        nested = _category_mapping(marginal, input_name)
+        if nested is not None:
+            return nested
+    return None
+
+
+def _predict_intercept(
+    intercept: Intercept, samples: Mapping[str, ArrayLike]
+) -> Array | None:
+    if intercept is None:
+        return None
+    if not isinstance(intercept, lsl.Var):
+        raise TypeError("intercept must be a Liesel variable or None.")
+    return _normalise_sample_dims(
+        _predict(intercept, samples), value_ndim=intercept.value.ndim
+    )
+
+
+@overload
+def summarise_intercept_dist(
+    dist: DistInput,
+    term: gam.MultivariateIntercept,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+@overload
+def summarise_intercept_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+def summarise_intercept_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame:
+    """Summarise the standardized PTM distribution induced by an intercept term."""
+    coef = _normalise_sample_dims(_predict(term, samples), term.value.ndim)
+    return _summarise_coef(
+        dist,
+        coef,
+        rgrid=rgrid,
+        quantiles=quantiles,
+        hdi_prob=hdi_prob,
+    )
+
+
+@overload
+def summarise_1d_smooth_dist(
+    dist: DistInput,
+    term: gam.MultivariateStrctTerm,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+@overload
+def summarise_1d_smooth_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+def summarise_1d_smooth_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame:
+    """Summarise the standardized PTM distribution induced by a 1D smooth."""
+    term = cast(MarginalTerm, term)
+    inputs = term.input_obs
+    if len(inputs) != 1:
+        raise ValueError(f"Expected one input covariate, got {len(inputs)}.")
+    name, observed = next(iter(inputs.items()))
+    grid: dict[str, Any] = (
+        {name: jnp.linspace(jnp.min(observed.value), jnp.max(observed.value), ngrid)}
+        if newdata is None
+        else {name: value for name, value in newdata.items()}
+    )
+    coef = _normalise_sample_dims(
+        _predict(term, samples, grid), value_ndim=term.value.ndim
+    )
+    intercept_coef = _predict_intercept(intercept, samples)
+    if intercept_coef is not None:
+        coef = coef + intercept_coef[..., None, :]
+    return _summarise_coef(
+        dist,
+        coef,
+        rgrid=rgrid,
+        quantiles=quantiles,
+        hdi_prob=hdi_prob,
+        covariates=grid,
+    )
+
+
+@overload
+def summarise_nd_smooth_dist(
+    dist: DistInput,
+    term: (
+        gam.MultivariateStrctTerm
+        | gam.MultivariateStrctInteractionTerm
+        | gam.MultivariateTPTerm
+    ),
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    newdata_meshgrid: bool = False,
+    marginals: Sequence[MarginalTerm] = (),
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+@overload
+def summarise_nd_smooth_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    newdata_meshgrid: bool = False,
+    marginals: Sequence[lsl.Var] = (),
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+def summarise_nd_smooth_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: NewData = None,
+    ngrid: int = 5,
+    newdata_meshgrid: bool = False,
+    marginals: Sequence[lsl.Var] = (),
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame:
+    """Summarise a standardized PTM distribution induced by an nD smooth."""
+    term = cast(MarginalTerm, term)
+    marginal_terms = cast(Sequence[MarginalTerm], marginals)
+    inputs = term.input_obs
+    mappings = {name: _category_mapping(term, name) for name in inputs}
+    grid: dict[str, Any]
+    if newdata is None:
+        axes = {}
+        for name, obs in inputs.items():
+            mapping = mappings[name]
+            axes[name] = (
+                np.arange(len(mapping.labels_to_integers_map))
+                if mapping is not None
+                else np.linspace(np.min(obs.value), np.max(obs.value), ngrid)
+            )
+        arrays = np.meshgrid(*axes.values(), indexing="ij")
+        grid = {name: value.ravel() for name, value in zip(axes, arrays)}
+    elif newdata_meshgrid:
+        axes = {}
+        for name, values in newdata.items():
+            values = np.asarray(values)
+            mapping = mappings[name]
+            if mapping is not None and not np.issubdtype(values.dtype, np.integer):
+                values = np.asarray(mapping.labels_to_integers(values))
+            axes[name] = values
+        arrays = np.meshgrid(*axes.values(), indexing="ij")
+        grid = {name: value.ravel() for name, value in zip(newdata, arrays)}
+    else:
+        grid = {}
+        for name, values in newdata.items():
+            values = np.asarray(values)
+            mapping = mappings[name]
+            if mapping is not None and not np.issubdtype(values.dtype, np.integer):
+                values = np.asarray(mapping.labels_to_integers(values))
+            grid[name] = values
+        lengths = {len(np.asarray(value)) for value in grid.values()}
+        if len(lengths) != 1:
+            raise ValueError("All newdata arrays must have the same length.")
+
+    display_grid = {}
+    for name, values in grid.items():
+        mapping = mappings[name]
+        display_grid[name] = (
+            list(mapping.integers_to_labels(values)) if mapping is not None else values
+        )
+        if mapping is not None:
+            grid[name] = jnp.asarray(values)
+
+    coef = _normalise_sample_dims(
+        _predict(term, samples, grid), value_ndim=term.value.ndim
+    )
+    for marginal in marginal_terms:
+        marginal_grid = {
+            name: value for name, value in grid.items() if name in marginal.input_obs
+        }
+        marginal_coef = _normalise_sample_dims(
+            _predict(marginal, samples, marginal_grid),
+            value_ndim=marginal.value.ndim,
+        )
+        coef = coef + marginal_coef
+    intercept_coef = _predict_intercept(intercept, samples)
+    if intercept_coef is not None:
+        coef = coef + intercept_coef[..., None, :]
+
+    summary = _summarise_coef(
+        dist,
+        coef,
+        rgrid=rgrid,
+        quantiles=quantiles,
+        hdi_prob=hdi_prob,
+        covariates=display_grid,
+    )
+    for name, mapping in mappings.items():
+        if mapping is not None:
+            summary[name] = pd.Categorical(
+                summary[name], categories=list(mapping.labels_to_integers_map)
+            )
+    return summary
+
+
+@overload
+def summarise_cluster_dist(
+    dist: DistInput,
+    term: gam.MultivariateStrctTerm,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+@overload
+def summarise_cluster_dist(  # type: ignore[overload-cannot-match]
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame: ...
+
+
+def summarise_cluster_dist(
+    dist: DistInput,
+    term: lsl.Var,
+    samples: Mapping[str, ArrayLike],
+    *,
+    rgrid: int | ArrayLike = 150,
+    newdata: ClusterNewData = None,
+    labels: Labels = None,
+    intercept: Intercept = None,
+    quantiles: Sequence[float] = (0.05, 0.5, 0.95),
+    hdi_prob: float = 0.9,
+) -> pd.DataFrame:
+    """Summarise a standardized PTM distribution induced by a categorical term."""
+    term = cast(MarginalTerm, term)
+    inputs = term.input_obs
+    if len(inputs) != 1:
+        raise ValueError(f"Expected one categorical input, got {len(inputs)}.")
+    name, observed_var = next(iter(inputs.items()))
+    mapping = _category_mapping(term, name)
+    explicit_mapping = labels if isinstance(labels, gam.CategoryMapping) else None
+    active_mapping = explicit_mapping or (mapping if labels is None else None)
+
+    if active_mapping is not None:
+        categories = list(active_mapping.labels_to_integers_map)
+        codes = (
+            np.arange(len(categories)) if newdata is None else np.asarray(newdata[name])
+        )
+        if not np.issubdtype(codes.dtype, np.integer):
+            codes = np.asarray(active_mapping.labels_to_integers(codes))
+        display = list(active_mapping.integers_to_labels(codes))
+    else:
+        categories = (
+            list(labels)
+            if labels is not None and not isinstance(labels, gam.CategoryMapping)
+            else []
+        )
+        values: NDArray[Any] = (
+            np.arange(len(categories)) if newdata is None else np.asarray(newdata[name])
+        )
+        if np.issubdtype(values.dtype, np.integer):
+            codes = np.asarray(values, dtype=np.intp)
+        else:
+            label_codes = {label: code for code, label in enumerate(categories)}
+            codes = np.asarray([label_codes[value] for value in values], dtype=np.intp)
+        display = [categories[code] for code in codes]
+
+    observed_codes = set(np.asarray(observed_var.value).tolist())
+    observed = np.asarray([code in observed_codes for code in codes])
+    prediction_grid = {name: jnp.asarray(codes)}
+    coef = _normalise_sample_dims(
+        _predict(term, samples, prediction_grid), value_ndim=term.value.ndim
+    )
+    intercept_coef = _predict_intercept(intercept, samples)
+    if intercept_coef is not None:
+        coef = coef + intercept_coef[..., None, :]
+
+    summary = _summarise_coef(
+        dist,
+        coef,
+        rgrid=rgrid,
+        quantiles=quantiles,
+        hdi_prob=hdi_prob,
+        covariates={name: display},
+    )
+    nr = len(summary) // (4 * len(codes))
+    summary[name] = pd.Categorical(summary[name], categories=categories)
+    summary["observed"] = np.tile(np.repeat(observed, nr), 4)
+    return summary

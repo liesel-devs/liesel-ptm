@@ -1,0 +1,303 @@
+# Fit a censored fixed-shape PTM
+
+
+Fit a fixed-shape PTM to positive event times with right censoring. Model log time
+with the same predictors as in the [fixed-shape walkthrough](fixed-shape.md),
+then use a censoring likelihood and predict survival probabilities in time units.
+
+## Generate censored observations
+
+Let $T$ be the event time and $C$ the censoring time. Observe
+$U = \min(T, C)$ and whether the event occurred before censoring.
+An observed event contributes the density at $\log T$; a censored observation
+contributes $P(T > C \mid x)$. Assume that event and censoring times are
+independent conditional on the modeled covariates.
+
+Use 500 synthetic observations from
+$\log T = 1 + 0.8\sin(\pi x) + 0.6e^{0.25x}\varepsilon$, with
+$x \sim U(-1,1)$ and a standardized, right-skewed two-piece normal error.
+Log time has support on the whole real line, so event times can take any positive
+value. Censoring times are drawn independently.
+
+``` python
+import jax
+import jax.numpy as jnp
+import liesel.model as lsl
+import liesel.optim as opt
+import liesel_gam as gam
+import numpy as np
+import optax
+import pandas as pd
+import plotnine as p9
+import tensorflow_probability.substrates.jax.bijectors as tfb
+import tensorflow_probability.substrates.jax.distributions as tfd
+
+import liesel_ptm as ptm
+from liesel_ptm import survival_dist as surv
+```
+
+Define the location and scale of log event time, and the error distribution
+before standardization.
+
+``` python
+def true_loc(x):
+    return 1.0 + 0.8 * np.sin(np.pi * x)
+
+
+def true_scale(x):
+    return 0.6 * np.exp(0.25 * x)
+
+
+error_dist = tfd.TwoPieceNormal(loc=0.0, scale=1.0, skewness=2.0)
+```
+
+Draw covariates and standardized errors, then the log event times.
+
+``` python
+rng = np.random.default_rng(42)
+n = 500
+x = rng.uniform(-1.0, 1.0, n)
+
+raw_error = error_dist.sample(n, seed=jax.random.key(43))
+error = np.asarray((raw_error - error_dist.mean()) / error_dist.stddev())
+
+log_event_time = true_loc(x) + true_scale(x) * error
+```
+
+Draw independent censoring times and observe whichever comes first.
+
+``` python
+log_censor_time = rng.normal(loc=1.7, scale=0.65, size=n)
+
+censored = log_event_time > log_censor_time
+log_followup = np.minimum(log_event_time, log_censor_time)
+```
+
+Encode each observation as a censoring record with
+[right_censored](../api/survival.md#liesel_ptm.survival_dist.right_censored).
+Where `censored` is false, the follow-up time is the log event time; elsewhere,
+it is a lower bound.
+
+``` python
+records = surv.right_censored(log_followup, censored=censored)
+data = pd.DataFrame({"x": x, "followup": np.exp(log_followup)})
+data["status"] = surv.censoring_status(records)
+```
+
+Each record has three columns, `[time, lower, upper]`. Events become
+`[log_followup, nan, nan]` and right-censored observations
+`[nan, log_followup, nan]`. The missing entries tell the likelihood which
+contribution to use; they are not missing parameters to impute.
+[censoring_status](../api/survival.md#liesel_ptm.survival_dist.censoring_status)
+reads that type back from the records.
+
+``` python
+data["status"].value_counts()
+```
+
+    status
+    uncensored        357
+    right_censored    143
+    Name: count, dtype: int64
+
+``` python
+(
+    p9.ggplot(data, p9.aes("x", "followup", color="status", shape="status"))
+    + p9.geom_point(alpha=0.6, size=1.5)
+    + p9.scale_color_manual(
+        values={"uncensored": "#0072B2", "right_censored": "#D55E00"}
+    )
+    + p9.scale_shape_manual(values={"uncensored": "o", "right_censored": "^"})
+    + p9.scale_y_log10()
+    + p9.labs(y="Observed follow-up time (log axis)", color="Record", shape="Record")
+    + p9.theme_light()
+)
+```
+
+<img src="censored_files/figure-commonmark/cell-8-output-1.png" width="420" height="300" alt="Observed event times and right-censoring times across x on a log axis." />
+
+For a censored record, the event lies after the plotted follow-up time. The
+unobserved event times are used only to generate the example, not to fit it.
+
+## Define the fixed-shape model
+
+Create the model from the records with
+[PTM.from_censored](../api/models.md#liesel_ptm.PTM.from_censored). It is an
+ordinary [PTM](../api/models.md#liesel_ptm.PTM) whose likelihood reads the
+records: densities for events and survival probabilities for censored
+observations. Add a smooth location effect and a linear log-scale effect; the shape is a shared
+intercept. Location and scale describe the conditional mean and standard
+deviation of **log time**, not event time. The smoothing variances are estimated
+along with the coefficients.
+
+``` python
+model = ptm.PTM.from_censored(
+    lsl.Var.new_obs(records, name="log_time"),
+    nshape=8,
+)
+tb = gam.TermBuilder.from_df(data)
+loc_smooth_scale = gam.scale_wb(value=1.0, scale=1.0, name="loc_smooth_scale")
+
+model.pred.loc += tb.ps("x", k=8, scale=loc_smooth_scale, prefix="m.")
+model.pred.scale += tb.lin("x", prefix="s.", name="x")
+```
+
+The response `log_time` holds the `(500, 3)` record array. Naming it keeps the
+graph readable; passing `records` directly would create a response named `y`.
+
+``` python
+model.plot(width=20, height=10)
+```
+
+![Censored PTM with location, scale, and shared shape predictors.](censored_files/figure-commonmark/cell-10-output-1.png)
+
+## Fit with variational inference
+
+Use the same MAP initialization and full-covariance Gaussian VI as in the
+[fixed-shape guide](fixed-shape.md#find-starting-values), including the log
+smoothing variances. Fit the complete record array.
+
+``` python
+map_result = opt.LieselOptim(
+    model,
+    optimizers=optax.adam(0.01),
+    loss_monitor="train_full_data",
+    stopper=opt.Stopper(epochs=600, patience=600),
+    seed=43,
+    show_progress=False,
+).fit()
+model.state = model.update_state(map_result.position_min_monitor)
+```
+
+Initialize one Gaussian family at these point estimates and use EMA early stopping.
+
+``` python
+vi = opt.LieselVI(
+    model,
+    loss="mvn_tril",
+    nsamples=8,
+    optimizers=optax.adam(0.003),
+    loss_monitor=opt.EmaTrainLossMonitor(effective_window=20),
+    stopper=opt.Stopper(epochs=3000, patience=100, min_epochs=300, rtol=1e-4),
+    seed=44,
+    show_progress=False,
+)
+result = vi.fit()
+```
+
+``` python
+result.status, result.n_epochs
+```
+
+    ('early_stopping', 1349)
+
+EMA early stopping detects a loss plateau, not approximation accuracy. Gaussian
+VI often gives intervals that are too narrow. Use 1,000 approximate posterior
+draws for the summaries below; their sample axes follow the
+[fixed-shape walkthrough](fixed-shape.md#fit-a-variational-family).
+
+``` python
+posterior = vi.loss.approximate_joint_posterior(result)
+samples = posterior.sample((1, 1000), seed=jax.random.key(45))
+```
+
+## Inspect standardized shape
+
+Pass `model.response` to the distribution plots. They use the distribution of
+uncensored log time, not the record likelihood.
+
+``` python
+ptm.plot_intercept_dist(model.response, model.pred.shape.intercept, samples)
+```
+
+<img src="censored_files/figure-commonmark/cell-15-output-1.png" width="420" height="300" alt="Fitted shared standardized log-time shape and a standard normal reference." />
+
+Look for the long right tail relative to the dotted normal reference. This shape
+is shared across `x` after removing the location and scale of log time. For
+location and scale effects, use the [liesel-gam plots](fixed-shape.md#plot-location-and-scale-effects).
+
+## Predict survival on the time scale
+
+Summarise the conditional distribution of event time at three new covariate
+values with
+[summarise_conditional_dist](../api/summaries.md#liesel_ptm.summarise_conditional_dist).
+Include location and scale, and map log time to time with `tfb.Exp()`. The grid
+is then in time units.
+
+``` python
+new_x = np.array([-0.8, 0.0, 0.8])
+time_grid = jnp.geomspace(0.1, 25.0, 180)
+summary = ptm.summarise_conditional_dist(
+    model.response,
+    samples,
+    newdata={"x": new_x},
+    rgrid=time_grid,
+    response_bijector=tfb.Exp(),
+    include_loc=True,
+    include_scale=True,
+)
+cdf = summary.loc[summary["quantity"] == "cdf"]
+```
+
+Survival is $S(t \mid x) = 1 - F(t \mid x)$. Subtracting from one flips the
+order, so the 95% CDF quantile gives the lower survival band and the 5% quantile
+the upper one.
+
+``` python
+survival = pd.DataFrame(
+    {
+        "time": cdf["r"].to_numpy(),
+        "x": cdf["x"].to_numpy(),
+        "mean": 1.0 - cdf["mean"].to_numpy(),
+        "lower": 1.0 - cdf["q_0.95"].to_numpy(),
+        "upper": 1.0 - cdf["q_0.05"].to_numpy(),
+    }
+)
+```
+
+Compare $S(t \mid x) = P(T > t \mid x)$ with the generating distribution, undoing
+the standardization of its two-piece normal errors.
+
+``` python
+x_grid = survival["x"].to_numpy()
+z = (np.log(survival["time"].to_numpy()) - true_loc(x_grid)) / true_scale(x_grid)
+raw_error = error_dist.mean() + error_dist.stddev() * z
+survival["truth"] = np.asarray(error_dist.survival_function(raw_error))
+```
+
+``` python
+(
+    p9.ggplot(survival, p9.aes("time"))
+    + p9.geom_ribbon(p9.aes(ymin="lower", ymax="upper"), fill="#56B4E9", alpha=0.3)
+    + p9.geom_line(p9.aes(y="mean"), color="#0072B2")
+    + p9.geom_line(p9.aes(y="truth"), linetype="dashed")
+    + p9.facet_wrap("~x", nrow=1, labeller="label_both")
+    + p9.scale_x_log10()
+    + p9.labs(
+        title="Solid: fitted; dashed: generating survival",
+        x="Time (log axis)",
+        y="Survival probability",
+    )
+    + p9.theme_light()
+    + p9.theme(figure_size=(8, 3.5))
+)
+```
+
+<img src="censored_files/figure-commonmark/cell-19-output-1.png" width="480" height="210" alt="Fitted and generating survival curves at three x values." />
+
+Solid curves average survival probabilities over draws, with pointwise 90%
+credible bands. Compare when the curves drop and how slowly their tails decay.
+The shared shape allows these differences through location and scale of log time.
+Censoring reduces information about later events, so tail estimates also depend
+on the model assumptions.
+
+For left or interval censoring, encode the known log-time bounds with
+[left_censored](../api/survival.md#liesel_ptm.survival_dist.left_censored) or
+[interval_censored](../api/survival.md#liesel_ptm.survival_dist.interval_censored).
+To mix types, pass lower and upper bounds to
+[censored](../api/survival.md#liesel_ptm.survival_dist.censored): `-inf` and
+`inf` mark one-sided censoring, and matching bounds mark an uncensored time.
+`PTM.from_censored` accepts any mix of record types; see the
+[censoring reference](../api/survival.md) for their layouts. If the record types
+stay fixed, pass `cache=True` to evaluate only the contribution each record
+needs, which makes each likelihood evaluation several times faster.
